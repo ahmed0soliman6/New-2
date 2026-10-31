@@ -1,0 +1,1528 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soli Medical — الخريطة المعمارية والتشغيلية التفاعلية (Archify Interactive Map)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-canvas: #F8FAFC;
+      --bg-surface: #FFFFFF;
+      --bg-elevated: #F1F5F9;
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --text-muted: #64748B;
+      --border-subtle: #E2E8F0;
+      --border-strong: #CBD5E1;
+      --accent-cyan: #0891B2;
+      --accent-cyan-soft: rgba(8, 145, 178, 0.12);
+      --accent-emerald: #16A34A;
+      --accent-amber: #D97706;
+      --accent-rose: #E11D48;
+      --accent-indigo: #4F46E5;
+      --grid-dot: rgba(15, 23, 42, 0.08);
+    }
+
+    html.dark {
+      --bg-canvas: #080E1B;
+      --bg-surface: #111A2E;
+      --bg-elevated: #18233C;
+      --text-primary: #F1F5F9;
+      --text-secondary: #94A3B8;
+      --text-muted: #64748B;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --accent-cyan: #00C2CB;
+      --accent-cyan-soft: rgba(0, 194, 203, 0.14);
+      --accent-emerald: #10B981;
+      --accent-amber: #F59E0B;
+      --accent-rose: #F43F5E;
+      --accent-indigo: #6366F1;
+      --grid-dot: rgba(255, 255, 255, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Cairo', system-ui, -apple-system, sans-serif;
+      background-color: var(--bg-canvas);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      transition: background-color 0.18s ease, color 0.18s ease;
+    }
+
+    .mono {
+      font-family: 'IBM Plex Mono', monospace;
+      font-variant-numeric: tabular-nums;
+      direction: ltr;
+      display: inline-block;
+    }
+
+    /* Top Bar — 3 clean zones */
+    .topbar {
+      height: 64px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+
+    .brand-zone {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--accent-cyan-soft);
+      border: 1px solid var(--accent-cyan);
+      color: var(--accent-cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 15px;
+    }
+
+    .brand-title {
+      font-weight: 800;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .nav-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-elevated);
+      padding: 4px;
+      border-radius: 10px;
+      border: 1px solid var(--border-subtle);
+      overflow-x: auto;
+    }
+
+    .nav-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 7px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background-color 0.15s ease, color 0.15s ease;
+    }
+
+    .nav-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .nav-tab.active {
+      background: var(--bg-surface);
+      color: var(--accent-cyan);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+
+    .actions-zone {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: transform 0.12s ease, border-color 0.15s ease, background-color 0.15s ease;
+    }
+
+    .btn:hover {
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-primary {
+      background: var(--accent-cyan);
+      color: #041318;
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-primary:hover {
+      opacity: 0.92;
+    }
+
+    /* Sub-toolbar: Search + Reach Filter + Zoom */
+    .subtoolbar {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .search-box {
+      position: relative;
+      min-width: 260px;
+      flex: 1;
+      max-width: 380px;
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 7px 14px 7px 34px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .search-input:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .search-shortcut {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .reach-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .reach-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-left: 4px;
+    }
+
+    .reach-btn {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 5px 11px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .reach-btn.active {
+      background: var(--accent-cyan-soft);
+      color: var(--accent-cyan);
+      border-color: var(--accent-cyan);
+    }
+
+    /* Workspace Split: Canvas + Inspector Sidebar */
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      min-height: calc(100vh - 118px);
+    }
+
+    @media (max-width: 1024px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Interactive Diagram Stage */
+    .stage-wrapper {
+      position: relative;
+      background-image: radial-gradient(var(--grid-dot) 1.25px, transparent 1.25px);
+      background-size: 22px 22px;
+      overflow: auto;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .stage-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 16px 20px;
+    }
+
+    .stage-title {
+      font-size: 17px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .stage-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .stage-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      text-align: left;
+    }
+
+    /* Architecture / Workflow Lanes Grid */
+    .lanes-container {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      transform-origin: top center;
+      transition: transform 0.15s ease;
+    }
+
+    .lane {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 18px;
+    }
+
+    .lane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .lane-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .lane-kicker {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .nodes-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 14px;
+    }
+
+    .node-card {
+      background: var(--bg-elevated);
+      border: 1.5px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: transform 0.14s ease, opacity 0.18s ease, border-color 0.14s ease;
+      position: relative;
+      text-align: right;
+    }
+
+    .node-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-strong);
+    }
+
+    .node-card.selected {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 0 3px var(--accent-cyan-soft);
+    }
+
+    .node-card.upstream {
+      border-color: var(--accent-amber);
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+    }
+
+    .node-card.downstream {
+      border-color: var(--accent-emerald);
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+    }
+
+    .node-card.dimmed {
+      opacity: 0.26;
+    }
+
+    .node-kicker {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .node-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .node-summary {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+
+    .node-footer {
+      font-size: 11px;
+      color: var(--accent-cyan);
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Inspector Panel */
+    .inspector {
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      overflow-y: auto;
+      max-height: calc(100vh - 118px);
+      position: sticky;
+      top: 118px;
+    }
+
+    .inspector-section {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 14px;
+    }
+
+    .inspector-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+
+    .inspector-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .inspector-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.65;
+    }
+
+    .field-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field-item {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 7px 10px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .relation-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 7px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      font-size: 12px;
+      color: var(--text-primary);
+      cursor: pointer;
+      margin-bottom: 6px;
+      text-align: right;
+      width: 100%;
+      font-family: inherit;
+    }
+
+    .relation-link:hover {
+      border-color: var(--accent-cyan);
+    }
+
+    /* Explainer Cards */
+    .explainer-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .explainer-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .step-btn {
+      text-align: right;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 12px;
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: border-color 0.15s ease;
+    }
+
+    .step-btn:hover {
+      border-color: var(--accent-cyan);
+    }
+
+    @media print {
+      .topbar, .subtoolbar {
+        position: static;
+      }
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+      .inspector {
+        max-height: none;
+        position: static;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Bar (3 Clean Zones) -->
+  <header class="topbar">
+    <div class="brand-zone">
+      <div class="brand-mark">SM</div>
+      <div>
+        <div class="brand-title">Soli Medical — الخريطة المعمارية التفاعلية</div>
+        <div class="brand-sub">توثيق تفاعلي مستقل (Archify Standard) · يعمل بدون إنترنت</div>
+      </div>
+    </div>
+
+    <nav class="nav-tabs" role="tablist" aria-label="منظورات النظام">
+      <button class="nav-tab active" onclick="switchView('workflow')" id="tab-workflow">01. دورة المريض التشغيلية (Workflow)</button>
+      <button class="nav-tab" onclick="switchView('architecture')" id="tab-architecture">02. البنية المعمارية والأمان (Architecture)</button>
+      <button class="nav-tab" onclick="switchView('erd')" id="tab-erd">03. مخطط قاعدة البيانات (ERD 16)</button>
+      <button class="nav-tab" onclick="switchView('explainer')" id="tab-explainer">04. الدليل التشغيلي التفاعلي (Explainer)</button>
+    </nav>
+
+    <div class="actions-zone">
+      <button class="btn" onclick="toggleTheme()" title="تبديل المظهر (T)">
+        <span id="theme-label">الوضع النهاري</span>
+      </button>
+      <button class="btn" onclick="window.print()" title="طباعة أو حفظ PDF">
+        <span>طباعة / PDF</span>
+      </button>
+      <button class="btn btn-primary" onclick="downloadSelfHtml()" title="تحميل نسخة HTML مستقلة على جهازك">
+        <span>تحميل ملف HTML المستقل ↓</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Sub-Toolbar: Search + Upstream/Downstream Reach Controls + Zoom -->
+  <div class="subtoolbar">
+    <div class="search-box">
+      <input
+        type="text"
+        id="search-input"
+        class="search-input"
+        placeholder="ابحث عن شاشة، جدول Firestore، أو ملف برمجي..."
+        oninput="handleSearch(this.value)"
+      />
+      <span class="search-shortcut">/</span>
+    </div>
+
+    <div class="reach-group">
+      <span class="reach-label">وضع تتبع المسار (Reach):</span>
+      <button class="reach-btn active" id="reach-all" onclick="setReachMode('all')">عرض الكل</button>
+      <button class="reach-btn" id="reach-connected" onclick="setReachMode('connected')">المسار المتصل مباشر</button>
+      <button class="reach-btn" id="reach-upstream" onclick="setReachMode('upstream')">المصادر المغذية (Upstream)</button>
+      <button class="reach-btn" id="reach-downstream" onclick="setReachMode('downstream')">الأثر اللاحق (Downstream)</button>
+    </div>
+
+    <div class="reach-group">
+      <button class="reach-btn" onclick="adjustZoom(-0.1)" title="تصغير (-)">−</button>
+      <span class="mono" style="font-size:12px; min-width:48px; text-align:center;" id="zoom-Indicator">100%</span>
+      <button class="reach-btn" onclick="adjustZoom(0.1)" title="تكبير (+)">+</button>
+      <button class="reach-btn" onclick="resetView()" title="إعادة ضبط العرض (0)">إعادة ضبط</button>
+    </div>
+  </div>
+
+  <!-- Main Workspace -->
+  <main class="workspace">
+    <!-- Left/Center Interactive Canvas -->
+    <section class="stage-wrapper">
+      <div class="stage-header">
+        <div>
+          <h1 class="stage-title" id="stage-title">01. دورة حياة المريض الكاملة (Patient Journey Workflow)</h1>
+          <p class="stage-desc" id="stage-desc">
+            انقر على أي خطوة في الخريطة لإضاءة الجداول والملفات البرمجية المرتبطة بها وتتبع مسار البيانات قبلها (Upstream) وبعدها (Downstream).
+          </p>
+        </div>
+        <div class="stage-meta">
+          <div>الإصدار المعماري: <span class="mono">v2.6 RBAC</span></div>
+          <div>حالة الفحص الهندسي: <span style="color:var(--accent-emerald);font-weight:700;">مُعتمد ومُحدّث</span></div>
+        </div>
+      </div>
+
+      <div id="explainer-banner" style="display:none;"></div>
+      <div id="lanes-root" class="lanes-container"></div>
+    </section>
+
+    <!-- Right Source & Schema Inspector -->
+    <aside class="inspector" id="inspector-panel">
+      <div>
+        <div class="inspector-label" id="insp-kicker">تفاصيل العنصر المحدد</div>
+        <h2 class="inspector-title" id="insp-title">اختر أي عنصر من الخريطة</h2>
+        <p class="inspector-desc" id="insp-desc">
+          انقر على أي بطاقة داخل المخطط لعرض الملف البرمجي الفعلي، الدوال المسؤولة، الحقول المحفوظة في Firestore، وقواعد الأمان والصلاحيات المطبقة عليها.
+        </p>
+      </div>
+
+      <div class="inspector-section">
+        <div class="inspector-label">الملف البرمجي والدالة (Source Evidence)</div>
+        <div class="field-item">
+          <span>المسار البرمجي</span>
+          <span class="mono" id="insp-file" style="color:var(--accent-cyan);">src/App.tsx</span>
+        </div>
+        <div class="field-item" style="margin-top:6px;">
+          <span>الدالة / المعاملة</span>
+          <span class="mono" id="insp-fn">completeVisitTransaction</span>
+        </div>
+      </div>
+
+      <div class="inspector-section">
+        <div class="inspector-label">الحقول والقيود الأساسية (Schema & Rules)</div>
+        <ul class="field-list" id="insp-fields"></ul>
+      </div>
+
+      <div class="inspector-section">
+        <div class="inspector-label">المصادر المغذية (Upstream — يعتمد على)</div>
+        <div id="insp-upstream"></div>
+      </div>
+
+      <div class="inspector-section">
+        <div class="inspector-label">الأثر اللاحق (Downstream — يغذي ويحدّث)</div>
+        <div id="insp-downstream"></div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    // =========================================================================
+    // ARCHIFY TYPED IR DATA MODEL FOR SOLI MEDICAL
+    // =========================================================================
+    const VIEWS = {
+      workflow: {
+        title: '01. دورة حياة المريض الكاملة (Patient Journey Workflow)',
+        desc: 'تتبع رحلة المريض من الحجز المسبق أو الحضور المباشر حتى إنهاء الكشف السريري وطباعة الروشتة وتحديث الخزينة.',
+        lanes: [
+          {
+            id: 'lane-booking',
+            title: 'المرحلة 1: الحجز المسبق والاستقبال (Booking & Intake)',
+            kicker: 'الاستقبال أو صفحة الهبوط العامة',
+            nodes: [
+              {
+                id: 'wf-landing',
+                kicker: 'Public / Reception · الخطوة 01',
+                title: 'حجز موعد مسبق أو عبر صفحة الهبوط',
+                summary: 'حجز المريض عبر صفحة الهبوط العامة (Cloud Function مع حماية Rate Limit) أو من شاشة المواعيد بالاستقبال.',
+                file: 'functions/src/index.ts · src/App.tsx',
+                fn: 'submitPublicBooking / createAppointmentTransaction',
+                fields: [
+                  ['المجموعة', 'appointments + patients'],
+                  ['الحالة الأولية', 'SCHEDULED'],
+                  ['مطابقة المريض', 'findMatchingPatient (تطبيع الاسم والهاتف)'],
+                  ['حماية التكرار', 'inFlightActionsRef + Rate Limit']
+                ],
+                upstream: [],
+                downstream: ['wf-checkin', 'wf-intake']
+              },
+              {
+                id: 'wf-checkin',
+                kicker: 'Receptionist · الخطوة 02',
+                title: 'تأكيد حضور موعد مجدول (Check-In)',
+                summary: 'تحويل الموعد المجدول إلى زيارة نشطة في الطابور مع إصدار فاتورة وإيصال دفع في معاملة ذرية واحدة.',
+                file: 'src/services/firestoreWorkflows.ts',
+                fn: 'checkInAppointmentTransaction()',
+                fields: [
+                  ['تحديث الموعد', 'status: ARRIVED'],
+                  ['إنشاء الزيارة', 'visits (status: WAITING)'],
+                  ['المالية', 'invoices + payments (CASH / CARD / TRANSFER)'],
+                  ['المفتاح اليومي', 'dayKey: YYYY-MM-DD']
+                ],
+                upstream: ['wf-landing'],
+                downstream: ['wf-queue', 'wf-billing']
+              },
+              {
+                id: 'wf-intake',
+                kicker: 'Receptionist · الخطوة 03',
+                title: 'تسجيل كشف مباشر (Walk-In Intake)',
+                summary: 'تسجيل مريض جديد أو حالي مباشرة إلى طابور الانتظار مع الشكوى المبدئية والأمراض المزمنة ورسوم الكشف.',
+                file: 'src/components/screens/NewVisitScreen.tsx',
+                fn: 'registerWalkInTransaction()',
+                fields: [
+                  ['الصلاحية المطلوبة', 'queue.add + patients.create'],
+                  ['مطابقة ذكية', 'منع تكرار ملف المريض بالاسم أو الهاتف'],
+                  ['طرق الدفع', 'نقدي (CASH) · فيزا (CARD) · إنستاباي (TRANSFER)'],
+                  ['قفل التزامن', 'inFlightActionsRef']
+                ],
+                upstream: ['wf-landing'],
+                downstream: ['wf-queue', 'wf-billing']
+              }
+            ]
+          },
+          {
+            id: 'lane-queue',
+            title: 'المرحلة 2: صالة الانتظار والنداء اللحظي (Waiting Queue & Live Alerts)',
+            kicker: 'مزامنة فورية بين السكرتارية والطبيب',
+            nodes: [
+              {
+                id: 'wf-queue',
+                kicker: 'Real-time Queue · الخطوة 04',
+                title: 'طابور الانتظار وإدخال العلامات الحيوية',
+                summary: 'عرض المرضى المنتظرين مرتبين برقم التذكرة مع إمكانية تسجيل العلامات الحيوية (الضغط، النبض، السكر، الحرارة، الوزن) قبل الدخول.',
+                file: 'src/components/screens/WaitingQueueScreen.tsx',
+                fn: 'subscribeToTodayVisits / saveVisitVitals',
+                fields: [
+                  ['حالة الزيارة', 'WAITING'],
+                  ['العلامات الحيوية', 'vitalSigns (BP, Pulse, Temp, RBS, SpO2, BMI)'],
+                  ['نطاق الجلب', 'زيارات اليوم فقط عند تفعيل READ_OPT'],
+                  ['التنبيهات', 'إشعار تسجيل زيارة جديدة (new-{visitId})']
+                ],
+                upstream: ['wf-checkin', 'wf-intake'],
+                downstream: ['wf-call']
+              },
+              {
+                id: 'wf-call',
+                kicker: 'Doctor / Reception · الخطوة 05',
+                title: 'نداء المريض وبدء الكشف (Call Patient)',
+                summary: 'إطلاق نداء صوتي وبصري متزامن عبر الأجهزة وتحويل حالة الزيارة إلى جارية (IN_PROGRESS) مع تسجيل معرف الطبيب الفعلي.',
+                file: 'src/App.tsx · src/services/firestoreWorkflows.ts',
+                fn: 'handleCallPatient / startVisitTransaction',
+                fields: [
+                  ['تحويل الحالة', 'WAITING -> IN_PROGRESS'],
+                  ['معرف الطبيب', 'userProfile.username || userProfile.uid'],
+                  ['معرف التنبيه الحتمي', 'call-{visitId} (منع التكرار)'],
+                  ['قناة البث', 'Firestore clinicAlerts/latest + BroadcastChannel']
+                ],
+                upstream: ['wf-queue'],
+                downstream: ['wf-exam']
+              },
+              {
+                id: 'wf-billing',
+                kicker: 'Finance Stream · الخطوة 06',
+                title: 'إثبات الفاتورة وحركة الخزينة اليومية',
+                summary: 'تسجيل الفاتورة والإيصال المالي لحظياً في سجل الواردات مع دعم البحث والترقيم وتقفيل الوردية.',
+                file: 'src/components/screens/FinanceScreen.tsx',
+                fn: 'handleAddTransaction / fetchPaymentsPage',
+                fields: [
+                  ['الجداول', 'invoices + payments'],
+                  ['طرق الدفع المعتمدة', 'CASH · CARD · TRANSFER (إنستاباي)'],
+                  ['استعلام الإجمالي', 'getAggregateFromServer(sum(amount))'],
+                  ['ربط الزيارة', 'visitId + patientId + dayKey']
+                ],
+                upstream: ['wf-checkin', 'wf-intake'],
+                downstream: ['wf-reports']
+              }
+            ]
+          },
+          {
+            id: 'lane-clinical',
+            title: 'المرحلة 3: غرفة الكشف والملف الطبي والروشتة (Clinical Examination & EMR)',
+            kicker: 'خاص بالطبيب ومدير النظام',
+            nodes: [
+              {
+                id: 'wf-exam',
+                kicker: 'Clinical Room · الخطوة 07',
+                title: 'الفحص السريري والتشخيص الإلزامي',
+                summary: 'تحرير الشكوى والفحص السريري الفعلي واشتراط إدخال تشخيص طبي واحد على الأقل قبل السماح بإنهاء الزيارة.',
+                file: 'src/components/screens/ExaminationScreen.tsx',
+                fn: 'handleFinish -> onFinishExam',
+                fields: [
+                  ['التحقق الإلزامي', 'patientDiagnoses.length >= 1'],
+                  ['نزاهة البيانات', 'حفظ ما كتبه الطبيب فعلياً دون نصوص افتراضية'],
+                  ['التاريخ المرضي للمريض', 'usePatientHistory (جلب عند الطلب)'],
+                  ['الصلاحية الأمنية', 'clinical.complete (طبيب أو مدير فقط)']
+                ],
+                upstream: ['wf-call'],
+                downstream: ['wf-rx', 'wf-emr']
+              },
+              {
+                id: 'wf-rx',
+                kicker: 'Prescription & Orders · الخطوة 08',
+                title: 'إصدار الروشتة والتحاليل والأشعة والمتابعة',
+                summary: 'حفظ الأدوية بجرعاتها وتعليماتها الفعلية، طلبات التحاليل والأشعة، وتحديد موعد الاستشارة المجانية القادمة.',
+                file: 'src/utils/printPrescription.ts · src/App.tsx',
+                fn: 'completeVisitTransaction / printPrescriptionDocument',
+                fields: [
+                  ['الجداول المحدثة ذرياً', 'visits + prescriptions + labOrders + radiologyOrders + followUps'],
+                  ['الطباعة والتصدير', 'طباعة A5/A4 مخصصة + تصدير PDF + QR واتساب'],
+                  ['إشعار الانتهاء', 'finish-{visitId} + إزالة تنبيهات الانتظار السابقة']
+                ],
+                upstream: ['wf-exam'],
+                downstream: ['wf-emr', 'wf-reports']
+              },
+              {
+                id: 'wf-emr',
+                kicker: 'Patient Dossier · الخطوة 09',
+                title: 'تحديث الملف الطبي الموحد (EMR)',
+                summary: 'اعتماد ظهور المريض في سجل ملفات المرضى الدائم مع تحديث عدد الزيارات والتشخيص الأخير وتاريخ آخر زيارة.',
+                file: 'src/components/screens/PatientsScreen.tsx',
+                fn: 'completeVisitTransaction -> hasClinicalFile: true',
+                fields: [
+                  ['شرط الظهور في الملفات', 'hasClinicalFile === true (بعد إتمام الكشف)'],
+                  ['العدادات المحدثة', 'visitsCount + lastVisitAt + lastDiagnosis'],
+                  ['إبطال الكاش اللحظي', 'invalidatePatientHistory(patientId)']
+                ],
+                upstream: ['wf-exam', 'wf-rx'],
+                downstream: ['wf-reports']
+              },
+              {
+                id: 'wf-reports',
+                kicker: 'Analytics · الخطوة 10',
+                title: 'التقارير الإكلينيكية والمالية',
+                summary: 'تحليل إيرادات الخزينة، المصروفات، أكثر التشخيصات والأدوية استخداماً، وتوزيع المرضى.',
+                file: 'src/components/screens/ReportsScreen.tsx',
+                fn: 'ReportsScreen Analytics Engine',
+                fields: [
+                  ['المؤشرات المالية', 'صافي الدخل = المدفوعات - المصروفات'],
+                  ['المؤشرات الطبية', 'معدلات الكشف والاستشارة والتشخيصات'],
+                  ['الصلاحيات', 'reports.view / finance.reports']
+                ],
+                upstream: ['wf-billing', 'wf-rx', 'wf-emr'],
+                downstream: []
+              }
+            ]
+          }
+        ]
+      },
+      architecture: {
+        title: '02. البنية المعمارية وطبقات الأمان (System Architecture & Security Boundaries)',
+        desc: 'يوضح هذا المنظور كيف تتواصل واجهة React مع المعاملات الذرية في Firestore ووظائف السحابة وقنوات التنبيه اللحظية.',
+        lanes: [
+          {
+            id: 'arch-client',
+            title: 'طبقة العرض وتجربة المستخدم (Client Layer — React 19 + Vite + PWA)',
+            kicker: 'تعمل في المتصفح مع تحميل كسول (React.lazy) للشاشات الثقيلة',
+            nodes: [
+              {
+                id: 'ar-ui',
+                kicker: 'UI Shell · App.tsx',
+                title: 'نواة الواجهة وتوجيه الشاشات (App Shell)',
+                summary: 'إدارة الحالة المشتقة، الشريط الجانبي، البحث الشامل (Ctrl+K)، وتحميل الشاشات عند الطلب لتسريع الفتح الأول.',
+                file: 'src/App.tsx',
+                fn: 'AuthenticatedClinicApp',
+                fields: [
+                  ['التحميل الكسول', 'React.lazy لـ 9 شاشات رئيسية'],
+                  ['تأجيل الكتالوجات', 'تأجيل 9 اشتراكات ثانوية 250ms بعد الرسم الأول'],
+                  ['اللغات والمظهر', 'RTL/LTR + Dark/Light Theme']
+                ],
+                upstream: ['ar-auth', 'ar-sync'],
+                downstream: ['ar-workflows', 'ar-paged']
+              },
+              {
+                id: 'ar-auth',
+                kicker: 'Authentication & RBAC',
+                title: 'نظام الهوية والصلاحيات (AuthContext)',
+                summary: 'مصادقة Firebase Auth مع جلب الدور الفعلي من السحابة وتطبيق مصفوفة الصلاحيات لـ 3 أدوار.',
+                file: 'src/context/AuthContext.tsx',
+                fn: 'usePermissions / assertPermission',
+                fields: [
+                  ['الأدوار المعتمدة', 'admin · doctor · receptionist'],
+                  ['تخزين الجلسة', 'تخزين الملف العام فقط دون كلمات مرور'],
+                  ['حراسة المكونات', 'PermissionGate + assertPermission']
+                ],
+                upstream: ['ar-functions', 'ar-rules'],
+                downstream: ['ar-ui', 'ar-workflows']
+              },
+              {
+                id: 'ar-sync',
+                kicker: 'Multi-Tab & Multi-Device Sync',
+                title: 'محرك التنبيهات وحالة الطبيب اللحظية',
+                summary: 'مزامنة النداء الصوتي وحالة استراحة الطبيب عبر التبويبات والأجهزة مع منع تكرار التنبيهات.',
+                file: 'src/App.tsx · src/utils/alertManager.ts',
+                fn: 'registerAlert / triggerDoctorStatusAlert',
+                fields: [
+                  ['منع التكرار', 'recentAlertIdsRef (نافذة 60 ثانية) + معرفات حتمية'],
+                  ['مزامنة التبويبات', 'BroadcastChannel + localStorage event'],
+                  ['مزامنة الأجهزة', 'settings/clinicStatus_live + settings/clinicAlerts_latest']
+                ],
+                upstream: ['ar-firestore'],
+                downstream: ['ar-ui']
+              }
+            ]
+          },
+          {
+            id: 'arch-service',
+            title: 'طبقة الخدمات والمعاملات الذرية (Service & Optimization Layer)',
+            kicker: 'ضمان تكامل البيانات وتقليل استهلاك قراءات Firestore',
+            nodes: [
+              {
+                id: 'ar-workflows',
+                kicker: 'Atomic Transactions',
+                title: 'معاملات العيادة الذرية (firestoreWorkflows)',
+                summary: 'تنفيذ الحجز، تأكيد الحضور، الكشف المباشر، وإنهاء الزيارة داخل runTransaction لضمان عدم ضياع أو تضارب أي سجل.',
+                file: 'src/services/firestoreWorkflows.ts',
+                fn: 'runTransaction(db, ...)',
+                fields: [
+                  ['تسجيل كشف مباشر', 'registerWalkInTransaction (مريض + فاتورة + دفعة + زيارة)'],
+                  ['تأكيد حضور موعد', 'checkInAppointmentTransaction'],
+                  ['إنهاء الكشف الطبي', 'completeVisitTransaction (زيارة + روشتة + تحاليل + أشعة + متابعة)']
+                ],
+                upstream: ['ar-ui', 'ar-auth'],
+                downstream: ['ar-firestore']
+              },
+              {
+                id: 'ar-paged',
+                kicker: 'Read Optimization (READ_OPT)',
+                title: 'محرك توفير القراءات والترقيم (Pagination & On-Demand)',
+                summary: 'قصر المستمعات الحية على بيانات اليوم فقط وجلب التاريخ المرضي والفواتير السابقة بالترقيم عند الطلب.',
+                file: 'src/hooks/usePatientHistory.ts · src/services/financePaged.ts',
+                fn: 'usePatientHistory / fetchPaymentsPage / fetchTotal',
+                fields: [
+                  ['مفتاح اليوم', 'dayKey (YYYY-MM-DD) لفلترة زيارات وفواتير اليوم'],
+                  ['كاش التاريخ المرضي', 'كاش في الذاكرة لمدة 5 دقائق مع إبطال فوري عند التحديث'],
+                  ['تجميع السيرفر', 'getAggregateFromServer لحساب إجمالي الخزينة بدون قراءة كل الوثائق']
+                ],
+                upstream: ['ar-ui'],
+                downstream: ['ar-firestore']
+              }
+            ]
+          },
+          {
+            id: 'arch-backend',
+            title: 'طبقة السحابة وقواعد الأمان (Cloud Firestore & Firebase Functions)',
+            kicker: 'حماية البيانات على مستوى السيرفر',
+            nodes: [
+              {
+                id: 'ar-rules',
+                kicker: 'Security Rules · firestore.rules',
+                title: 'قواعد أمان Firestore المبنية على الأدوار',
+                summary: 'فحص الصلاحيات على السيرفر عبر قراءة دور المستخدم من userRoles/$(request.auth.uid) ومنع التلاعب بالأدوار.',
+                file: 'firestore.rules',
+                fn: 'isAdmin() / isDoctor() / isReceptionist()',
+                fields: [
+                  ['البيانات السريرية', 'الإنشاء والتعديل محصور بالطبيب والمدير فقط'],
+                  ['حماية الأدوار', 'userRoles و usersPublic مغلقة للكتابة إلا للمدير'],
+                  ['الحجز العام', 'مغلق من العميل المباشر ويتم حصراً عبر Cloud Function']
+                ],
+                upstream: [],
+                downstream: ['ar-auth', 'ar-firestore']
+              },
+              {
+                id: 'ar-functions',
+                kicker: 'Cloud Functions · Node 22',
+                title: 'وظائف السحابة الخلفية (Admin & Public Booking)',
+                summary: 'إنشاء وتعديل حسابات الموظفين بواسطة Admin SDK، واستقبال الحجوزات العامة مع فحص Rate Limit.',
+                file: 'functions/src/index.ts',
+                fn: 'adminManageUser / submitPublicBooking / bootstrapInitialUsers',
+                fields: [
+                  ['إدارة المستخدمين', 'إنشاء حساب Auth + userRoles + usersPublic ذرياً'],
+                  ['حماية الحجز العام', 'Rate Limit لكل IP لمنع الإغراق العشوائي'],
+                  ['تهيئة الحسابات', 'bootstrapInitialUsers للمدير والطبيب والسكرتارية']
+                ],
+                upstream: [],
+                downstream: ['ar-auth', 'ar-firestore']
+              },
+              {
+                id: 'ar-firestore',
+                kicker: 'Database · 16 Collections',
+                title: 'قاعدة البيانات السحابية (Cloud Firestore)',
+                summary: 'تخزين المجموعات الـ 16 المهيكلة مع فهارس مركبة (firestore.indexes.json) لدعم الاستعلامات السريعة.',
+                file: 'firestore.indexes.json · src/types/database.ts',
+                fn: 'Firestore Realtime & Indexed Queries',
+                fields: [
+                  ['البيانات الأساسية', 'patients, visits, appointments, prescriptions'],
+                  ['المالية', 'invoices, payments, services, expenseCategories'],
+                  ['الأدلة والإعدادات', 'medications, labTests, radiologyTypes, diagnoses, symptoms, chronicDiseases']
+                ],
+                upstream: ['ar-workflows', 'ar-paged', 'ar-rules', 'ar-functions'],
+                downstream: ['ar-sync']
+              }
+            ]
+          }
+        ]
+      },
+      erd: {
+        title: '03. مخطط علاقات قاعدة البيانات (Firestore 16 Collections ERD)',
+        desc: 'انقر على أي جدول (Collection) لرؤية مفاتيح الربط (Foreign Keys) والجداول التي تغذيه أو تعتمد عليه.',
+        lanes: [
+          {
+            id: 'erd-core',
+            title: 'المجموعات السريرية الأساسية (Core Clinical Collections)',
+            kicker: 'مرتبطة عبر patientId و visitId',
+            nodes: [
+              {
+                id: 'col-patients',
+                kicker: 'Collection 01 · PK: patientId',
+                title: 'patients (ملفات المرضى)',
+                summary: 'السجل الرئيسي لكل مريض؛ يظهر في شاشة ملفات المرضى بعد إتمام أول كشف طبي (hasClinicalFile: true).',
+                file: 'src/services/repositories/patientsRepo.ts',
+                fn: 'patients/{patientId}',
+                fields: [
+                  ['PK', 'patientId (string)'],
+                  ['حقول أساسية', 'fullName, phone, fileNumber, medicalCode, gender, dateOfBirth'],
+                  ['حقول سريرية', 'chronicDiseases[], allergies[], bloodType, hasClinicalFile'],
+                  ['مؤشرات سريعة', 'visitsCount, lastVisitAt, lastDiagnosis']
+                ],
+                upstream: [],
+                downstream: ['col-visits', 'col-appointments', 'col-invoices', 'col-payments', 'col-prescriptions', 'col-labs', 'col-rads', 'col-followups']
+              },
+              {
+                id: 'col-visits',
+                kicker: 'Collection 02 · PK: visitId',
+                title: 'visits (الزيارات وطابور الانتظار)',
+                summary: 'يمثل تذكرة الانتظار والكشف الإكلينيكي والعلامات الحيوية والتشخيص لكل زيارة.',
+                file: 'src/services/repositories/visitsRepo.ts',
+                fn: 'visits/{visitId}',
+                fields: [
+                  ['PK / FK', 'visitId · FK: patientId, doctorId, appointmentId'],
+                  ['حالة الطابور', 'status (WAITING | IN_PROGRESS | COMPLETED | CANCELLED)'],
+                  ['البيانات الطبية', 'clinicalData (chiefComplaint, examination, diagnosis[], treatment)'],
+                  ['العلامات والمفتاح', 'vitalSigns{} · queueNumber · dayKey (YYYY-MM-DD)']
+                ],
+                upstream: ['col-patients', 'col-appointments'],
+                downstream: ['col-prescriptions', 'col-labs', 'col-rads', 'col-followups', 'col-invoices']
+              },
+              {
+                id: 'col-appointments',
+                kicker: 'Collection 03 · PK: appointmentId',
+                title: 'appointments (المواعيد والحجوزات)',
+                summary: 'جدولة المواعيد المسبقة وحجوزات صفحة الهبوط مع تتبع حالة الحضور (ARRIVED).',
+                file: 'src/services/repositories/appointmentsRepo.ts',
+                fn: 'appointments/{appointmentId}',
+                fields: [
+                  ['PK / FK', 'appointmentId · FK: patientId, clinicLocationId'],
+                  ['التوقيت', 'scheduledDate (YYYY-MM-DD), scheduledTime'],
+                  ['الحالة', 'SCHEDULED | ARRIVED | COMPLETED | CANCELLED']
+                ],
+                upstream: ['col-patients'],
+                downstream: ['col-visits']
+              },
+              {
+                id: 'col-prescriptions',
+                kicker: 'Collection 04 · PK: prescriptionId',
+                title: 'prescriptions (الروشتات الطبية)',
+                summary: 'نسخة موثقة من الأدوية الموصوفة وجرعاتها وتعليماتها الفعلية لكل زيارة مكتملة.',
+                file: 'src/services/repositories/clinicalRepos.ts',
+                fn: 'prescriptions/{prescriptionId}',
+                fields: [
+                  ['PK / FK', 'prescriptionId · FK: visitId, patientId, doctorId'],
+                  ['الأدوية', 'items[] (name, strength, form, dose, frequency, duration, instructions)'],
+                  ['إرشادات الطبيب', 'notes (النصائح والإرشادات العامة)']
+                ],
+                upstream: ['col-patients', 'col-visits', 'col-catalogs'],
+                downstream: []
+              },
+              {
+                id: 'col-labs',
+                kicker: 'Collection 05 · PK: labOrderId',
+                title: 'labOrders (طلبات ونتائج التحاليل)',
+                summary: 'طلبات التحاليل المعملية المرتبطة بالزيارة ونتائجها الرقمية أو النصية.',
+                file: 'src/services/repositories/clinicalRepos.ts',
+                fn: 'labOrders/{labOrderId}',
+                fields: [
+                  ['PK / FK', 'labOrderId · FK: visitId, patientId, testId'],
+                  ['الحالة والنتيجة', 'status (ORDERED | RESULT | REPORT) · result · notes']
+                ],
+                upstream: ['col-patients', 'col-visits', 'col-catalogs'],
+                downstream: []
+              },
+              {
+                id: 'col-rads',
+                kicker: 'Collection 06 · PK: radiologyOrderId',
+                title: 'radiologyOrders (طلبات وتقارير الأشعة)',
+                summary: 'طلبات الأشعة والتصوير الطبي وملخص النتائج والتقارير المفصلة.',
+                file: 'src/services/repositories/clinicalRepos.ts',
+                fn: 'radiologyOrders/{radiologyOrderId}',
+                fields: [
+                  ['PK / FK', 'radiologyOrderId · FK: visitId, patientId, radiologyTypeId'],
+                  ['الحالة والتقرير', 'status (ORDERED | RESULT | REPORT) · result · report']
+                ],
+                upstream: ['col-patients', 'col-visits', 'col-catalogs'],
+                downstream: []
+              },
+              {
+                id: 'col-followups',
+                kicker: 'Collection 07 · PK: followUpId',
+                title: 'followUps (المتابعات والاستشارات القادمة)',
+                summary: 'مواعيد المتابعة التي يحددها الطبيب أثناء الكشف مع تتبع حالة التواصل والحضور.',
+                file: 'src/services/repositories/clinicalRepos.ts',
+                fn: 'followUps/{followUpId}',
+                fields: [
+                  ['PK / FK', 'followUpId · FK: visitId, patientId, doctorId'],
+                  ['الجدولة', 'scheduledDate · isFree · status (PENDING | CONTACTED | COMPLETED)']
+                ],
+                upstream: ['col-patients', 'col-visits'],
+                downstream: []
+              }
+            ]
+          },
+          {
+            id: 'erd-finance',
+            title: 'مجموعات المالية والأدلة والأمان (Finance, Catalogs & RBAC Collections)',
+            kicker: 'تدعم الفلترة بـ dayKey والتحكم بالصلاحيات',
+            nodes: [
+              {
+                id: 'col-invoices',
+                kicker: 'Collection 08 · PK: invoiceId',
+                title: 'invoices (الفواتير الطبية)',
+                summary: 'فواتير الكشوفات والخدمات الطبية شاملة الإجمالي والخصم والمبلغ المدفوع والمتبقي.',
+                file: 'src/services/repositories/billingRepos.ts',
+                fn: 'invoices/{invoiceId}',
+                fields: [
+                  ['PK / FK', 'invoiceId · FK: patientId, visitId'],
+                  ['القيم المالية', 'subtotal, discount, total, paidAmount, remainingAmount'],
+                  ['الحالة والمفتاح', 'status (PAID | UNPAID | PARTIAL) · dayKey']
+                ],
+                upstream: ['col-patients', 'col-visits'],
+                downstream: ['col-payments']
+              },
+              {
+                id: 'col-payments',
+                kicker: 'Collection 09 · PK: paymentId',
+                title: 'payments (إيصالات الدفع والواردات)',
+                summary: 'حركات التحصيل الفعلية في الخزينة (نقدي، فيزا، إنستاباي) مع رقم الإيصال.',
+                file: 'src/services/financePaged.ts',
+                fn: 'payments/{paymentId}',
+                fields: [
+                  ['PK / FK', 'paymentId · FK: invoiceId, patientId, visitId'],
+                  ['طريقة الدفع', 'method (CASH | CARD | TRANSFER) · amount'],
+                  ['التتبع', 'receiptNumber · receivedBy · paidAt · dayKey']
+                ],
+                upstream: ['col-patients', 'col-invoices'],
+                downstream: []
+              },
+              {
+                id: 'col-catalogs',
+                kicker: 'Collections 10–15 · Medical Catalogs',
+                title: 'الأدلة الطبية الـ 6 (Medications, Labs, Radiology, Diagnoses, Symptoms, Chronic)',
+                summary: 'قواميس العيادة القابلة للتخصيص للأدوية، التحاليل، الأشعة، التشخيصات، الأعراض، والأمراض المزمنة.',
+                file: 'src/services/repositories/catalogRepos.ts',
+                fn: 'medications / labTests / radiologyTypes / diagnoses / symptoms / chronicDiseases',
+                fields: [
+                  ['إدارة القواميس', 'قراءة لجميع الموظفين · تعديل للطبيب والمدير'],
+                  ['الأداء', 'تُجلب بعد 250ms من فتح النظام لعدم إبطاء الشاشة الرئيسية']
+                ],
+                upstream: [],
+                downstream: ['col-prescriptions', 'col-labs', 'col-rads']
+              },
+              {
+                id: 'col-security',
+                kicker: 'Collection 16 · RBAC & Settings',
+                title: 'userRoles & usersPublic & settings (الأمان والإعدادات)',
+                summary: 'ربط كل حساب Firebase Auth بدوره الفعلي، وإعدادات الروشتة وحالة الطبيب الحية.',
+                file: 'firestore.rules · src/services/repositories/settingsRepo.ts',
+                fn: 'userRoles/{uid} · usersPublic/{username} · settings/{docId}',
+                fields: [
+                  ['userRoles/{uid}', 'role (admin | doctor | receptionist) · username'],
+                  ['usersPublic/{username}', 'email · displayName · role · isActive'],
+                  ['settings/*', 'prescription · clinicStatus_live · clinicAlerts_latest']
+                ],
+                upstream: [],
+                downstream: []
+              }
+            ]
+          }
+        ]
+      },
+      explainer: {
+        title: '04. الدليل التشغيلي التفاعلي (Role-Based Interactive Explainer)',
+        desc: 'الخلاصة أولاً: اضغط على أي مهمة تشغيلية أدناه للانتقال الفوري إلى المخطط وإضاءة العناصر المسؤولة عنها.',
+        lanes: []
+      }
+    };
+
+    const EXPLAINER_CARDS = [
+      {
+        role: 'الطبيب (Doctor)',
+        badgeColor: 'var(--accent-cyan)',
+        conclusion: 'يدير الطبيب غرفة الكشف، استدعاء المريض التالي، كتابة التشخيص الإلزامي، إصدار الروشتة والتحاليل، وتحديد المتابعة.',
+        steps: [
+          { label: '1. نداء المريض التالي من الطابور وبدء الزيارة', view: 'workflow', targetId: 'wf-call' },
+          { label: '2. إدخال الفحص السريري والتشخيص الطبي الإلزامي', view: 'workflow', targetId: 'wf-exam' },
+          { label: '3. كتابة الروشتة وطباعتها أو تصديرها PDF', view: 'workflow', targetId: 'wf-rx' },
+          { label: '4. تفعيل وضع الاستراحة ومزامنته مع السكرتارية', view: 'architecture', targetId: 'ar-sync' }
+        ]
+      },
+      {
+        role: 'موظف الاستقبال / السكرتارية (Receptionist)',
+        badgeColor: 'var(--accent-emerald)',
+        conclusion: 'يتولى الاستقبال تسجيل المرضى الجدد، تأكيد حضور المواعيد، تحصيل الفواتير (نقدي/كارت/إنستاباي)، وإدخال العلامات الحيوية.',
+        steps: [
+          { label: '1. تسجيل مريض جديد أو حجز مباشر (Walk-In)', view: 'workflow', targetId: 'wf-intake' },
+          { label: '2. تأكيد حضور موعد مسبق وتحويله للانتظار', view: 'workflow', targetId: 'wf-checkin' },
+          { label: '3. تسجيل العلامات الحيوية للمريض في صالة الانتظار', view: 'workflow', targetId: 'wf-queue' },
+          { label: '4. إصدار الفواتير ومتابعة خزينة اليوم والمنصرف', view: 'workflow', targetId: 'wf-billing' }
+        ]
+      },
+      {
+        role: 'مدير النظام والمراجع التقني (Admin & Auditor)',
+        badgeColor: 'var(--accent-amber)',
+        conclusion: 'يتحكم المدير في حسابات الموظفين وصلاحياتهم، الفروع، النسخ الاحتياطي، وضع توفير القراءات (READ_OPT)، والتقارير الشاملة.',
+        steps: [
+          { label: '1. كيف تضمن المعاملات الذرية عدم ضياع أو تكرار البيانات؟', view: 'architecture', targetId: 'ar-workflows' },
+          { label: '2. كيف يوفر نظام READ_OPT و dayKey قراءات Firestore؟', view: 'architecture', targetId: 'ar-paged' },
+          { label: '3. كيف تحمي قواعد firestore.rules السجلات الطبية والأدوار؟', view: 'architecture', targetId: 'ar-rules' },
+          { label: '4. استكشاف هيكل جدول الزيارات (visits) وعلاقاته', view: 'erd', targetId: 'col-visits' }
+        ]
+      }
+    ];
+
+    // State
+    let currentView = 'workflow';
+    let selectedNodeId = 'wf-exam';
+    let reachMode = 'all'; // 'all' | 'connected' | 'upstream' | 'downstream'
+    let searchQuery = '';
+    let currentZoom = 1;
+
+    function getAllNodesInCurrentView() {
+      const view = VIEWS[currentView];
+      if (!view || !view.lanes) return [];
+      const list = [];
+      view.lanes.forEach(lane => {
+        lane.nodes.forEach(n => list.push(n));
+      });
+      return list;
+    }
+
+    function findNodeById(id) {
+      for (const key of Object.keys(VIEWS)) {
+        for (const lane of VIEWS[key].lanes) {
+          const found = lane.nodes.find(n => n.id === id);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    function switchView(viewName, focusNodeId) {
+      currentView = viewName;
+      document.querySelectorAll('.nav-tab').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = document.getElementById('tab-' + viewName);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const viewObj = VIEWS[viewName];
+      document.getElementById('stage-title').textContent = viewObj.title;
+      document.getElementById('stage-desc').textContent = viewObj.desc;
+
+      const nodes = getAllNodesInCurrentView();
+      if (focusNodeId) {
+        selectedNodeId = focusNodeId;
+      } else if (nodes.length > 0 && !nodes.some(n => n.id === selectedNodeId)) {
+        selectedNodeId = nodes[0].id;
+      }
+
+      renderStage();
+      renderInspector();
+    }
+
+    function setReachMode(mode) {
+      reachMode = mode;
+      document.querySelectorAll('.reach-btn').forEach(b => {
+        if (b.id && b.id.startsWith('reach-')) b.classList.remove('active');
+      });
+      const btn = document.getElementById('reach-' + mode);
+      if (btn) btn.classList.add('active');
+      renderStage();
+    }
+
+    function handleSearch(val) {
+      searchQuery = (val || '').trim().toLowerCase();
+      renderStage();
+    }
+
+    function adjustZoom(delta) {
+      currentZoom = Math.min(1.3, Math.max(0.75, +(currentZoom + delta).toFixed(2)));
+      document.getElementById('zoom-Indicator').textContent = Math.round(currentZoom * 100) + '%';
+      const root = document.getElementById('lanes-root');
+      if (root) root.style.transform = `scale(${currentZoom})`;
+    }
+
+    function resetView() {
+      currentZoom = 1;
+      searchQuery = '';
+      document.getElementById('search-input').value = '';
+      document.getElementById('zoom-Indicator').textContent = '100%';
+      const root = document.getElementById('lanes-root');
+      if (root) root.style.transform = 'scale(1)';
+      setReachMode('all');
+    }
+
+    function selectNode(nodeId) {
+      selectedNodeId = nodeId;
+      renderStage();
+      renderInspector();
+    }
+
+    function jumpFromExplainer(viewName, nodeId) {
+      switchView(viewName, nodeId);
+      setReachMode('connected');
+    }
+
+    function renderStage() {
+      const root = document.getElementById('lanes-root');
+      const explainerBanner = document.getElementById('explainer-banner');
+
+      if (currentView === 'explainer') {
+        root.innerHTML = '';
+        explainerBanner.style.display = 'block';
+        explainerBanner.innerHTML = `
+          <div class="explainer-grid">
+            ${EXPLAINER_CARDS.map(card => `
+              <div class="explainer-card">
+                <div style="font-size:12px;font-weight:700;color:${card.badgeColor};">${card.role}</div>
+                <div style="font-size:15px;font-weight:800;color:var(--text-primary);">الخلاصة التشغيلية</div>
+                <p style="font-size:13px;color:var(--text-secondary);">${card.conclusion}</p>
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+                  ${card.steps.map(st => `
+                    <button class="step-btn" onclick="jumpFromExplainer('${st.view}', '${st.targetId}')">
+                      <span>${st.label}</span>
+                      <span style="float:left;color:var(--accent-cyan);font-weight:700;">استكشاف المسار ←</span>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+        return;
+      }
+
+      explainerBanner.style.display = 'none';
+      const viewObj = VIEWS[currentView];
+      const activeNode = findNodeById(selectedNodeId);
+      const upstreamIds = new Set(activeNode ? activeNode.upstream : []);
+      const downstreamIds = new Set(activeNode ? activeNode.downstream : []);
+
+      root.innerHTML = viewObj.lanes.map(lane => {
+        const cardsHtml = lane.nodes.map(node => {
+          const isSelected = node.id === selectedNodeId;
+          const isUp = upstreamIds.has(node.id);
+          const isDown = downstreamIds.has(node.id);
+
+          const matchesSearch = !searchQuery ||
+            node.title.toLowerCase().includes(searchQuery) ||
+            node.summary.toLowerCase().includes(searchQuery) ||
+            node.file.toLowerCase().includes(searchQuery) ||
+            node.fn.toLowerCase().includes(searchQuery);
+
+          let dimmed = !matchesSearch;
+          if (matchesSearch && activeNode) {
+            if (reachMode === 'connected' && !isSelected && !isUp && !isDown) dimmed = true;
+            if (reachMode === 'upstream' && !isSelected && !isUp) dimmed = true;
+            if (reachMode === 'downstream' && !isSelected && !isDown) dimmed = true;
+          }
+
+          const stateClasses = [
+            'node-card',
+            isSelected ? 'selected' : '',
+            !isSelected && isUp ? 'upstream' : '',
+            !isSelected && isDown ? 'downstream' : '',
+            dimmed ? 'dimmed' : ''
+          ].filter(Boolean).join(' ');
+
+          let relationTag = 'انقر للفحص';
+          if (isSelected) relationTag = 'العنصر المحدد حالياً';
+          else if (isUp) relationTag = 'مصدر مغذٍ (Upstream)';
+          else if (isDown) relationTag = 'أثر لاحق (Downstream)';
+
+          return `
+            <div class="${stateClasses}" onclick="selectNode('${node.id}')">
+              <div class="node-kicker">
+                <span>${node.kicker}</span>
+                <span class="mono">${node.upstream.length}↑ · ${node.downstream.length}↓</span>
+              </div>
+              <div class="node-title">${node.title}</div>
+              <div class="node-summary">${node.summary}</div>
+              <div class="node-footer">
+                <span class="mono" style="font-size:11px;">${node.file.split('·')[0].trim()}</span>
+                <span>${relationTag}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div class="lane">
+            <div class="lane-header">
+              <div class="lane-title">${lane.title}</div>
+              <div class="lane-kicker">${lane.kicker}</div>
+            </div>
+            <div class="nodes-grid">${cardsHtml}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderInspector() {
+      const node = findNodeById(selectedNodeId);
+      if (!node) return;
+
+      document.getElementById('insp-kicker').textContent = node.kicker;
+      document.getElementById('insp-title').textContent = node.title;
+      document.getElementById('insp-desc').textContent = node.summary;
+      document.getElementById('insp-file').textContent = node.file;
+      document.getElementById('insp-fn').textContent = node.fn;
+
+      const fieldsEl = document.getElementById('insp-fields');
+      fieldsEl.innerHTML = (node.fields || []).map(([k, v]) => `
+        <li class="field-item">
+          <span style="color:var(--text-secondary);font-weight:600;">${k}</span>
+          <span class="mono" style="text-align:left;">${v}</span>
+        </li>
+      `).join('');
+
+      const upEl = document.getElementById('insp-upstream');
+      if (!node.upstream || node.upstream.length === 0) {
+        upEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">نقطة بداية (لا توجد مصادر سابقة)</div>';
+      } else {
+        upEl.innerHTML = node.upstream.map(uid => {
+          const target = findNodeById(uid);
+          if (!target) return '';
+          return `
+            <button class="relation-link" onclick="selectNode('${target.id}')">
+              <span>${target.title}</span>
+              <span style="color:var(--accent-amber);font-weight:700;">↑ مصدر</span>
+            </button>
+          `;
+        }).join('');
+      }
+
+      const downEl = document.getElementById('insp-downstream');
+      if (!node.downstream || node.downstream.length === 0) {
+        downEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">نقطة نهائية (تصب في التقارير/الأرشيف)</div>';
+      } else {
+        downEl.innerHTML = node.downstream.map(did => {
+          const target = findNodeById(did);
+          if (!target) return '';
+          return `
+            <button class="relation-link" onclick="selectNode('${target.id}')">
+              <span>${target.title}</span>
+              <span style="color:var(--accent-emerald);font-weight:700;">↓ يغذي</span>
+            </button>
+          `;
+        }).join('');
+      }
+    }
+
+    function toggleTheme() {
+      const root = document.documentElement;
+      const isDark = root.classList.toggle('dark');
+      document.getElementById('theme-label').textContent = isDark ? 'الوضع النهاري' : 'الوضع الليلي';
+    }
+
+    function downloadSelfHtml() {
+      const htmlContent = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'soli-medical-architecture.html';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    // Keyboard shortcuts (/ for search, T for theme, 0 for reset)
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') {
+        if (e.key === 'Escape') e.target.blur();
+        return;
+      }
+      if (e.key === '/') {
+        e.preventDefault();
+        document.getElementById('search-input').focus();
+      } else if (e.key === 't' || e.key === 'T') {
+        toggleTheme();
+      } else if (e.key === '0') {
+        resetView();
+      }
+    });
+
+    // Initial render
+    renderStage();
+    renderInspector();
+  </script>
+</body>
+</html>

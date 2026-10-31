@@ -1,0 +1,436 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System users including doctors, receptionists, and administrators",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["DOCTOR", "RECEPTIONIST", "ADMIN"] },
+        "active": { "type": "boolean" },
+        "preferredLanguage": { "type": "string", "enum": ["ar", "en"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "email", "role", "active"]
+    },
+    "DoctorProfile": {
+      "title": "DoctorProfile",
+      "description": "Main profile and credentials of the clinic doctor",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "specialtyAr": { "type": "string", "maxLength": 150 },
+        "specialtyEn": { "type": "string", "maxLength": 150 },
+        "degreesAr": { "type": "string", "maxLength": 250 },
+        "degreesEn": { "type": "string", "maxLength": 250 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "format": "email" },
+        "licenseNumber": { "type": "string", "maxLength": 50 },
+        "logoUrl": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "specialtyAr"]
+    },
+    "ClinicLocation": {
+      "title": "ClinicLocation",
+      "description": "Physical branch or practice location of the clinic",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 100 },
+        "nameEn": { "type": "string", "maxLength": 100 },
+        "addressAr": { "type": "string", "maxLength": 200 },
+        "addressEn": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "active"]
+    },
+    "Patient": {
+      "title": "Patient",
+      "description": "Master patient file. fullName is the only strictly required attribute.",
+      "type": "object",
+      "properties": {
+        "fullName": { "type": "string", "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "nationalId": { "type": "string", "maxLength": 30 },
+        "gender": { "type": "string", "enum": ["male", "female", "other"] },
+        "dateOfBirth": { "type": "string" },
+        "bloodType": { "type": "string", "maxLength": 10 },
+        "allergies": { "type": "array", "items": { "type": "string" } },
+        "chronicDiseases": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["fullName"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Future scheduled booking. Contains no payment, invoice, or visit references on creation.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "scheduledDate": { "type": "string" },
+        "scheduledTime": { "type": "string" },
+        "visitType": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["SCHEDULED", "ARRIVED", "CANCELLED", "NO_SHOW"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["patientId", "clinicLocationId", "scheduledDate", "scheduledTime", "status"]
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Actual clinic encounter. Single source of truth for current status and waiting queue.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "appointmentId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "visitType": { "type": "string", "enum": ["NEW", "FOLLOW_UP", "REVIEW", "OTHER"] },
+        "source": { "type": "string", "enum": ["APPOINTMENT", "WALK_IN"] },
+        "status": { "type": "string", "enum": ["WAITING", "IN_PROGRESS", "COMPLETED", "CANCELLED"] },
+        "queueNumber": { "type": "number" },
+        "receptionistData": { "type": "object" },
+        "clinicalData": { "type": "object" },
+        "vitalSigns": { "type": "object" },
+        "startedAt": { "type": "string" },
+        "completedAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "doctorId": { "type": "string" }
+      },
+      "required": ["patientId", "clinicLocationId", "visitType", "source", "status"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Financial billing statement generated for a clinic visit encounter.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "visitId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "discount": { "type": "number" },
+        "total": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "remainingAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "VOID"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["patientId", "visitId", "clinicLocationId", "total", "status"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Actual monetary payment transaction collected for an invoice.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "visitId": { "type": "string", "maxLength": 64 },
+        "invoiceId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["CASH", "CARD", "TRANSFER", "OTHER"] },
+        "status": { "type": "string", "enum": ["PAID", "REFUNDED", "VOID"] },
+        "receiptNumber": { "type": "string", "maxLength": 50 },
+        "paidAt": { "type": "string" },
+        "receivedBy": { "type": "string" }
+      },
+      "required": ["patientId", "visitId", "invoiceId", "amount", "method", "status"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "Billable clinical consultation or procedure with configured price.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 100 },
+        "nameEn": { "type": "string", "maxLength": 100 },
+        "price": { "type": "number" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "price", "active"]
+    },
+    "FollowUp": {
+      "title": "FollowUp",
+      "description": "Scheduled follow-up consultation with snapshot policy parameters.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "sourceVisitId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "scheduledDate": { "type": "string" },
+        "scheduledTime": { "type": "string" },
+        "status": { "type": "string", "enum": ["UPCOMING", "TODAY", "OVERDUE", "COMPLETED", "CANCELLED"] },
+        "fee": { "type": "number" },
+        "isFree": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["patientId", "sourceVisitId", "scheduledDate", "status", "fee", "isFree"]
+    },
+    "Prescription": {
+      "title": "Prescription",
+      "description": "Electronic prescription snapshot generated from a completed visit.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "visitId": { "type": "string", "maxLength": 64 },
+        "doctorId": { "type": "string", "maxLength": 64 },
+        "clinicLocationId": { "type": "string", "maxLength": 64 },
+        "items": { "type": "array" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["patientId", "visitId", "doctorId", "items"]
+    },
+    "Medication": {
+      "title": "Medication",
+      "description": "Master medication catalog item supporting local, Egyptian archive, and custom entries.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "genericName": { "type": "string", "maxLength": 150 },
+        "strength": { "type": "string", "maxLength": 50 },
+        "form": { "type": "string", "maxLength": 50 },
+        "manufacturer": { "type": "string", "maxLength": 100 },
+        "source": { "type": "string", "enum": ["LOCAL", "EGYPTIAN_ARCHIVE", "CUSTOM"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "active", "source"]
+    },
+    "LabTest": {
+      "title": "LabTest",
+      "description": "Master laboratory tests catalog item.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "category", "active"]
+    },
+    "LabOrder": {
+      "title": "LabOrder",
+      "description": "Laboratory investigation ordered during a visit encounter.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "visitId": { "type": "string", "maxLength": 64 },
+        "testId": { "type": "string", "maxLength": 64 },
+        "testName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["ORDERED", "RESULT", "REPORT"] },
+        "result": { "type": "string" },
+        "notes": { "type": "string" },
+        "orderedAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["patientId", "visitId", "testName", "status"]
+    },
+    "RadiologyType": {
+      "title": "RadiologyType",
+      "description": "Master radiology and imaging catalog item.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["nameAr", "category", "active"]
+    },
+    "RadiologyOrder": {
+      "title": "RadiologyOrder",
+      "description": "Imaging and radiology procedure ordered during a visit encounter.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string", "maxLength": 64 },
+        "visitId": { "type": "string", "maxLength": 64 },
+        "radiologyTypeId": { "type": "string", "maxLength": 64 },
+        "radiologyName": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["ORDERED", "RESULT", "REPORT"] },
+        "result": { "type": "string" },
+        "report": { "type": "string" },
+        "notes": { "type": "string" },
+        "orderedAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["patientId", "visitId", "radiologyName", "status"]
+    },
+    "Diagnosis": {
+      "title": "Diagnosis",
+      "description": "ICD-10 clinical diagnosis catalog item.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 150 },
+        "nameEn": { "type": "string", "maxLength": 150 },
+        "code": { "type": "string", "maxLength": 20 },
+        "codeSystem": { "type": "string", "enum": ["ICD10"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["nameAr", "code", "codeSystem", "active"]
+    },
+    "Symptom": {
+      "title": "Symptom",
+      "description": "Clinical symptom for quick picker and intake documentation.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["nameAr", "active"]
+    },
+    "ChronicDisease": {
+      "title": "ChronicDisease",
+      "description": "Preset chronic disease item with color and category tags.",
+      "type": "object",
+      "properties": {
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 80 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["nameAr", "active"]
+    },
+    "DoctorSettings": {
+      "title": "DoctorSettings",
+      "description": "Doctor personalization and favorite catalog IDs.",
+      "type": "object",
+      "properties": {
+        "favoriteMedicationIds": { "type": "array", "items": { "type": "string" } },
+        "favoriteLabTestIds": { "type": "array", "items": { "type": "string" } },
+        "favoriteRadiologyIds": { "type": "array", "items": { "type": "string" } },
+        "favoriteDiagnosisIds": { "type": "array", "items": { "type": "string" } },
+        "favoriteSymptomIds": { "type": "array", "items": { "type": "string" } },
+        "favoriteChronicDiseaseIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Clinic-wide operational, language, financial, and prescription settings.",
+      "type": "object",
+      "properties": {
+        "general": { "type": "object" },
+        "clinic": { "type": "object" },
+        "financial": { "type": "object" },
+        "followUp": { "type": "object" },
+        "prescription": { "type": "object" },
+        "appearance": { "type": "object" },
+        "queue": { "type": "object" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "System users and access credentials"
+    },
+    "/doctorProfile/main": {
+      "schema": "DoctorProfile",
+      "description": "Doctor main professional profile and credentials"
+    },
+    "/clinicLocations/{locationId}": {
+      "schema": "ClinicLocation",
+      "description": "Clinic branches and location details"
+    },
+    "/patients/{patientId}": {
+      "schema": "Patient",
+      "description": "Master patient records"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Future scheduled patient appointments"
+    },
+    "/visits/{visitId}": {
+      "schema": "Visit",
+      "description": "Active and past patient encounters; single source of truth for queue"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Encounter billing invoices"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Actual monetary payments collected"
+    },
+    "/services/{serviceId}": {
+      "schema": "Service",
+      "description": "Clinic consultation and procedure fees"
+    },
+    "/followUps/{followUpId}": {
+      "schema": "FollowUp",
+      "description": "Scheduled follow-up consultations with snapshot fees"
+    },
+    "/prescriptions/{prescriptionId}": {
+      "schema": "Prescription",
+      "description": "Electronic prescriptions generated from visits"
+    },
+    "/medications/{medicationId}": {
+      "schema": "Medication",
+      "description": "Master medication catalog"
+    },
+    "/labTests/{labTestId}": {
+      "schema": "LabTest",
+      "description": "Master lab tests catalog"
+    },
+    "/labOrders/{labOrderId}": {
+      "schema": "LabOrder",
+      "description": "Laboratory orders placed during visits"
+    },
+    "/radiologyTypes/{radiologyId}": {
+      "schema": "RadiologyType",
+      "description": "Master radiology and imaging catalog"
+    },
+    "/radiologyOrders/{radiologyOrderId}": {
+      "schema": "RadiologyOrder",
+      "description": "Radiology orders placed during visits"
+    },
+    "/diagnoses/{diagnosisId}": {
+      "schema": "Diagnosis",
+      "description": "ICD-10 clinical diagnoses catalog"
+    },
+    "/symptoms/{symptomId}": {
+      "schema": "Symptom",
+      "description": "Clinical symptoms catalog"
+    },
+    "/chronicDiseases/{diseaseId}": {
+      "schema": "ChronicDisease",
+      "description": "Chronic diseases preset catalog"
+    },
+    "/doctorSettings/main": {
+      "schema": "DoctorSettings",
+      "description": "Doctor favorites and personalizations"
+    },
+    "/systemSettings/{settingType}": {
+      "schema": "SystemSettings",
+      "description": "Clinic configuration and policy settings"
+    }
+  }
+}

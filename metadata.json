@@ -1,0 +1,6 @@
+{
+  "name": "Soli Medical Clinic",
+  "description": "نظام إدارة عيادة الطبيب الواحد الذكي المتكامل - Soli Medical Clinic",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
