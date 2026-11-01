@@ -107,6 +107,7 @@ const BookingLandingScreen = lazy(() =>
   import('./components/screens/BookingLandingScreen').then((m) => ({ default: m.BookingLandingScreen }))
 );
 import { db } from './services/firebase';
+import { supabase } from './services/supabase';
 import { doc, getDoc, deleteDoc, setDoc, collection, getDocs, writeBatch, query, limit, where, type QueryConstraint } from 'firebase/firestore';
 import { logoutAccount } from './services/auth';
 import { AuthScreen } from './components/AuthScreen';
@@ -670,8 +671,15 @@ function ClinicApp() {
 
   useEffect(() => {
     if (!db) {
-      setSyncStatus('offline');
-      return;
+      setSyncStatus(supabase && navigator.onLine !== false ? 'connected' : 'offline');
+      const handleOnline = () => setSyncStatus(supabase ? 'connected' : 'offline');
+      const handleOffline = () => setSyncStatus('offline');
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+      return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+      };
     }
     setSyncStatus('syncing');
     let hasLoadedAny = false;
@@ -1120,7 +1128,9 @@ function ClinicApp() {
   // Sound/Announcement banner (Controlled by Settings)
   const [callingBanner, setCallingBanner] = useState<ClinicAlertPayload | null>(null);
   const [alertHistory, setAlertHistory] = useState<ClinicAlertPayload[]>([]);
-  const [syncStatus, setSyncStatus] = useState<'connected' | 'offline' | 'syncing' | 'error'>(db ? 'connected' : 'offline');
+  const [syncStatus, setSyncStatus] = useState<'connected' | 'offline' | 'syncing' | 'error'>(
+    (supabase || db) && (typeof navigator === 'undefined' || navigator.onLine !== false) ? 'connected' : 'offline'
+  );
   const [syncErrorDetails, setSyncErrorDetails] = useState<string | null>(null);
   const [doctorStatus, setDoctorStatus] = useState<'available' | 'break'>('available');
   const recentAlertIdsRef = useRef<Map<string, number>>(new Map());

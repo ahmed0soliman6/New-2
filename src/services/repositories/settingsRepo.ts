@@ -1,18 +1,19 @@
-import {
-  doc,
-  onSnapshot,
-  setDoc,
-  type Firestore,
-  type Unsubscribe,
-} from 'firebase/firestore';
 import type {
   DoctorSettings,
   SystemSettings,
   DoctorProfile,
 } from '../../types/database';
-import { FirestoreCollections, SettingsDocs } from '../firebase/collections';
-import { handleFirestoreError, normalize, OperationType } from './common';
-import { meterDoc } from '../readMeter';
+import { supabase, clinicId } from '../supabase';
+import {
+  FirestoreCollections,
+  SettingsDocs,
+  handleFirestoreError,
+  normalize,
+  OperationType,
+  saveSettingsDocument,
+  type DbClient,
+  type UnsubscribeFn,
+} from './common';
 
 export interface ClinicStatusState {
   status: 'available' | 'break';
@@ -21,260 +22,255 @@ export interface ClinicStatusState {
   message?: string;
 }
 
-export const subscribeToDoctorSettings = (
-  db: Firestore,
-  next: (settings: DoctorSettings | null) => void,
+let settingsChannelSeq = 0;
+
+function subscribeSettingDoc<T>(
+  docId: string,
+  extract: (raw: Record<string, any>) => T | null,
+  next: (val: T | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.DOCTOR_SETTINGS),
-    (snap) => {
-      meterDoc('settings/doctorSettings', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as DoctorSettings);
+): UnsubscribeFn {
+  if (!supabase) {
+    error(new Error('عميل Supabase غير مهيأ.'));
+    return () => {};
+  }
+
+  const client = supabase;
+  let isCancelled = false;
+
+  const fetchDoc = async () => {
+    try {
+      const { data: row, error: queryErr } = await client
+        .from(FirestoreCollections.SETTINGS)
+        .select('id, data, updated_at')
+        .eq('clinic_id', clinicId)
+        .eq('id', docId)
+        .maybeSingle();
+
+      if (isCancelled) return;
+
+      if (queryErr) {
+        error(
+          handleFirestoreError(
+            new Error(queryErr.message),
+            OperationType.GET,
+            `${FirestoreCollections.SETTINGS}/${docId}`
+          )
+        );
+        return;
+      }
+
+      if (row && row.data && typeof row.data === 'object') {
+        const normalized = normalize(row.data) as Record<string, any>;
+        next(extract(normalized));
       } else {
         next(null);
       }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.DOCTOR_SETTINGS}`));
+    } catch (err) {
+      if (!isCancelled) {
+        error(
+          handleFirestoreError(
+            err,
+            OperationType.GET,
+            `${FirestoreCollections.SETTINGS}/${docId}`
+          )
+        );
+      }
     }
+  };
+
+  void fetchDoc();
+
+  const channelName = `settings_${docId}_${clinicId}_${++settingsChannelSeq}`;
+  const channel = client
+    .channel(channelName)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: FirestoreCollections.SETTINGS,
+        filter: `clinic_id=eq.${clinicId}`,
+      },
+      (payload) => {
+        if (isCancelled) return;
+        const newRow = payload.new as { id?: string } | undefined;
+        const oldRow = payload.old as { id?: string } | undefined;
+        if (!newRow?.id && !oldRow?.id) {
+          void fetchDoc();
+          return;
+        }
+        if (newRow?.id === docId || oldRow?.id === docId) {
+          void fetchDoc();
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    isCancelled = true;
+    void client.removeChannel(channel);
+  };
+}
+
+export const subscribeToDoctorSettings = (
+  _db: DbClient,
+  next: (settings: DoctorSettings | null) => void,
+  error: (reason: Error) => void
+): UnsubscribeFn => {
+  return subscribeSettingDoc<DoctorSettings>(
+    SettingsDocs.DOCTOR_SETTINGS,
+    (data) => data as DoctorSettings,
+    next,
+    error
   );
 };
 
 export const subscribeToVisitTypes = (
-  db: Firestore,
+  _db: DbClient,
   next: (types: { id: string; name: string; fee: number }[] | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.VISIT_TYPES),
-    (snap) => {
-      meterDoc('settings/visitTypes', snap);
-      if (snap.exists()) {
-        const data = snap.data();
-        next(((data.items || data.types || []) as { id: string; name: string; fee: number }[]));
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.VISIT_TYPES}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<{ id: string; name: string; fee: number }[]>(
+    SettingsDocs.VISIT_TYPES,
+    (data) => ((data.items || data.types || []) as { id: string; name: string; fee: number }[]),
+    next,
+    error
   );
 };
 
 export const subscribeToPrinterSettings = <T = Record<string, unknown>>(
-  db: Firestore,
+  _db: DbClient,
   next: (settings: T | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.PRINTER_SETTINGS),
-    (snap) => {
-      meterDoc('settings/printerSettings', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as T);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.PRINTER_SETTINGS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<T>(
+    SettingsDocs.PRINTER_SETTINGS,
+    (data) => data as T,
+    next,
+    error
   );
 };
 
 export const subscribeToLifestylePresets = (
-  db: Firestore,
+  _db: DbClient,
   next: (presets: string[] | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.LIFESTYLE_PRESETS),
-    (snap) => {
-      meterDoc('settings/lifestylePresets', snap);
-      if (snap.exists()) {
-        const data = snap.data();
-        next((data.items as string[]) || []);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.LIFESTYLE_PRESETS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<string[]>(
+    SettingsDocs.LIFESTYLE_PRESETS,
+    (data) => (data.items as string[]) || [],
+    next,
+    error
   );
 };
 
 export const subscribeToAlertSettings = (
-  db: Firestore,
+  _db: DbClient,
   next: (settings: any | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.ALERT_SETTINGS),
-    (snap) => {
-      meterDoc('settings/alertSettings', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()));
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.ALERT_SETTINGS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<any>(
+    SettingsDocs.ALERT_SETTINGS,
+    (data) => data,
+    next,
+    error
   );
 };
 
 export const subscribeToClinicStatus = (
-  db: Firestore,
+  _db: DbClient,
   next: (status: ClinicStatusState | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.CLINIC_STATUS),
-    (snap) => {
-      meterDoc('settings/clinicStatus', snap);
-      if (snap.exists()) {
-        next(snap.data() as ClinicStatusState);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.CLINIC_STATUS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<ClinicStatusState>(
+    SettingsDocs.CLINIC_STATUS,
+    (data) => data as ClinicStatusState,
+    next,
+    error
   );
 };
 
 export const updateClinicStatusInFirestore = async (
-  db: Firestore,
+  db: DbClient,
   status: 'available' | 'break',
   updatedBy: string
 ) => {
-  const ref = doc(db, FirestoreCollections.SETTINGS, SettingsDocs.CLINIC_STATUS);
-  await setDoc(
-    ref,
-    {
-      status,
-      updatedAt: new Date().toISOString(),
-      updatedBy,
-      message: status === 'break' ? 'الطبيب في فترة استراحة ☕' : 'الطبيب متاح الآن للكشف 🟢',
-    },
-    { merge: true }
-  );
+  await saveSettingsDocument(db, SettingsDocs.CLINIC_STATUS, {
+    status,
+    updatedAt: new Date().toISOString(),
+    updatedBy,
+    message: status === 'break' ? 'الطبيب في فترة استراحة ☕' : 'الطبيب متاح الآن للكشف 🟢',
+  });
 };
 
 export const subscribeToRecurringTemplates = (
-  db: Firestore,
+  _db: DbClient,
   next: (templates: any[] | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.RECURRING_TEMPLATES),
-    (snap) => {
-      meterDoc('settings/recurringTemplates', snap);
-      if (snap.exists()) {
-        const data = snap.data();
-        next((data.items as any[]) || []);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.RECURRING_TEMPLATES}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<any[]>(
+    SettingsDocs.RECURRING_TEMPLATES,
+    (data) => (data.items as any[]) || [],
+    next,
+    error
   );
 };
 
 export const subscribeToDoctorProfile = (
-  db: Firestore,
+  _db: DbClient,
   next: (profile: DoctorProfile | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.DOCTOR_PROFILE),
-    (snap) => {
-      meterDoc('settings/doctorProfile', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as DoctorProfile);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.DOCTOR_PROFILE}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<DoctorProfile>(
+    SettingsDocs.DOCTOR_PROFILE,
+    (data) => data as DoctorProfile,
+    next,
+    error
   );
 };
 
 export const subscribeToSystemSettings = (
-  db: Firestore,
+  _db: DbClient,
   next: (settings: SystemSettings | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.SYSTEM_SETTINGS),
-    (snap) => {
-      meterDoc('settings/systemSettings', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as SystemSettings);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.SYSTEM_SETTINGS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<SystemSettings>(
+    SettingsDocs.SYSTEM_SETTINGS,
+    (data) => data as SystemSettings,
+    next,
+    error
   );
 };
 
 export const subscribeToPrescriptionSettings = <T = Record<string, unknown>>(
-  db: Firestore,
+  _db: DbClient,
   next: (settings: T | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.PRESCRIPTION_SETTINGS),
-    (snap) => {
-      meterDoc('settings/prescriptionSettings', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as T);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.PRESCRIPTION_SETTINGS}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<T>(
+    SettingsDocs.PRESCRIPTION_SETTINGS,
+    (data) => data as T,
+    next,
+    error
   );
 };
 
 export const subscribeToLatestAlert = <T = Record<string, unknown>>(
-  db: Firestore,
+  _db: DbClient,
   next: (alert: T | null) => void,
   error: (reason: Error) => void
-): Unsubscribe => {
-  return onSnapshot(
-    doc(db, FirestoreCollections.SETTINGS, SettingsDocs.LATEST_ALERT),
-    (snap) => {
-      meterDoc('settings/latestAlert', snap);
-      if (snap.exists()) {
-        next(normalize(snap.data()) as T);
-      } else {
-        next(null);
-      }
-    },
-    (reason) => {
-      error(handleFirestoreError(reason, OperationType.GET, `${FirestoreCollections.SETTINGS}/${SettingsDocs.LATEST_ALERT}`));
-    }
+): UnsubscribeFn => {
+  return subscribeSettingDoc<T>(
+    SettingsDocs.LATEST_ALERT,
+    (data) => data as T,
+    next,
+    error
   );
 };
 
 export async function publishAlert(
-  db: Firestore,
+  db: DbClient,
   alert: {
     id: string;
     type: string;
@@ -287,10 +283,8 @@ export async function publishAlert(
     senderId?: string;
   }
 ): Promise<void> {
-  const ref = doc(db, FirestoreCollections.SETTINGS, SettingsDocs.LATEST_ALERT);
-  await setDoc(ref, {
+  await saveSettingsDocument(db, SettingsDocs.LATEST_ALERT, {
     ...alert,
     updatedAt: new Date().toISOString(),
   });
 }
-

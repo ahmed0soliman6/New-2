@@ -13,7 +13,7 @@ export const supabaseConfig = {
 /**
  * معرّف العيادة الحالي (يُقرأ من VITE_CLINIC_SLUG مع قيمة افتراضية آمنة لعدم انهيار التطبيق)
  */
-export const clinicSlug: string = supabaseConfig.clinicSlug || 'default';
+export const clinicSlug: string = supabaseConfig.clinicSlug || 'solimedical-new2';
 export const clinicId: string = clinicSlug;
 
 export const supabaseConfigured = Boolean(

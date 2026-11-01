@@ -1,10 +1,8 @@
-import type { Firestore } from 'firebase/firestore';
 import type { Patient } from '../../types/database';
-import { FirestoreCollections } from '../firebase/collections';
-import { subscribeCollection } from './common';
+import { FirestoreCollections, subscribeCollection, type DbClient } from './common';
 
 export const subscribeToPatients = (
-  db: Firestore,
+  db: DbClient,
   next: (items: Patient[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<Patient>(db, FirestoreCollections.PATIENTS, next, error);

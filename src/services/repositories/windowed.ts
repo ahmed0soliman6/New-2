@@ -1,20 +1,25 @@
-import { collection, onSnapshot, query, type Firestore, type QueryConstraint, type Unsubscribe } from 'firebase/firestore';
-import { ID_FIELD_MAP, mapDocs, handleFirestoreError, OperationType } from './common';
-import { meterQuery } from '../readMeter';
+import {
+  ID_FIELD_MAP,
+  resolveTableName,
+  subscribeQuery,
+  type DbClient,
+  type UnsubscribeFn,
+} from './common';
 
 /**
  * يشترك في عدة استعلامات على نفس المجموعة ويدمج نتائجها (اتحاد حسب المعرّف).
  * لا يُرسل أي نتيجة حتى يصل أول رد من كل الاستعلامات لتفادي حالات وسيطة خاطئة.
  */
 export function subscribeMerged<T extends Record<string, any>>(
-  db: Firestore,
+  db: DbClient,
   name: string,
-  queries: QueryConstraint[][],
+  queries: unknown[][],
   next: (items: T[]) => void,
   error: (reason: Error) => void,
   label?: string
-): Unsubscribe {
-  const idField = ID_FIELD_MAP[name] || 'id';
+): UnsubscribeFn {
+  const tableName = resolveTableName(name);
+  const idField = ID_FIELD_MAP[name] || ID_FIELD_MAP[tableName] || 'id';
   const maps: Map<string, T>[] = queries.map(() => new Map());
   const ready: boolean[] = queries.map(() => false);
 
@@ -26,18 +31,21 @@ export function subscribeMerged<T extends Record<string, any>>(
   };
 
   const unsubs = queries.map((constraints, i) =>
-    onSnapshot(
-      query(collection(db, name), ...constraints),
-      (snap) => {
-        meterQuery(`${label ?? name}#${i}`, snap);
+    subscribeQuery<T>(
+      db,
+      tableName,
+      constraints,
+      (items) => {
         const m = new Map<string, T>();
-        mapDocs<T>(name, snap).forEach((item) => m.set(String((item as any)[idField]), item));
+        items.forEach((item) => m.set(String((item as any)[idField]), item));
         maps[i] = m;
         ready[i] = true;
         emit();
       },
-      (reason) => error(handleFirestoreError(reason, OperationType.LIST, name))
+      error,
+      `${label ?? tableName}#${i}`
     )
   );
+
   return () => unsubs.forEach((u) => u());
 }

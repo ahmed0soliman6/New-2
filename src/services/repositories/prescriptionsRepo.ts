@@ -1,4 +1,3 @@
-import type { Firestore } from 'firebase/firestore';
 import type {
   Prescription,
   Medication,
@@ -8,47 +7,46 @@ import type {
   Symptom,
   ChronicDisease,
 } from '../../types/database';
-import { FirestoreCollections } from '../firebase/collections';
-import { subscribeCollection } from './common';
+import { FirestoreCollections, subscribeCollection, type DbClient } from './common';
 
 export const subscribeToPrescriptions = (
-  db: Firestore,
+  db: DbClient,
   next: (items: Prescription[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<Prescription>(db, FirestoreCollections.PRESCRIPTIONS, next, error);
 
 export const subscribeToMedications = (
-  db: Firestore,
+  db: DbClient,
   next: (items: Medication[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<Medication>(db, FirestoreCollections.MEDICATIONS, next, error);
 
 export const subscribeToLabTests = (
-  db: Firestore,
+  db: DbClient,
   next: (items: LabTest[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<LabTest>(db, FirestoreCollections.LAB_TESTS, next, error);
 
 export const subscribeToRadiologyTypes = (
-  db: Firestore,
+  db: DbClient,
   next: (items: RadiologyType[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<RadiologyType>(db, FirestoreCollections.RADIOLOGY_TYPES, next, error);
 
 export const subscribeToDiagnoses = (
-  db: Firestore,
+  db: DbClient,
   next: (items: Diagnosis[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<Diagnosis>(db, FirestoreCollections.DIAGNOSES, next, error);
 
 export const subscribeToSymptoms = (
-  db: Firestore,
+  db: DbClient,
   next: (items: Symptom[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<Symptom>(db, FirestoreCollections.SYMPTOMS, next, error);
 
 export const subscribeToChronicDiseases = (
-  db: Firestore,
+  db: DbClient,
   next: (items: ChronicDisease[]) => void,
   error: (reason: Error) => void
 ) => subscribeCollection<ChronicDisease>(db, FirestoreCollections.CHRONIC_DISEASES, next, error);

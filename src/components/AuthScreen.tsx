@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { firebaseConfigError } from '../services/firebase';
+import { supabaseConfigError } from '../services/supabase';
 import { loginWithUsername } from '../services/auth';
 import { AdminRecoveryDialog } from './auth/AdminRecoveryDialog';
 import { SoliMedicalLogo } from './SoliMedicalLogo';
@@ -148,9 +148,9 @@ export const AuthScreen: React.FC = () => {
           </div>
 
           {/* Status Messages */}
-          {firebaseConfigError && (
+          {supabaseConfigError && (
             <p className="text-amber-300 text-xs leading-6 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20">
-              {firebaseConfigError}
+              {supabaseConfigError}
             </p>
           )}
 
@@ -169,7 +169,7 @@ export const AuthScreen: React.FC = () => {
           {/* Login Submit Button */}
           <button
             type="submit"
-            disabled={busy || !!firebaseConfigError}
+            disabled={busy || !!supabaseConfigError}
             className="w-full py-3.5 rounded-2xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-extrabold text-sm shadow-lg shadow-[#00c2cb]/25 transition-all cursor-pointer active:scale-98 disabled:opacity-50 flex items-center justify-center gap-2"
           >
             <span className="material-symbols-outlined text-xl">login</span>
