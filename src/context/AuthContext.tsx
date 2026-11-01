@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '../services/firebase';
+import { supabase, clinicId } from '../services/supabase';
+import type { AuthUser } from '../services/auth';
 import {
   Role,
   Permission,
@@ -12,7 +11,6 @@ import {
   canAccessRoute as checkCanAccessRoute,
   assertPermission as checkAssertPermission,
   checkScreenPermission,
-  getDefaultAllowedScreens,
   getDefaultRolePermissions,
   ALL_SYSTEM_SCREENS,
 } from '../permissions';
@@ -29,7 +27,7 @@ export interface UserProfile {
 }
 
 interface AuthContextValue {
-  currentUser: FirebaseUser | null;
+  currentUser: AuthUser | null;
   userProfile: UserProfile | null;
   role: Role;
   allowedScreens: string[];
@@ -49,123 +47,148 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!auth) {
+    if (!supabase) {
       setLoading(false);
       return;
     }
 
-    let unsubscribeDoc: (() => void) | null = null;
+    let isMounted = true;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
-      setCurrentUser(fbUser);
+    const handleSessionUser = async (sbUser: any | null) => {
+      if (!isMounted) return;
 
-      if (unsubscribeDoc) {
-        unsubscribeDoc();
-        unsubscribeDoc = null;
-      }
-
-      if (!fbUser) {
+      if (!sbUser) {
+        setCurrentUser(null);
         setUserProfile(null);
         setLoading(false);
         return;
       }
 
-      if (!db) {
-        // Fallback without Firestore
-        setUserProfile({
-          uid: fbUser.uid,
-          username: fbUser.email?.split('@')[0] || 'user',
-          displayName: fbUser.displayName || 'مستخدم',
-          email: fbUser.email || '',
-          role: 'admin',
-          active: true,
-          customPermissions: getDefaultRolePermissions('admin'),
-          allowedScreens: ALL_SYSTEM_SCREENS.map((s) => s.id),
-        });
-        setLoading(false);
-        return;
-      }
+      const meta = (sbUser.user_metadata || {}) as Record<string, any>;
+      const authUser: AuthUser = Object.assign(sbUser, {
+        uid: sbUser.id,
+        displayName: typeof meta.displayName === 'string' ? meta.displayName : null,
+      });
+      setCurrentUser(authUser);
 
-      // Instant optimistic hydration from localStorage if available to avoid blocking first open
-      const cacheKey = `soli_cached_profile_${fbUser.uid}`;
+      // Optimistic hydration from localStorage if available
+      const cacheKey = `soli_cached_profile_${sbUser.id}`;
       try {
         const cachedRaw = localStorage.getItem(cacheKey);
         if (cachedRaw) {
           const cachedProfile = JSON.parse(cachedRaw) as UserProfile;
-          if (cachedProfile && cachedProfile.uid === fbUser.uid && cachedProfile.active !== false) {
+          if (cachedProfile && cachedProfile.uid === sbUser.id && cachedProfile.active !== false) {
             setUserProfile(cachedProfile);
             setLoading(false);
           }
         }
       } catch {}
 
-      // Listen in real-time to user's profile in Firestore
-      const userDocRef = doc(db, 'users', fbUser.uid);
-      unsubscribeDoc = onSnapshot(
-        userDocRef,
-        (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.data();
-            const isActive = data.active !== false;
+      try {
+        const { data: member, error } = await supabase
+          .from('clinic_members')
+          .select('role, is_active, permissions')
+          .eq('clinic_id', clinicId)
+          .eq('user_id', sbUser.id)
+          .maybeSingle();
 
-            // Instant enforcement: if account is disabled, sign out immediately
-            if (!isActive) {
-              try { localStorage.removeItem(cacheKey); } catch {}
-              alert('تم تعطيل حسابك من قِبل إدارة العيادة. يرجى التواصل مع الإدارة.');
-              void signOut(auth);
-              setUserProfile(null);
-              setLoading(false);
-              return;
-            }
+        if (!isMounted) return;
 
-            const rawRole = data.role;
-            const parsedRole = normalizeRole(rawRole);
-            const rawAllowedScreens = data.allowedScreens;
-            const customScreens = Array.isArray(rawAllowedScreens)
-              ? (rawAllowedScreens as string[])
-              : undefined;
-            const rawCustomPermissions = data.customPermissions;
-            const customPermissions =
-              rawCustomPermissions && typeof rawCustomPermissions === 'object'
-                ? (rawCustomPermissions as CustomPermissionsMap)
-                : undefined;
-
-            const nextProfile: UserProfile = {
-              uid: fbUser.uid,
-              username: data.username || fbUser.email?.split('@')[0] || 'user',
-              displayName: data.displayName || data.username || 'مستخدم',
-              email: data.email || fbUser.email || '',
-              role: parsedRole,
-              active: true,
-              allowedScreens: customScreens,
-              customPermissions,
-            };
-            setUserProfile(nextProfile);
-            try { localStorage.setItem(cacheKey, JSON.stringify(nextProfile)); } catch {}
-          } else {
-            // User document does not exist in Firestore users collection
-            try { localStorage.removeItem(cacheKey); } catch {}
-            console.warn('[AuthContext] User document not found in Firestore for UID:', fbUser.uid);
-            void signOut(auth);
-            setUserProfile(null);
-          }
+        if (error || !member) {
+          try {
+            localStorage.removeItem(cacheKey);
+          } catch {}
+          console.warn('[AuthContext] User membership not found in clinic_members for UID:', sbUser.id);
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          setUserProfile(null);
           setLoading(false);
-        },
-        (error) => {
-          console.warn('[AuthContext] Error fetching profile:', error);
+          return;
+        }
+
+        const isActive = member.is_active !== false;
+        if (!isActive) {
+          try {
+            localStorage.removeItem(cacheKey);
+          } catch {}
+          alert('تم تعطيل حسابك من قِبل إدارة العيادة. يرجى التواصل مع الإدارة.');
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          setUserProfile(null);
+          setLoading(false);
+          return;
+        }
+
+        const permsObj =
+          member.permissions && typeof member.permissions === 'object'
+            ? (member.permissions as Record<string, any>)
+            : {};
+
+        const parsedRole = normalizeRole(member.role);
+        const rawAllowedScreens = permsObj.allowedScreens;
+        const customScreens = Array.isArray(rawAllowedScreens)
+          ? (rawAllowedScreens as string[])
+          : undefined;
+        const rawCustomPermissions = permsObj.customPermissions;
+        const customPermissions =
+          rawCustomPermissions && typeof rawCustomPermissions === 'object'
+            ? (rawCustomPermissions as CustomPermissionsMap)
+            : undefined;
+
+        const usernameFromEmail = sbUser.email ? String(sbUser.email).split('@')[0] : 'user';
+        const resolvedUsername =
+          (typeof permsObj.username === 'string' && permsObj.username) ||
+          (typeof meta.username === 'string' && meta.username) ||
+          usernameFromEmail;
+
+        const resolvedDisplayName =
+          (typeof permsObj.displayName === 'string' && permsObj.displayName) ||
+          (typeof meta.displayName === 'string' && meta.displayName) ||
+          resolvedUsername ||
+          'مستخدم';
+
+        const nextProfile: UserProfile = {
+          uid: sbUser.id,
+          username: resolvedUsername,
+          displayName: resolvedDisplayName,
+          email: sbUser.email || '',
+          role: parsedRole,
+          active: true,
+          allowedScreens: customScreens,
+          customPermissions,
+        };
+
+        setUserProfile(nextProfile);
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(nextProfile));
+        } catch {}
+      } catch (err) {
+        console.warn('[AuthContext] Error fetching profile from Supabase:', err);
+      } finally {
+        if (isMounted) {
           setLoading(false);
         }
-      );
+      }
+    };
+
+    // Initial session check
+    void supabase.auth.getSession().then(({ data }) => {
+      void handleSessionUser(data.session?.user ?? null);
+    });
+
+    // Subscribe to auth state changes
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      void handleSessionUser(session?.user ?? null);
     });
 
     return () => {
-      unsubscribeAuth();
-      if (unsubscribeDoc) unsubscribeDoc();
+      isMounted = false;
+      authListener.subscription.unsubscribe();
     };
   }, []);
 
@@ -218,8 +241,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    if (auth) {
-      await signOut(auth);
+    if (supabase) {
+      await supabase.auth.signOut();
     }
     setUserProfile(null);
     setCurrentUser(null);
@@ -285,4 +308,3 @@ export const useAuth = (): AuthContextValue => {
 };
 
 export const usePermissions = useAuth;
-

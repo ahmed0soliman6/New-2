@@ -1,156 +1,216 @@
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged,
-  getAuth,
-  updatePassword,
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-  type User as FirebaseUser,
-} from 'firebase/auth';
-import { initializeApp, deleteApp } from 'firebase/app';
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
-import { requireFirebase, firebaseConfig } from './firebase';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { requireSupabase, clinicId } from './supabase';
 import type { UserRole } from '../types/database';
 import type { CustomPermissionsMap } from '../permissions';
 
-const normalizeUsername = (username: string) => username.trim().toLowerCase();
-const internalEmail = (username: string) => `${normalizeUsername(username)}@auth.solimedical.local`;
-
-const DEMO_CREDENTIALS: Record<string, { role: UserRole; displayName: string; defaultPass: string }> = {
-  admin: { role: 'ADMIN', displayName: 'مدير النظام (Admin)', defaultPass: 'admin1234' },
-  doctor: { role: 'DOCTOR', displayName: 'طبيب العيادة (Doctor)', defaultPass: 'doctor1234' },
-  secretary: { role: 'SECRETARY', displayName: 'سارة عبد المنعم (Secretary)', defaultPass: 'secret1234' },
-  dr_hazem: { role: 'DOCTOR', displayName: 'طبيب العيادة', defaultPass: 'doctor1234' },
-  sara_rec: { role: 'SECRETARY', displayName: 'سارة عبد المنعم', defaultPass: 'secret1234' },
+export type AuthUser = SupabaseUser & {
+  uid: string;
+  displayName?: string | null;
 };
 
-export async function loginWithUsername(username: string, password: string): Promise<FirebaseUser> {
-  const { auth, db } = requireFirebase();
-  const unameLower = normalizeUsername(username);
-  const email = internalEmail(unameLower);
+const INTERNAL_EMAIL_DOMAIN =
+  ((import.meta.env as Record<string, string | undefined>).VITE_INTERNAL_EMAIL_DOMAIN || '').trim() ||
+  'auth.solimedical.local';
 
-  let credential;
-  try {
-    const mapping = await getDoc(doc(db, 'usernames', unameLower));
-    const targetEmail = mapping.exists() ? mapping.data().email : email;
-    credential = await signInWithEmailAndPassword(auth, targetEmail, password);
-  } catch (error) {
-    // If standard role test account doesn't exist yet, auto-provision it for seamless evaluation
-    const demo = DEMO_CREDENTIALS[unameLower];
-    if (demo && error instanceof Error && (error.message.includes('user-not-found') || error.message.includes('invalid-credential'))) {
-      try {
-        credential = await createUserWithEmailAndPassword(auth, email, password.length >= 8 ? password : demo.defaultPass);
-      } catch (createErr) {
-        // If user already exists in auth but mapping was missing
-        credential = await signInWithEmailAndPassword(auth, email, password.length >= 8 ? password : demo.defaultPass);
-      }
-    } else {
-      throw error;
-    }
+const normalizeUsername = (username: string) => username.trim().toLowerCase();
+const internalEmail = (username: string) => `${normalizeUsername(username)}@${INTERNAL_EMAIL_DOMAIN}`;
+
+function toAuthUser(user: SupabaseUser): AuthUser {
+  const meta = (user.user_metadata || {}) as Record<string, unknown>;
+  return Object.assign(user, {
+    uid: user.id,
+    displayName: typeof meta.displayName === 'string' ? meta.displayName : null,
+  });
+}
+
+function toUpperUserRole(role?: string | null): UserRole {
+  const r = String(role || '').toUpperCase();
+  if (r === 'ADMIN') return 'ADMIN';
+  if (r === 'DOCTOR') return 'DOCTOR';
+  return 'SECRETARY';
+}
+
+/**
+ * Signs in a user using their username and password via Supabase Auth.
+ * Looks up the username in the `usernames` table first, then signs in with the
+ * internal email `${username_lower}@${INTERNAL_EMAIL_DOMAIN}`.
+ * Self-registration from the browser is strictly disabled.
+ */
+export async function loginWithUsername(username: string, password: string): Promise<AuthUser> {
+  const supabase = requireSupabase();
+  const unameLower = normalizeUsername(username);
+  if (!unameLower || !password) {
+    throw new Error('يرجى إدخال اسم المستخدم وكلمة المرور.');
   }
 
-  const userRef = doc(db, 'users', credential.user.uid);
-  const profile = await getDoc(userRef);
+  // Check usernames table first (if accessible via RLS or RPC)
+  const { data: usernameRow, error: usernameErr } = await supabase
+    .from('usernames')
+    .select('username_lower, user_id')
+    .eq('username_lower', unameLower)
+    .maybeSingle();
 
-  if (!profile.exists()) {
-    const demo = DEMO_CREDENTIALS[unameLower];
-    if (!demo) {
-      await signOut(auth);
-      throw new Error('هذا الحساب غير مسجل في قاعدة بيانات مستخدمي العيادة. يرجى مراجعة مسؤول النظام (ADMIN).');
-    }
+  // If the table is readable and explicitly confirms the username doesn't exist
+  if (!usernameErr && usernameRow === null) {
+    // Proceed to signInWithPassword with the deterministic internal email so timing/error behavior stays consistent,
+    // or if RLS blocks direct unauthenticated select on `usernames`, signInWithPassword handles authentication.
+  }
 
-    const now = serverTimestamp();
-    const initialRole: UserRole = demo.role;
-    const initialDisplayName = demo.displayName;
+  const email = internalEmail(unameLower);
 
-    await setDoc(userRef, {
-      uid: credential.user.uid,
-      username: unameLower,
-      displayName: initialDisplayName,
-      email: credential.user.email || email,
-      role: initialRole,
-      active: true,
-      preferredLanguage: 'ar',
-      createdAt: now,
-      updatedAt: now,
-      createdBy: null,
-    });
-    await setDoc(doc(db, 'usernames', unameLower), {
-      uid: credential.user.uid,
-      email: credential.user.email || email,
-      usernameLower: unameLower,
-      createdAt: now,
-    }, { merge: true });
-  } else if (profile.data().active === false) {
-    await signOut(auth);
+  const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (signInError || !signInData?.user) {
+    throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة.');
+  }
+
+  const user = signInData.user;
+
+  // Verify membership in clinic_members for this clinic
+  const { data: member, error: memberError } = await supabase
+    .from('clinic_members')
+    .select('role, is_active, permissions')
+    .eq('clinic_id', clinicId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (memberError || !member) {
+    await supabase.auth.signOut();
+    throw new Error(
+      'هذا الحساب غير مسجل في قاعدة بيانات مستخدمي العيادة. يرجى مراجعة مسؤول النظام (ADMIN).'
+    );
+  }
+
+  if (member.is_active === false) {
+    await supabase.auth.signOut();
     throw new Error('هذا الحساب معطل حالياً من قِبل الإدارة. يرجى مراجعة إدارة العيادة.');
   }
 
-  return credential.user;
+  return toAuthUser(user);
 }
 
-export async function getCurrentUserProfile(uid: string): Promise<{ uid: string; username: string; displayName: string; role: UserRole; active: boolean } | null> {
-  const { db } = requireFirebase();
-  const snapshot = await getDoc(doc(db, 'users', uid));
-  return snapshot.exists() ? snapshot.data() as { uid: string; username: string; displayName: string; role: UserRole; active: boolean } : null;
+export async function getCurrentUserProfile(uid: string): Promise<{
+  uid: string;
+  username: string;
+  displayName: string;
+  role: UserRole;
+  active: boolean;
+} | null> {
+  const supabase = requireSupabase();
+  const { data: member, error } = await supabase
+    .from('clinic_members')
+    .select('user_id, role, is_active, permissions')
+    .eq('clinic_id', clinicId)
+    .eq('user_id', uid)
+    .maybeSingle();
+
+  if (error || !member) return null;
+
+  const perms = (member.permissions || {}) as Record<string, any>;
+  const username = typeof perms.username === 'string' ? perms.username : '';
+  const displayName =
+    typeof perms.displayName === 'string' && perms.displayName
+      ? perms.displayName
+      : username || 'مستخدم';
+
+  return {
+    uid: member.user_id,
+    username,
+    displayName,
+    role: toUpperUserRole(member.role),
+    active: member.is_active !== false,
+  };
 }
 
 export async function getInitialAdminStatus(): Promise<{ ready: boolean; claimed: boolean }> {
-  const { db } = requireFirebase();
-  const bootstrap = await getDoc(doc(db, '_system', 'bootstrap'));
-  return { ready: bootstrap.data()?.status === 'COMPLETED', claimed: bootstrap.data()?.status === 'CLAIMED' };
+  const supabase = requireSupabase();
+  const { data } = await supabase
+    .from('settings')
+    .select('data')
+    .eq('clinic_id', clinicId)
+    .eq('id', 'bootstrap')
+    .maybeSingle();
+
+  const status = (data?.data as Record<string, any> | undefined)?.status;
+  return {
+    ready: status === 'COMPLETED',
+    claimed: status === 'CLAIMED',
+  };
 }
 
-export async function createInitialAdmin(params: { username: string; displayName: string; password: string }): Promise<{ username: string }> {
-  const { auth } = requireFirebase();
+export async function createInitialAdmin(params: {
+  username: string;
+  displayName: string;
+  password: string;
+}): Promise<{ username: string }> {
   const usernameLower = normalizeUsername(params.username);
-  if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(usernameLower) || !params.displayName.trim() || params.password.length < 8) throw new Error('بيانات المدير غير صحيحة.');
-  const credential = await createUserWithEmailAndPassword(auth, internalEmail(usernameLower), params.password);
-  await credential.user.getIdToken(true);
-  await new Promise<void>((resolve, reject) => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      unsubscribe();
-      if (currentUser?.uid === credential.user.uid) resolve(); else reject(new Error('لم تكتمل جلسة Firebase بعد.'));
-    }, reject);
+  if (
+    !/^[a-z0-9][a-z0-9._-]{2,31}$/.test(usernameLower) ||
+    !params.displayName.trim() ||
+    params.password.length < 8
+  ) {
+    throw new Error('بيانات المدير غير صحيحة.');
+  }
+
+  await createManagedUser({
+    username: usernameLower,
+    displayName: params.displayName.trim(),
+    password: params.password,
+    role: 'ADMIN',
   });
+
   return { username: usernameLower };
 }
 
 export async function logoutAccount(): Promise<void> {
-  await signOut(requireFirebase().auth);
+  const supabase = requireSupabase();
+  await supabase.auth.signOut();
 }
 
 /**
- * Changes the currently logged in user's password in Firebase Auth.
+ * Changes the currently logged in user's password in Supabase Auth.
  */
 export async function changeUserPassword(params: {
   currentPassword?: string;
   newPassword: string;
 }): Promise<void> {
-  const { auth } = requireFirebase();
-  const user = auth.currentUser;
-  if (!user) throw new Error('لم يتم العثور على جلسة تسجيل دخول نشطة.');
+  const supabase = requireSupabase();
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  const user = userData?.user;
+
+  if (userErr || !user) {
+    throw new Error('لم يتم العثور على جلسة تسجيل دخول نشطة.');
+  }
   if (params.newPassword.length < 8) {
     throw new Error('كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.');
   }
 
   if (params.currentPassword && user.email) {
-    try {
-      const credential = EmailAuthProvider.credential(user.email, params.currentPassword);
-      await reauthenticateWithCredential(user, credential);
-    } catch (err: unknown) {
-      if (err instanceof Error && (err.message.includes('wrong-password') || err.message.includes('invalid-credential'))) {
-        throw new Error('كلمة المرور الحالية غير صحيحة.');
-      }
-      // If reauth not strictly demanded by Firebase, continue
+    const { error: verifyErr } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: params.currentPassword,
+    });
+    if (verifyErr) {
+      throw new Error('كلمة المرور الحالية غير صحيحة.');
     }
   }
 
-  await updatePassword(user, params.newPassword);
+  const { error: updateErr } = await supabase.auth.updateUser({
+    password: params.newPassword,
+  });
+
+  if (updateErr) {
+    throw new Error(updateErr.message || 'تعذر تحديث كلمة المرور.');
+  }
 }
 
+/**
+ * Creates a managed user via the server-side `/api/users/create` endpoint.
+ * Browser self-signup is completely prohibited.
+ */
 export async function createManagedUser(params: {
   username: string;
   displayName: string;
@@ -159,41 +219,41 @@ export async function createManagedUser(params: {
   allowedScreens?: string[];
   customPermissions?: CustomPermissionsMap;
 }): Promise<void> {
-  const { auth, db } = requireFirebase();
+  const supabase = requireSupabase();
   const username = normalizeUsername(params.username);
-  if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error('اسم المستخدم غير صحيح.');
-  if (params.password.length < 8) throw new Error('كلمة المرور يجب أن تكون 8 أحرف على الأقل.');
-  const secondary = initializeApp(firebaseConfig, `user-creator-${Date.now()}`);
-  const secondaryAuth = getAuth(secondary);
-  try {
-    let credential;
-    try {
-      credential = await createUserWithEmailAndPassword(secondaryAuth, internalEmail(username), params.password);
-    } catch (cause) {
-      if (!(cause instanceof Error) || !cause.message.includes('auth/email-already-in-use')) throw cause;
-      credential = await signInWithEmailAndPassword(secondaryAuth, internalEmail(username), params.password);
-    }
-    const now = serverTimestamp();
-    await setDoc(
-      doc(db, 'users', credential.user.uid),
-      {
-        uid: credential.user.uid,
-        username,
-        displayName: params.displayName.trim(),
-        email: internalEmail(username),
-        role: params.role,
-        active: true,
-        allowedScreens: params.allowedScreens || null,
-        customPermissions: params.customPermissions || null,
-        updatedAt: now,
-        createdBy: auth.currentUser?.uid || null,
-      },
-      { merge: true }
-    );
-    await setDoc(doc(db, 'usernames', username), { uid: credential.user.uid, usernameLower: username, email: internalEmail(username), createdAt: now });
-  } finally {
-    await signOut(secondaryAuth).catch(() => undefined);
-    await deleteApp(secondary);
+  if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+    throw new Error('اسم المستخدم غير صحيح.');
+  }
+  if (params.password.length < 8) {
+    throw new Error('كلمة المرور يجب أن تكون 8 أحرف على الأقل.');
+  }
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (!accessToken) {
+    throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
+  }
+
+  const response = await fetch('/api/users/create', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      username,
+      displayName: params.displayName.trim(),
+      password: params.password,
+      role: params.role,
+      allowedScreens: params.allowedScreens,
+      customPermissions: params.customPermissions,
+      clinicId,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || payload.message || 'تعذر إنشاء حساب المستخدم.');
   }
 }
 
@@ -207,23 +267,71 @@ export async function updateManagedUser(
     customPermissions?: CustomPermissionsMap;
   }
 ): Promise<void> {
-  const { db } = requireFirebase();
-  const userRef = doc(db, 'users', uid);
-  await updateDoc(userRef, {
-    ...updates,
-    updatedAt: serverTimestamp(),
-  });
+  const supabase = requireSupabase();
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('clinic_members')
+    .select('role, is_active, permissions')
+    .eq('clinic_id', clinicId)
+    .eq('user_id', uid)
+    .maybeSingle();
+
+  if (fetchErr || !existing) {
+    throw new Error('لم يتم العثور على سجل المستخدم في هذه العيادة.');
+  }
+
+  const currentPerms =
+    existing.permissions && typeof existing.permissions === 'object'
+      ? (existing.permissions as Record<string, unknown>)
+      : {};
+
+  const nextPermissions: Record<string, unknown> = {
+    ...currentPerms,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (updates.displayName !== undefined) {
+    nextPermissions.displayName = updates.displayName;
+  }
+  if (updates.allowedScreens !== undefined) {
+    nextPermissions.allowedScreens = updates.allowedScreens;
+  }
+  if (updates.customPermissions !== undefined) {
+    nextPermissions.customPermissions = updates.customPermissions;
+  }
+
+  const rowUpdates: Record<string, unknown> = {
+    permissions: nextPermissions,
+  };
+
+  if (updates.role !== undefined) {
+    rowUpdates.role = updates.role.toLowerCase();
+  }
+  if (updates.active !== undefined) {
+    rowUpdates.is_active = updates.active;
+  }
+
+  const { error: updateErr } = await supabase
+    .from('clinic_members')
+    .update(rowUpdates)
+    .eq('clinic_id', clinicId)
+    .eq('user_id', uid);
+
+  if (updateErr) {
+    throw new Error(updateErr.message || 'تعذر تحديث بيانات المستخدم.');
+  }
 }
 
 export async function deleteManagedUser(uid: string, username?: string): Promise<void> {
-  const { auth, db } = requireFirebase();
-  if (auth.currentUser?.uid === uid) {
+  const supabase = requireSupabase();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const currentUid = sessionData.session?.user?.id;
+  const accessToken = sessionData.session?.access_token;
+
+  if (currentUid === uid) {
     throw new Error('لا يمكنك حذف الحساب المسجل به حالياً.');
   }
-
-  // 1. Invoke Serverless Admin API to delete user from Firebase Authentication
-  const idToken = await auth.currentUser?.getIdToken(true);
-  if (!idToken) {
+  if (!accessToken) {
     throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
   }
 
@@ -231,9 +339,9 @@ export async function deleteManagedUser(uid: string, username?: string): Promise
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${idToken}`,
+      Authorization: `Bearer ${accessToken}`,
     },
-    body: JSON.stringify({ uid, username }),
+    body: JSON.stringify({ uid, username, clinicId }),
   });
 
   let serverError = '';
@@ -255,26 +363,59 @@ export async function deleteManagedUser(uid: string, username?: string): Promise
       serverError.includes('غير متوفرة');
 
     if (isConfigError) {
-      await deleteDoc(doc(db, 'users', uid)).catch(() => undefined);
+      await supabase.from('clinic_members').delete().eq('clinic_id', clinicId).eq('user_id', uid);
       if (username) {
-        await deleteDoc(doc(db, 'usernames', normalizeUsername(username))).catch(() => undefined);
+        await supabase.from('usernames').delete().eq('username_lower', normalizeUsername(username));
       }
       throw new Error(
-        `تم حذف المستخدم من سجلات العيادة بنجاح. لحذفه تلقائياً من صفحة Authentication أيضاً، أضف مفتاح الخدمة في Vercel.`
+        'تم حذف المستخدم من سجلات العيادة بنجاح. لحذفه تلقائياً من صفحة Authentication أيضاً، أضف مفتاح الخدمة في Vercel.'
       );
     }
 
-    throw new Error(
-      serverError ||
-        `تعذر حذف المستخدم من Firebase Authentication (رمز ${response.status}).`
-    );
+    throw new Error(serverError || `تعذر حذف المستخدم (رمز ${response.status}).`);
   }
 
-  // 2. Also ensure local Firestore records are cleaned up (idempotent)
-  await deleteDoc(doc(db, 'users', uid)).catch(() => undefined);
+  // Ensure clinic_members & usernames records are cleaned up
+  await supabase.from('clinic_members').delete().eq('clinic_id', clinicId).eq('user_id', uid);
   if (username) {
-    await deleteDoc(doc(db, 'usernames', normalizeUsername(username))).catch(() => undefined);
+    await supabase.from('usernames').delete().eq('username_lower', normalizeUsername(username));
   }
 }
 
+/**
+ * Resets a user's password via the server-side `/api/users/reset-password` endpoint.
+ * Verifies the caller is an admin of the clinic, calls `supabase.auth.admin.updateUserById`,
+ * and returns a one-time temporary password to be displayed to the admin once.
+ */
+export async function adminResetUserPassword(
+  uid: string,
+  tempPassword?: string
+): Promise<{ tempPassword: string }> {
+  const supabase = requireSupabase();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
 
+  if (!accessToken) {
+    throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
+  }
+
+  const response = await fetch('/api/users/reset-password', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      uid,
+      tempPassword,
+      clinicId,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.tempPassword) {
+    throw new Error(payload.error || payload.message || 'تعذر إعادة تعيين كلمة المرور المؤقتة.');
+  }
+
+  return { tempPassword: String(payload.tempPassword) };
+}
