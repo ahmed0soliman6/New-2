@@ -304,6 +304,76 @@ export async function enqueueOfflineMutation(
   });
 }
 
+interface RecentLocalWrite {
+  data: Record<string, unknown>;
+  updated_at: string;
+  expiresAt: number;
+}
+
+const recentLocalWrites = new Map<string, RecentLocalWrite>();
+
+export function markLocalWrite(
+  table: string,
+  id: string,
+  data: Record<string, unknown>,
+  updatedAt?: string,
+  ttlMs = 6000
+): void {
+  const key = makeRecordKey(table, id);
+  recentLocalWrites.set(key, {
+    data,
+    updated_at: updatedAt || new Date().toISOString(),
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
+export function hasRecentLocalWrite(table: string, id?: string): boolean {
+  const now = Date.now();
+  if (id) {
+    const key = makeRecordKey(table, id);
+    const entry = recentLocalWrites.get(key);
+    if (!entry) return false;
+    if (entry.expiresAt <= now) {
+      recentLocalWrites.delete(key);
+      return false;
+    }
+    return true;
+  }
+  const prefix = `${clinicId}:${table}:`;
+  for (const [k, v] of recentLocalWrites.entries()) {
+    if (v.expiresAt <= now) {
+      recentLocalWrites.delete(k);
+      continue;
+    }
+    if (k.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function applyRecentLocalWrites(table: string, fetched: CachedRow[]): CachedRow[] {
+  const now = Date.now();
+  const prefix = `${clinicId}:${table}:`;
+  const byId = new Map<string, CachedRow>();
+  for (const r of fetched) {
+    byId.set(r.id, r);
+  }
+  for (const [key, entry] of recentLocalWrites.entries()) {
+    if (entry.expiresAt <= now) {
+      recentLocalWrites.delete(key);
+      continue;
+    }
+    if (key.startsWith(prefix)) {
+      const rowId = key.slice(prefix.length);
+      byId.set(rowId, {
+        id: rowId,
+        data: entry.data,
+        updated_at: entry.updated_at,
+      });
+    }
+  }
+  return Array.from(byId.values());
+}
+
 let isFlushingOutbox = false;
 
 export async function flushOfflineOutbox(): Promise<void> {
@@ -342,7 +412,6 @@ export async function flushOfflineOutbox(): Promise<void> {
             clinic_id: clinicId,
             id: m.id,
             data: m.data,
-            updated_at: m.updated_at,
           },
           { onConflict: 'clinic_id,id' }
         );
@@ -381,63 +450,38 @@ export async function flushOfflineOutbox(): Promise<void> {
 
 export async function syncTableIncremental(
   table: string,
-  forceFull = false
+  _forceFull = false
 ): Promise<{ rows: CachedRow[]; error: Error | null }> {
   const cached = await getCachedTableRows(table);
 
   if (!supabase || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
-    return { rows: cached, error: null };
+    return { rows: applyRecentLocalWrites(table, cached), error: null };
   }
 
   await flushOfflineOutbox();
 
-  const lastSyncedAt = forceFull ? null : await getLastSyncedAt(table);
-  const shouldIncremental = Boolean(lastSyncedAt && cached.length > 0 && !forceFull);
-
-  let query = supabase
+  const { data, error } = await supabase
     .from(table)
     .select('id, data, updated_at')
     .eq('clinic_id', clinicId);
 
-  if (shouldIncremental && lastSyncedAt) {
-    query = query.gt('updated_at', lastSyncedAt).order('updated_at', { ascending: true });
-  }
-
-  const { data, error } = await query;
-
   if (error) {
-    return { rows: cached, error: new Error(error.message) };
+    return { rows: applyRecentLocalWrites(table, cached), error: new Error(error.message) };
   }
 
-  const fetched = (data || []) as CachedRow[];
+  const fetched = applyRecentLocalWrites(table, (data || []) as CachedRow[]);
+  await replaceCachedTableRows(table, fetched);
 
-  if (shouldIncremental) {
-    if (fetched.length > 0) {
-      await putCachedTableRows(table, fetched);
-      let maxTs = lastSyncedAt!;
-      for (const r of fetched) {
-        if (r.updated_at && r.updated_at > maxTs) {
-          maxTs = r.updated_at;
-        }
-      }
-      await setLastSyncedAt(table, maxTs);
-      const merged = await getCachedTableRows(table);
-      return { rows: merged, error: null };
+  let maxTs = new Date(0).toISOString();
+  for (const r of fetched) {
+    if (r.updated_at && r.updated_at > maxTs) {
+      maxTs = r.updated_at;
     }
-    return { rows: cached, error: null };
-  } else {
-    await replaceCachedTableRows(table, fetched);
-    let maxTs = new Date(0).toISOString();
-    for (const r of fetched) {
-      if (r.updated_at && r.updated_at > maxTs) {
-        maxTs = r.updated_at;
-      }
-    }
-    if (fetched.length > 0) {
-      await setLastSyncedAt(table, maxTs);
-    }
-    return { rows: fetched, error: null };
   }
+  if (fetched.length > 0) {
+    await setLastSyncedAt(table, maxTs);
+  }
+  return { rows: fetched, error: null };
 }
 
 export function notifyTableMutated(tables: string | string[], forceFull = false): void {

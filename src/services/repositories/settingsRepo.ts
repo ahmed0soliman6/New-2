@@ -34,16 +34,19 @@ function subscribeSettingDoc<T>(
   error: (reason: Error) => void
 ): UnsubscribeFn {
   let isCancelled = false;
+  let lastEmittedJson: string | undefined = undefined;
 
   const emitFromRows = (rows: Array<{ id: string; data: Record<string, unknown> }>) => {
     if (isCancelled) return;
     const row = rows.find((r) => r.id === docId);
-    if (row && row.data && typeof row.data === 'object') {
-      const normalized = normalize(row.data) as Record<string, any>;
-      next(extract(normalized));
-    } else {
-      next(null);
-    }
+    const extracted =
+      row && row.data && typeof row.data === 'object'
+        ? extract(normalize(row.data) as Record<string, any>)
+        : null;
+    const serialized = JSON.stringify(extracted);
+    if (serialized === lastEmittedJson) return;
+    lastEmittedJson = serialized;
+    next(extracted);
   };
 
   const syncDoc = async (forceFull = false) => {

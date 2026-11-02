@@ -6,6 +6,7 @@ import {
   enqueueOfflineMutation,
   syncTableIncremental,
   notifyTableMutated,
+  markLocalWrite,
 } from '../offlineSync';
 
 export type DbClient = unknown;
@@ -361,10 +362,12 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
       ? cachedExisting.data
       : {};
 
+  const optimisticMerged = { ...localPrev, ...data };
+  markLocalWrite(tableName, itemId, optimisticMerged, nowIso);
+  await putCachedTableRows(tableName, [{ id: itemId, data: optimisticMerged, updated_at: nowIso }]);
+
   if (!supabase || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
-    const mergedOffline = { ...localPrev, ...data };
-    await putCachedTableRows(tableName, [{ id: itemId, data: mergedOffline, updated_at: nowIso }]);
-    await enqueueOfflineMutation('upsert', tableName, itemId, mergedOffline, nowIso);
+    await enqueueOfflineMutation('upsert', tableName, itemId, optimisticMerged, nowIso);
     notifyTableMutated(tableName, false);
     return;
   }
@@ -384,15 +387,17 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
 
     const mergedData = {
       ...prevData,
+      ...localPrev,
       ...data,
     };
+
+    markLocalWrite(tableName, itemId, mergedData, nowIso);
 
     const { error: upsertErr } = await supabase.from(tableName).upsert(
       {
         clinic_id: clinicId,
         id: itemId,
         data: mergedData,
-        updated_at: nowIso,
       },
       { onConflict: 'clinic_id,id' }
     );

@@ -1,11 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { formatBranchTime, generateAllDayTimeOptions } from '../../utils/clinicBranches';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { formatBranchTime, generateAllDayTimeOptions, saveClinicBranches } from '../../utils/clinicBranches';
 import { QrCodeImage } from '../QrCodeImage';
 import { exportPrescriptionToPdf } from '../../utils/exportPrescriptionPdf';
 import { printPrescriptionDocument } from '../../utils/printPrescription';
 import { CLINIC_INFO } from '../../data/previewClinicData';
 import { supabase } from '../../services/supabase';
-import { saveCatalogItem, saveSettingsDocument, subscribeToPrescriptionSettings } from '../../services/repositories';
+import {
+  saveCatalogItem,
+  saveSettingsDocument,
+  subscribeToPrescriptionSettings,
+  subscribeToPrinterSettings,
+} from '../../services/repositories';
 import { safeStorage, StorageKeys } from '../../services/storage';
 import { usePermissions } from '../../context/AuthContext';
 import { PermissionGate } from '../auth/PermissionGate';
@@ -178,20 +183,61 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     return DEFAULT_LAYOUT;
   });
 
-  // Real-time synchronization across accounts from Firestore
+  const configRef = useRef<PrescriptionLayoutSettings>(config);
+  configRef.current = config;
+
+  const dirtyVersionRef = useRef(0);
+  const savedVersionRef = useRef(0);
+  const lastUserEditAtRef = useRef(0);
+  const isAutoSavingRef = useRef(false);
+  const [editVersion, setEditVersion] = useState(0);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving'>('saved');
+
+  const updateConfig = useCallback(
+    (updater: PrescriptionLayoutSettings | ((prev: PrescriptionLayoutSettings) => PrescriptionLayoutSettings)) => {
+      lastUserEditAtRef.current = Date.now();
+      dirtyVersionRef.current += 1;
+      setConfig((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        configRef.current = next;
+        safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, next);
+        return next;
+      });
+      window.dispatchEvent(new Event('soli_prescription_updated'));
+      window.dispatchEvent(new Event('storage'));
+      setAutoSaveStatus('saving');
+      setEditVersion((v) => v + 1);
+    },
+    []
+  );
+
+  // Real-time synchronization across accounts from Supabase without overwriting active local edits
   useEffect(() => {
     if (!supabase) return;
     const unsubscribe = subscribeToPrescriptionSettings<PrescriptionLayoutSettings>(
       supabase,
       (remoteConfig) => {
-        if (remoteConfig && Object.keys(remoteConfig).length > 0) {
-          setConfig((prev) => ({
+        if (!remoteConfig || Object.keys(remoteConfig).length === 0) return;
+        if (
+          dirtyVersionRef.current > savedVersionRef.current ||
+          isAutoSavingRef.current ||
+          Date.now() - lastUserEditAtRef.current < 4000
+        ) {
+          return;
+        }
+        setConfig((prev) => {
+          const merged: PrescriptionLayoutSettings = {
             ...prev,
             ...remoteConfig,
-          }));
-          safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, remoteConfig);
+          };
+          if (JSON.stringify(merged) === JSON.stringify(prev)) {
+            return prev;
+          }
+          configRef.current = merged;
+          safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, merged);
           window.dispatchEvent(new Event('soli_prescription_updated'));
-        }
+          return merged;
+        });
       },
       (err) => {
         console.warn('Prescription settings subscription error:', err);
@@ -200,46 +246,100 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     return () => unsubscribe();
   }, []);
 
-  // Instantly reflect prescription configuration changes (including doctor name) across all screens and auto-sync
-  const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving'>('saved');
-
+  // Debounced auto-save triggered ONLY by actual user edits (never by initial mount or remote sync)
   useEffect(() => {
-    safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, config);
-    window.dispatchEvent(new Event('soli_prescription_updated'));
-    window.dispatchEvent(new Event('storage'));
+    if (editVersion === 0 || dirtyVersionRef.current <= savedVersionRef.current) {
+      return;
+    }
 
+    const versionToSave = dirtyVersionRef.current;
     setAutoSaveStatus('saving');
+
     const timer = setTimeout(async () => {
+      const snapshot = configRef.current;
+      isAutoSavingRef.current = true;
+      lastUserEditAtRef.current = Date.now();
       try {
         if (supabase) {
-          await saveSettingsDocument(supabase, 'prescriptionSettings', config as unknown as Record<string, unknown>);
-          await saveSettingsDocument(supabase, 'doctorProfile', {
-            doctorNameAr: config.doctorName,
-            doctorNameEn: config.doctorNameEn,
-            specialtyAr: config.specialtyAr,
-            specialtyEn: config.specialtyEn,
-            credentialsAr: [config.degreesAr],
-            credentialsEn: [config.degreesEn],
-            phone: config.phone,
-            logoUrl: config.logoUrl,
-            updatedAt: new Date().toISOString(),
-          });
+          await Promise.all([
+            saveSettingsDocument(supabase, 'prescriptionSettings', snapshot as unknown as Record<string, unknown>),
+            saveSettingsDocument(supabase, 'doctorProfile', {
+              doctorNameAr: snapshot.doctorName,
+              doctorNameEn: snapshot.doctorNameEn,
+              specialtyAr: snapshot.specialtyAr,
+              specialtyEn: snapshot.specialtyEn,
+              credentialsAr: [snapshot.degreesAr],
+              credentialsEn: [snapshot.degreesEn],
+              phone: snapshot.phone,
+              logoUrl: snapshot.logoUrl,
+              updatedAt: new Date().toISOString(),
+            }),
+          ]);
         }
       } catch (err) {
         console.warn('Auto-save prescription settings background sync error:', err);
       } finally {
-        setAutoSaveStatus('saved');
+        savedVersionRef.current = Math.max(savedVersionRef.current, versionToSave);
+        isAutoSavingRef.current = false;
+        if (dirtyVersionRef.current <= savedVersionRef.current) {
+          setAutoSaveStatus('saved');
+        }
       }
-    }, 600);
+    }, 650);
 
     return () => clearTimeout(timer);
-  }, [config]);
+  }, [editVersion]);
 
   const [activeTab, setActiveTab] = useState<'layout' | 'header' | 'qr' | 'branches' | 'printers'>('layout');
   const [printerPaper, setPrinterPaper] = useState<string>(() => safeStorage.getItem(StorageKeys.PRINTER_PAPER, '80mm') || '80mm');
   const [autoPrintReceipt, setAutoPrintReceipt] = useState<boolean>(() => safeStorage.getItem(StorageKeys.AUTO_PRINT) !== 'false');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) return;
+    const unsubscribe = subscribeToPrinterSettings<{ printerPaper?: string; autoPrintReceipt?: boolean }>(
+      supabase,
+      (remotePrinter) => {
+        if (!remotePrinter) return;
+        if (Date.now() - lastUserEditAtRef.current < 4000 || isAutoSavingRef.current) return;
+        if (remotePrinter.printerPaper) {
+          setPrinterPaper(remotePrinter.printerPaper);
+          safeStorage.setItem(StorageKeys.PRINTER_PAPER, remotePrinter.printerPaper);
+        }
+        if (typeof remotePrinter.autoPrintReceipt === 'boolean') {
+          setAutoPrintReceipt(remotePrinter.autoPrintReceipt);
+          safeStorage.setItem(StorageKeys.AUTO_PRINT, String(remotePrinter.autoPrintReceipt));
+        }
+      },
+      (err) => {
+        console.warn('Printer settings subscription error:', err);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handlePrinterSettingChange = async (nextPaper: string, nextAutoPrint: boolean) => {
+    lastUserEditAtRef.current = Date.now();
+    setPrinterPaper(nextPaper);
+    setAutoPrintReceipt(nextAutoPrint);
+    safeStorage.setItem(StorageKeys.PRINTER_PAPER, nextPaper);
+    safeStorage.setItem(StorageKeys.AUTO_PRINT, String(nextAutoPrint));
+    setAutoSaveStatus('saving');
+    try {
+      if (supabase) {
+        await saveSettingsDocument(supabase, 'printerSettings', {
+          printerPaper: nextPaper,
+          autoPrintReceipt: nextAutoPrint,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.warn('Printer settings save error:', err);
+    } finally {
+      setAutoSaveStatus('saved');
+    }
+  };
 
   // Branch form state (Add & Edit)
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
@@ -307,7 +407,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     reader.onload = (event) => {
       const result = event.target?.result as string;
       if (result) {
-        setConfig((prev) => ({ ...prev, logoUrl: result, showLogo: true }));
+        updateConfig((prev) => ({ ...prev, logoUrl: result, showLogo: true }));
       }
     };
     reader.readAsDataURL(file);
@@ -317,26 +417,60 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     try {
       assertPermission('settings.edit', 'حفظ إعدادات الروشتة والطباعة');
       setIsSaving(true);
+      setAutoSaveStatus('saving');
+      lastUserEditAtRef.current = Date.now();
+      isAutoSavingRef.current = true;
+      const snapshot = configRef.current;
+
+      safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, snapshot);
+      safeStorage.setItem(StorageKeys.PRINTER_PAPER, printerPaper);
+      safeStorage.setItem(StorageKeys.AUTO_PRINT, String(autoPrintReceipt));
+      saveClinicBranches(
+        snapshot.branches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          address: b.address || '',
+          phone: b.phone || '',
+          mobile: b.phone || '',
+          workingHours: b.workingHours || '',
+          startTime: b.startTime || '16:00',
+          endTime: b.endTime || '22:00',
+        }))
+      );
+
       if (supabase) {
-        await saveSettingsDocument(supabase, 'prescriptionSettings', config as unknown as Record<string, unknown>);
-        await saveSettingsDocument(supabase, 'doctorProfile', {
-          doctorNameAr: config.doctorName,
-          doctorNameEn: config.doctorNameEn,
-          specialtyAr: config.specialtyAr,
-          specialtyEn: config.specialtyEn,
-          credentialsAr: [config.degreesAr],
-          credentialsEn: [config.degreesEn],
-          phone: config.phone,
-          logoUrl: config.logoUrl,
-          updatedAt: new Date().toISOString(),
-        });
+        await Promise.all([
+          saveSettingsDocument(supabase, 'prescriptionSettings', snapshot as unknown as Record<string, unknown>),
+          saveSettingsDocument(supabase, 'doctorProfile', {
+            doctorNameAr: snapshot.doctorName,
+            doctorNameEn: snapshot.doctorNameEn,
+            specialtyAr: snapshot.specialtyAr,
+            specialtyEn: snapshot.specialtyEn,
+            credentialsAr: [snapshot.degreesAr],
+            credentialsEn: [snapshot.degreesEn],
+            phone: snapshot.phone,
+            logoUrl: snapshot.logoUrl,
+            updatedAt: new Date().toISOString(),
+          }),
+          saveSettingsDocument(supabase, 'clinicBranches', {
+            branches: snapshot.branches,
+            updatedAt: new Date().toISOString(),
+          }),
+          saveSettingsDocument(supabase, 'printerSettings', {
+            printerPaper,
+            autoPrintReceipt,
+            updatedAt: new Date().toISOString(),
+          }),
+        ]);
       }
-      safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, config);
+      savedVersionRef.current = dirtyVersionRef.current;
+      setAutoSaveStatus('saved');
       setToastMessage('تم حفظ وتزامن إعدادات الروشتة وبيانات الطبيب بنجاح عبر جميع الحسابات!');
       setTimeout(() => setToastMessage(null), 3500);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'تعذر حفظ الإعدادات');
     } finally {
+      isAutoSavingRef.current = false;
       setIsSaving(false);
     }
   };
@@ -380,6 +514,27 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     setShowAddBranchModal(true);
   };
 
+  const syncBranchesEverywhere = (nextBranches: PrescriptionLayoutSettings['branches']) => {
+    saveClinicBranches(
+      nextBranches.map((b) => ({
+        id: b.id,
+        name: b.name,
+        address: b.address || '',
+        phone: b.phone || '',
+        mobile: b.phone || '',
+        workingHours: b.workingHours || '',
+        startTime: b.startTime || '16:00',
+        endTime: b.endTime || '22:00',
+      }))
+    );
+    if (supabase) {
+      saveSettingsDocument(supabase, 'clinicBranches', {
+        branches: nextBranches,
+        updatedAt: new Date().toISOString(),
+      }).catch((err) => console.warn('Branch sync error:', err));
+    }
+  };
+
   const handleSaveBranch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBranchName.trim()) return;
@@ -387,9 +542,8 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     const finalHours = computeFinalWorkingHours(newBranchDays, newCustomBranchDays, newBranchStartTime, newBranchEndTime);
 
     if (editingBranchId) {
-      setConfig((prev) => ({
-        ...prev,
-        branches: prev.branches.map((b) =>
+      updateConfig((prev) => {
+        const updatedBranches = prev.branches.map((b) =>
           b.id === editingBranchId
             ? {
                 ...b,
@@ -401,8 +555,13 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 endTime: newBranchEndTime,
               }
             : b
-        ),
-      }));
+        );
+        syncBranchesEverywhere(updatedBranches);
+        return {
+          ...prev,
+          branches: updatedBranches,
+        };
+      });
     } else {
       const newBranch = {
         id: `branch-${Date.now()}`,
@@ -414,10 +573,14 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
         endTime: newBranchEndTime,
       };
 
-      setConfig((prev) => ({
-        ...prev,
-        branches: [...prev.branches, newBranch],
-      }));
+      updateConfig((prev) => {
+        const updatedBranches = [...prev.branches, newBranch];
+        syncBranchesEverywhere(updatedBranches);
+        return {
+          ...prev,
+          branches: updatedBranches,
+        };
+      });
     }
 
     setNewBranchName('');
@@ -429,10 +592,14 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
   };
 
   const handleRemoveBranch = (id: string) => {
-    setConfig((prev) => ({
-      ...prev,
-      branches: prev.branches.filter((b) => b.id !== id),
-    }));
+    updateConfig((prev) => {
+      const updatedBranches = prev.branches.filter((b) => b.id !== id);
+      syncBranchesEverywhere(updatedBranches);
+      return {
+        ...prev,
+        branches: updatedBranches,
+      };
+    });
   };
 
   const handlePrintTest = () => {
@@ -603,7 +770,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                   <input
                     type="checkbox"
                     checked={config.preprintedPaperMode}
-                    onChange={(e) => setConfig({ ...config, preprintedPaperMode: e.target.checked })}
+                    onChange={(e) => updateConfig((prev) => ({ ...prev, preprintedPaperMode: e.target.checked }))}
                     className="w-4 h-4 rounded text-amber-600 accent-amber-600 focus:ring-0"
                   />
                   <span>وضع الورق المطبوع مسبقاً (المحتوى الطبي فقط)</span>
@@ -620,7 +787,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <input
                       type="checkbox"
                       checked={config.showHeader}
-                      onChange={(e) => setConfig({ ...config, showHeader: e.target.checked })}
+                      onChange={(e) => updateConfig((prev) => ({ ...prev, showHeader: e.target.checked }))}
                       className="w-4 h-4 rounded text-[#00c2cb] accent-[#00c2cb]"
                     />
                     <span className="font-bold">إظهار رأس الروشتة</span>
@@ -630,7 +797,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <input
                       type="checkbox"
                       checked={config.showFooter}
-                      onChange={(e) => setConfig({ ...config, showFooter: e.target.checked })}
+                      onChange={(e) => updateConfig((prev) => ({ ...prev, showFooter: e.target.checked }))}
                       className="w-4 h-4 rounded text-[#00c2cb] accent-[#00c2cb]"
                     />
                     <span className="font-bold">إظهار تذييل الروشتة</span>
@@ -645,7 +812,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 </label>
                 <select
                   value={config.outerMargin}
-                  onChange={(e) => setConfig({ ...config, outerMargin: e.target.value as unknown as PrescriptionLayoutSettings['outerMargin'] })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, outerMargin: e.target.value as unknown as PrescriptionLayoutSettings['outerMargin'] }))}
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                 >
                   <option value="very_tight">شديدة الضيق (2 مم)</option>
@@ -664,7 +831,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                   </label>
                   <select
                     value={config.headerMarginTop}
-                    onChange={(e) => setConfig({ ...config, headerMarginTop: e.target.value as unknown as PrescriptionLayoutSettings['headerMarginTop'] })}
+                    onChange={(e) => updateConfig((prev) => ({ ...prev, headerMarginTop: e.target.value as unknown as PrescriptionLayoutSettings['headerMarginTop'] }))}
                     className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                   >
                     <option value="very_tight">شديد الضيق (2 مم)</option>
@@ -684,7 +851,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                   </label>
                   <select
                     value={config.footerMarginBottom}
-                    onChange={(e) => setConfig({ ...config, footerMarginBottom: e.target.value as unknown as PrescriptionLayoutSettings['footerMarginBottom'] })}
+                    onChange={(e) => updateConfig((prev) => ({ ...prev, footerMarginBottom: e.target.value as unknown as PrescriptionLayoutSettings['footerMarginBottom'] }))}
                     className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                   >
                     <option value="very_tight">شديد الضيق (2 مم)</option>
@@ -706,7 +873,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <button
                       key={mode}
                       type="button"
-                      onClick={() => setConfig({ ...config, sectionSpacing: mode })}
+                      onClick={() => updateConfig((prev) => ({ ...prev, sectionSpacing: mode }))}
                       className={`py-2 rounded-xl border text-center font-bold transition-all ${
                         config.sectionSpacing === mode
                           ? 'bg-teal-50 dark:bg-[#00c2cb]/20 border-teal-500 text-teal-800 dark:text-[#45dee7]'
@@ -730,7 +897,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                       <button
                         key={sz}
                         type="button"
-                        onClick={() => setConfig({ ...config, footerFontSize: sz })}
+                        onClick={() => updateConfig((prev) => ({ ...prev, footerFontSize: sz }))}
                         className={`py-2 rounded-xl border text-center font-bold transition-all ${
                           config.footerFontSize === sz
                             ? 'bg-teal-50 dark:bg-[#00c2cb]/20 border-teal-500 text-teal-800 dark:text-[#45dee7]'
@@ -754,7 +921,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <button
                       key={sc}
                       type="button"
-                      onClick={() => setConfig({ ...config, contentScale: sc })}
+                      onClick={() => updateConfig((prev) => ({ ...prev, contentScale: sc }))}
                       className={`py-2 rounded-xl border text-center font-bold transition-all ${
                         config.contentScale === sc
                           ? 'bg-teal-50 dark:bg-[#00c2cb]/20 border-teal-500 text-teal-800 dark:text-[#45dee7]'
@@ -783,7 +950,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.doctorName}
-                  onChange={(e) => setConfig({ ...config, doctorName: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, doctorName: e.target.value }))}
                   placeholder="مثال: د. أحمد سليمان"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                 />
@@ -795,7 +962,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.doctorNameEn}
-                  onChange={(e) => setConfig({ ...config, doctorNameEn: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, doctorNameEn: e.target.value }))}
                   placeholder="Dr. Hazem El-Kady"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium text-left"
                   dir="ltr"
@@ -808,7 +975,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.specialtyAr}
-                  onChange={(e) => setConfig({ ...config, specialtyAr: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, specialtyAr: e.target.value }))}
                   placeholder="استشاري الباطنة والقلب والسكر"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                 />
@@ -820,7 +987,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.specialtyEn}
-                  onChange={(e) => setConfig({ ...config, specialtyEn: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, specialtyEn: e.target.value }))}
                   placeholder="Consultant of Internal Medicine & Cardiology"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium text-left"
                   dir="ltr"
@@ -833,7 +1000,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.degreesAr}
-                  onChange={(e) => setConfig({ ...config, degreesAr: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, degreesAr: e.target.value }))}
                   placeholder="دكتوراه الباطنة العامة - جامعة القاهرة • زميل الكلية الملكية للأطباء"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium"
                 />
@@ -845,7 +1012,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.degreesEn}
-                  onChange={(e) => setConfig({ ...config, degreesEn: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, degreesEn: e.target.value }))}
                   placeholder="M.D., MRCP (London) • Cairo University"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium text-left"
                   dir="ltr"
@@ -858,7 +1025,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="text"
                   value={config.phone}
-                  onChange={(e) => setConfig({ ...config, phone: e.target.value })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, phone: e.target.value }))}
                   placeholder="01092847162"
                   className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-mono"
                 />
@@ -872,7 +1039,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <input
                       type="checkbox"
                       checked={config.showLogo}
-                      onChange={(e) => setConfig({ ...config, showLogo: e.target.checked })}
+                      onChange={(e) => updateConfig((prev) => ({ ...prev, showLogo: e.target.checked }))}
                       className="w-3.5 h-3.5 rounded text-[#00c2cb] accent-[#00c2cb]"
                     />
                     <span>إظهار الشعار بالروشتة</span>
@@ -889,7 +1056,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                       />
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, logoUrl: null })}
+                        onClick={() => updateConfig((prev) => ({ ...prev, logoUrl: null }))}
                         className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-xs shadow-md"
                         title="حذف الشعار"
                       >
@@ -934,7 +1101,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                 <input
                   type="checkbox"
                   checked={config.showQr}
-                  onChange={(e) => setConfig({ ...config, showQr: e.target.checked })}
+                  onChange={(e) => updateConfig((prev) => ({ ...prev, showQr: e.target.checked }))}
                   className="w-4 h-4 rounded text-[#00c2cb] accent-[#00c2cb]"
                 />
                 <span>☑ إظهار QR Code في الروشتة المطبوعة</span>
@@ -948,7 +1115,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, qrType: 'whatsapp' })}
+                        onClick={() => updateConfig((prev) => ({ ...prev, qrType: 'whatsapp' }))}
                         className={`py-2 px-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1 transition-all ${
                           config.qrType === 'whatsapp'
                             ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-800 dark:text-emerald-300'
@@ -961,7 +1128,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, qrType: 'booking' })}
+                        onClick={() => updateConfig((prev) => ({ ...prev, qrType: 'booking' }))}
                         className={`py-2 px-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1 transition-all ${
                           config.qrType === 'booking'
                             ? 'bg-teal-50 dark:bg-[#00c2cb]/20 border-teal-500 text-teal-800 dark:text-[#45dee7]'
@@ -974,7 +1141,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => setConfig({ ...config, qrType: 'custom' })}
+                        onClick={() => updateConfig((prev) => ({ ...prev, qrType: 'custom' }))}
                         className={`py-2 px-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1 transition-all ${
                           config.qrType === 'custom'
                             ? 'bg-purple-50 dark:bg-purple-950/30 border-purple-500 text-purple-800 dark:text-purple-300'
@@ -996,7 +1163,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                       <input
                         type="text"
                         value={config.qrWhatsappPhone}
-                        onChange={(e) => setConfig({ ...config, qrWhatsappPhone: e.target.value })}
+                        onChange={(e) => updateConfig((prev) => ({ ...prev, qrWhatsappPhone: e.target.value }))}
                         placeholder="01092847162"
                         className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-mono"
                       />
@@ -1027,7 +1194,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                       <input
                         type="url"
                         value={config.qrCustomUrl}
-                        onChange={(e) => setConfig({ ...config, qrCustomUrl: e.target.value })}
+                        onChange={(e) => updateConfig((prev) => ({ ...prev, qrCustomUrl: e.target.value }))}
                         placeholder="https://solimedical.com"
                         className={`w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-[#18233C] border text-slate-800 dark:text-white font-mono text-left ${
                           isCustomUrlValid ? 'border-slate-200 dark:border-white/10' : 'border-rose-500 focus:border-rose-500'
@@ -1045,7 +1212,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                         <button
                           key={sz}
                           type="button"
-                          onClick={() => setConfig({ ...config, qrSize: sz })}
+                          onClick={() => updateConfig((prev) => ({ ...prev, qrSize: sz }))}
                           className={`py-2 rounded-xl border text-center font-bold transition-all ${
                             config.qrSize === sz
                               ? 'bg-teal-50 dark:bg-[#00c2cb]/20 border-teal-500 text-teal-800 dark:text-[#45dee7]'
@@ -1157,8 +1324,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                   <select
                     value={printerPaper}
                     onChange={(e) => {
-                      setPrinterPaper(e.target.value);
-                      safeStorage.setItem(StorageKeys.PRINTER_PAPER, e.target.value);
+                      void handlePrinterSettingChange(e.target.value, autoPrintReceipt);
                     }}
                     className="w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white font-medium focus:outline-none cursor-pointer"
                   >
@@ -1174,8 +1340,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
                     id="autoPrintRx"
                     checked={autoPrintReceipt}
                     onChange={(e) => {
-                      setAutoPrintReceipt(e.target.checked);
-                      safeStorage.setItem(StorageKeys.AUTO_PRINT, String(e.target.checked));
+                      void handlePrinterSettingChange(printerPaper, e.target.checked);
                     }}
                     className="w-4 h-4 rounded text-[#00c2cb] accent-[#00c2cb] cursor-pointer"
                   />

@@ -190,6 +190,7 @@ import { buildTransactions } from './utils/buildTransactions';
 import { READ_OPT, HOT_DAYS, APPT_PAST_DAYS } from './config/readOpt';
 import { subscribeMerged } from './services/repositories/windowed';
 import { invalidatePatientHistory } from './services/history';
+import { hasRecentLocalWrite } from './services/offlineSync';
 
 // Merged full initial reference catalogs combining database.ts and previewMedicalCatalogs.ts
 const INITIAL_RADIOLOGY_FULL: RadiologyType[] = (() => {
@@ -823,9 +824,13 @@ function ClinicApp() {
         subscribeToRecurringTemplates(db, (templates) => { if (templates) setCachedRecurringTemplates(templates); }, onError),
         subscribeToPrescriptionSettings(db, (settings) => {
           if (settings && Object.keys(settings).length > 0) {
-            localStorage.setItem('soli_prescription_settings', JSON.stringify(settings));
-            window.dispatchEvent(new Event('soli_prescription_updated'));
-            window.dispatchEvent(new Event('storage'));
+            if (hasRecentLocalWrite('settings', 'prescriptionSettings')) return;
+            const nextJson = JSON.stringify(settings);
+            if (localStorage.getItem('soli_prescription_settings') !== nextJson) {
+              localStorage.setItem('soli_prescription_settings', nextJson);
+              window.dispatchEvent(new Event('soli_prescription_updated'));
+              window.dispatchEvent(new Event('storage'));
+            }
           }
         }, onError),
       );
