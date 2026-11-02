@@ -1,33 +1,42 @@
-import {
-  collection,
-  doc,
-  deleteDoc,
-  getDoc,
-  runTransaction,
-  serverTimestamp,
-  Timestamp,
-  type Firestore,
-} from 'firebase/firestore';
+import { supabase, clinicId } from './supabase';
 import type {
   Appointment,
-  FollowUp,
-  LabOrder,
   Patient,
   PaymentMethod,
-  Prescription,
   PrescriptionItemSnapshot,
-  RadiologyOrder,
   OrderStatus,
   Visit,
 } from '../types/database';
 import { toDayKey, todayKey } from '../utils/dayKey';
 
+export type Firestore = unknown;
+
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 const now = () => new Date().toISOString();
 
+function requireDb() {
+  if (!supabase) {
+    throw new Error('قاعدة البيانات غير متصلة حالياً. يرجى التحقق من إعدادات الاتصال بـ Supabase.');
+  }
+  return supabase;
+}
+
+function toArabicError(error: unknown, fallbackMessage: string): Error {
+  const raw = error instanceof Error ? error.message : String((error as any)?.message || error || '');
+  if (raw.includes('Appointment not found')) {
+    return new Error('الموعد غير موجود في قاعدة البيانات.');
+  }
+  if (raw.includes('Only scheduled appointments can be checked in')) {
+    return new Error('لا يمكن تسجيل الحضور إلا للمواعيد المجدولة فقط.');
+  }
+  if (raw.includes('Unauthorized')) {
+    return new Error('غير مصرح لحسابك بتنفيذ هذه العملية في هذه العيادة.');
+  }
+  return new Error(raw ? `${fallbackMessage}: ${raw}` : fallbackMessage);
+}
+
 /**
- * Strips all undefined fields recursively so Firestore never throws
- * "Unsupported field value: undefined".
+ * Strips all undefined fields recursively before JSONB serialization.
  */
 export function removeUndefined<T extends Record<string, any>>(obj: T): Record<string, any> {
   const result: Record<string, any> = {};
@@ -76,94 +85,41 @@ export async function checkInAppointmentTransaction(params: {
   queueNumber?: number;
   receptionistData: Visit['receptionistData'];
 }): Promise<{ appointment: Appointment; visit: Visit }> {
-  return runTransaction(params.db, async (tx) => {
-    const today = todayKey();
-    const counterRef = doc(params.db, 'counters', `queue_${today}`);
-    const appointmentRef = doc(params.db, 'appointments', params.appointmentId);
+  const client = requireDb();
+  const today = todayKey();
+  const timestamp = now();
+  const visitId = id('vis');
+  const invoiceId = id('inv');
+  const paymentId = id('pay');
+  const receiptNumber = id('REC');
 
-    const [appointmentSnap, counterSnap] = await Promise.all([
-      tx.get(appointmentRef),
-      tx.get(counterRef),
-    ]);
-
-    if (!appointmentSnap.exists()) throw new Error('Appointment not found');
-    const appointment = appointmentSnap.data() as Appointment;
-    if (appointment.status !== 'SCHEDULED') throw new Error('Only scheduled appointments can be checked in');
-
-    let assignedQueueNumber: number;
-    if (params.queueNumber && params.queueNumber > 0) {
-      assignedQueueNumber = params.queueNumber;
-    } else {
-      assignedQueueNumber = counterSnap.exists() ? ((counterSnap.data()?.lastNumber || 0) + 1) : 1;
-    }
-
-    const visitId = id('vis');
-    const invoiceId = id('inv');
-    const paymentId = id('pay');
-    const receiptNumber = id('REC');
-    const timestamp = now();
-
-    const visit: Visit = {
-      visitId,
-      patientId: appointment.patientId,
-      appointmentId: appointment.appointmentId,
-      clinicLocationId: appointment.clinicLocationId || 'loc-mohandessin',
-      visitType: params.paymentAmount === 0 ? 'FOLLOW_UP' : 'NEW',
-      source: 'APPOINTMENT',
-      status: 'WAITING',
-      queueNumber: assignedQueueNumber,
-      receptionistData: params.receptionistData,
-      clinicalData: emptyClinicalData,
-      vitalSigns: emptyVitals,
-      startedAt: null,
-      completedAt: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdBy: params.receivedBy,
-      doctorId: '',
-      dayKey: today,
-    };
-
-    const invoiceRef = doc(params.db, 'invoices', invoiceId);
-    const paymentRef = doc(params.db, 'payments', paymentId);
-    const visitRef = doc(params.db, 'visits', visitId);
-
-    tx.set(counterRef, { lastNumber: assignedQueueNumber, date: today }, { merge: true });
-    tx.update(appointmentRef, { status: 'ARRIVED', updatedAt: serverTimestamp() });
-    tx.set(invoiceRef, {
-      invoiceId,
-      patientId: appointment.patientId,
-      visitId,
-      clinicLocationId: appointment.clinicLocationId || 'loc-mohandessin',
-      items: [],
-      subtotal: params.paymentAmount,
-      discount: 0,
-      total: params.paymentAmount,
-      paidAmount: params.paymentAmount,
-      remainingAmount: 0,
-      status: 'PAID',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      dayKey: today,
-    });
-    tx.set(paymentRef, {
-      paymentId,
-      patientId: appointment.patientId,
-      visitId,
-      invoiceId,
-      clinicLocationId: appointment.clinicLocationId || 'loc-mohandessin',
-      amount: params.paymentAmount,
-      method: params.paymentMethod,
-      status: 'PAID',
-      receiptNumber,
-      paidAt: serverTimestamp(),
-      receivedBy: params.receivedBy,
-      dayKey: today,
-    });
-    tx.set(visitRef, { ...visit, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), dayKey: today });
-
-    return { appointment: { ...appointment, status: 'ARRIVED', updatedAt: timestamp }, visit };
+  const { data, error } = await client.rpc('check_in_appointment', {
+    p_clinic_id: clinicId,
+    p_appointment_id: params.appointmentId,
+    p_today: today,
+    p_timestamp: timestamp,
+    p_requested_queue_number: params.queueNumber && params.queueNumber > 0 ? params.queueNumber : null,
+    p_visit_id: visitId,
+    p_invoice_id: invoiceId,
+    p_payment_id: paymentId,
+    p_receipt_number: receiptNumber,
+    p_payment_amount: Number(params.paymentAmount) || 0,
+    p_payment_method: params.paymentMethod,
+    p_received_by: params.receivedBy,
+    p_receptionist_data: removeUndefined(
+      params.receptionistData || { symptoms: '', chronicDiseases: [], notes: '' }
+    ),
   });
+
+  if (error || !data) {
+    throw toArabicError(error, 'تعذر تسجيل حضور الموعد في قاعدة البيانات');
+  }
+
+  const payload = data as { appointment: Appointment; visit: Visit };
+  return {
+    appointment: payload.appointment,
+    visit: payload.visit,
+  };
 }
 
 export async function registerWalkInTransaction(params: {
@@ -177,93 +133,91 @@ export async function registerWalkInTransaction(params: {
   appointmentId?: string | null;
   receptionistData: Visit['receptionistData'];
 }): Promise<Visit> {
-  return runTransaction(params.db, async (tx) => {
-    const today = todayKey();
-    const counterRef = doc(params.db, 'counters', `queue_${today}`);
-    const counterSnap = await tx.get(counterRef);
+  const client = requireDb();
+  const today = todayKey();
+  const timestamp = now();
+  const visitId = id('vis');
+  const invoiceId = id('inv');
+  const paymentId = id('pay');
+  const receiptNumber = id('REC');
 
-    let assignedQueueNumber: number;
-    if (params.queueNumber && params.queueNumber > 0) {
-      assignedQueueNumber = params.queueNumber;
-    } else {
-      assignedQueueNumber = counterSnap.exists() ? ((counterSnap.data()?.lastNumber || 0) + 1) : 1;
-    }
-
-    const timestamp = now();
-    const visitId = id('vis');
-    const invoiceId = id('inv');
-    const paymentId = id('pay');
-
-    tx.set(counterRef, { lastNumber: assignedQueueNumber, date: today }, { merge: true });
-    tx.set(doc(params.db, 'patients', params.patient.patientId), { ...params.patient, updatedAt: serverTimestamp() }, { merge: true });
-    tx.set(doc(params.db, 'invoices', invoiceId), {
-      invoiceId,
-      patientId: params.patient.patientId,
-      visitId,
-      clinicLocationId: params.clinicLocationId,
-      items: [],
-      subtotal: params.paymentAmount,
-      discount: 0,
-      total: params.paymentAmount,
-      paidAmount: params.paymentAmount,
-      remainingAmount: 0,
-      status: 'PAID',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      dayKey: today,
-    });
-    tx.set(doc(params.db, 'payments', paymentId), {
-      paymentId,
-      patientId: params.patient.patientId,
-      visitId,
-      invoiceId,
-      clinicLocationId: params.clinicLocationId,
-      amount: params.paymentAmount,
-      method: params.paymentMethod,
-      status: 'PAID',
-      receiptNumber: id('REC'),
-      paidAt: serverTimestamp(),
-      receivedBy: params.receivedBy,
-      dayKey: today,
-    });
-
-    const visit: Visit = {
-      visitId,
-      patientId: params.patient.patientId,
-      appointmentId: params.appointmentId || null,
-      clinicLocationId: params.clinicLocationId,
-      visitType: params.paymentAmount === 0 ? 'FOLLOW_UP' : 'NEW',
-      source: 'WALK_IN',
-      status: 'WAITING',
-      queueNumber: assignedQueueNumber,
-      receptionistData: params.receptionistData,
-      clinicalData: emptyClinicalData,
-      vitalSigns: emptyVitals,
-      startedAt: null,
-      completedAt: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      createdBy: params.receivedBy,
-      doctorId: '',
-      dayKey: today,
-    };
-    tx.set(doc(params.db, 'visits', visitId), { ...visit, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), dayKey: today });
-    return visit;
+  const sanitizedPatient = removeUndefined({
+    ...params.patient,
+    createdAt: params.patient.createdAt || timestamp,
+    updatedAt: timestamp,
   });
+
+  const { data, error } = await client.rpc('register_walk_in', {
+    p_clinic_id: clinicId,
+    p_today: today,
+    p_timestamp: timestamp,
+    p_requested_queue_number: params.queueNumber && params.queueNumber > 0 ? params.queueNumber : null,
+    p_patient_id: params.patient.patientId,
+    p_patient_data: sanitizedPatient,
+    p_visit_id: visitId,
+    p_invoice_id: invoiceId,
+    p_payment_id: paymentId,
+    p_receipt_number: receiptNumber,
+    p_payment_amount: Number(params.paymentAmount) || 0,
+    p_payment_method: params.paymentMethod,
+    p_received_by: params.receivedBy,
+    p_clinic_location_id: params.clinicLocationId,
+    p_appointment_id: params.appointmentId || null,
+    p_receptionist_data: removeUndefined(
+      params.receptionistData || { symptoms: '', chronicDiseases: [], notes: '' }
+    ),
+  });
+
+  if (error || !data) {
+    throw toArabicError(error, 'تعذر تسجيل زيارة المريض في قاعدة البيانات');
+  }
+
+  return data as Visit;
 }
 
-export async function startVisitTransaction(db: Firestore, visitId: string, doctorId: string): Promise<void> {
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, 'visits', visitId);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) return;
-    const data = snap.data();
-    if (data.status === 'IN_PROGRESS') {
-      tx.update(ref, { doctorId: doctorId || data.doctorId || '', updatedAt: serverTimestamp() });
-      return;
-    }
-    tx.update(ref, { status: 'IN_PROGRESS', startedAt: serverTimestamp(), doctorId, updatedAt: serverTimestamp() });
-  });
+export async function startVisitTransaction(_db: Firestore, visitId: string, doctorId: string): Promise<void> {
+  const client = requireDb();
+  const timestamp = now();
+
+  const { data: row, error: fetchError } = await client
+    .from('visits')
+    .select('data')
+    .eq('clinic_id', clinicId)
+    .eq('id', visitId)
+    .maybeSingle();
+
+  if (fetchError) {
+    throw toArabicError(fetchError, 'تعذر قراءة بيانات الزيارة لبدء الكشف');
+  }
+  if (!row || !row.data) {
+    throw new Error('لم يتم العثور على الزيارة في قاعدة البيانات لبدء الكشف.');
+  }
+
+  const existing = row.data as Record<string, any>;
+  const updatedData =
+    existing.status === 'IN_PROGRESS'
+      ? {
+          ...existing,
+          doctorId: doctorId || existing.doctorId || '',
+          updatedAt: timestamp,
+        }
+      : {
+          ...existing,
+          status: 'IN_PROGRESS',
+          startedAt: timestamp,
+          doctorId,
+          updatedAt: timestamp,
+        };
+
+  const { error: updateError } = await client
+    .from('visits')
+    .update({ data: updatedData, updated_at: timestamp })
+    .eq('clinic_id', clinicId)
+    .eq('id', visitId);
+
+  if (updateError) {
+    throw toArabicError(updateError, 'تعذر تحديث حالة الزيارة لبدء الكشف');
+  }
 }
 
 export async function completeVisitTransaction(params: {
@@ -291,120 +245,126 @@ export async function completeVisitTransaction(params: {
   }>;
   followUp?: { scheduledDate: string; fee: number; isFree: boolean; notes: string } | null;
 }): Promise<void> {
-  await runTransaction(params.db, async (tx) => {
-    const visitRef = doc(params.db, 'visits', params.visitId);
-    const snap = await tx.get(visitRef);
-    if (!snap.exists()) return;
-    const visitData = snap.data() as Visit;
-    const patientRef = doc(params.db, 'patients', visitData.patientId);
-    const patientSnap = await tx.get(patientRef); // Read before any write
-    const alreadyCompleted = visitData.status === 'COMPLETED';
-    const day = todayKey();
+  const client = requireDb();
+  const timestamp = now();
+  const day = todayKey();
 
-    tx.update(visitRef, {
-      status: 'COMPLETED',
-      doctorId: params.doctorId,
-      clinicalData: params.clinicalData,
-      vitalSigns: params.vitalSigns,
-      completedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+  const { data: visitRow, error: visitFetchError } = await client
+    .from('visits')
+    .select('data')
+    .eq('clinic_id', clinicId)
+    .eq('id', params.visitId)
+    .maybeSingle();
 
-    if (patientSnap.exists()) {
-      const prev = patientSnap.data() as { visitsCount?: number };
-      tx.update(patientRef, {
-        hasClinicalFile: true,
-        visitsCount: alreadyCompleted ? (prev.visitsCount ?? 1) : (Number(prev.visitsCount) || 0) + 1,
-        lastVisitAt: serverTimestamp(),
-        lastDiagnosis: params.clinicalData?.diagnosis?.[0] ?? '',
-        updatedAt: serverTimestamp(),
-      });
-    }
+  if (visitFetchError) {
+    throw toArabicError(visitFetchError, 'تعذر قراءة بيانات الزيارة لإتمام الكشف');
+  }
+  if (!visitRow || !visitRow.data) {
+    throw new Error('لم يتم العثور على الزيارة في قاعدة البيانات لإتمام الكشف.');
+  }
 
-    // Save Prescription document in prescriptions collection atomically
-    if (params.prescriptionItems && params.prescriptionItems.length > 0) {
-      const rxId = id('rx');
-      const rxRef = doc(params.db, 'prescriptions', rxId);
-      tx.set(rxRef, {
-        prescriptionId: rxId,
-        patientId: visitData.patientId,
-        visitId: visitData.visitId,
-        doctorId: params.doctorId,
-        clinicLocationId: visitData.clinicLocationId || 'loc-mohandessin',
-        items: params.prescriptionItems,
-        notes: params.prescriptionNotes || '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        dayKey: day,
-      });
-    }
+  const visitData = visitRow.data as Visit;
+  const clinicLocationId = visitData.clinicLocationId || null;
 
-    // Save Lab Orders atomically with actual clinical results
-    if (params.labOrders && params.labOrders.length > 0) {
-      for (const lab of params.labOrders) {
-        const labOrderId = id('lab-ord');
-        const labRef = doc(params.db, 'labOrders', labOrderId);
-        const resolvedStatus = lab.status || (lab.result ? 'RESULT' : 'ORDERED');
-        tx.set(labRef, {
-          labOrderId,
+  const prescriptionPayload =
+    params.prescriptionItems && params.prescriptionItems.length > 0
+      ? (() => {
+          const rxId = id('rx');
+          return removeUndefined({
+            prescriptionId: rxId,
+            patientId: visitData.patientId,
+            visitId: visitData.visitId || params.visitId,
+            doctorId: params.doctorId,
+            clinicLocationId,
+            items: params.prescriptionItems,
+            notes: params.prescriptionNotes || '',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            dayKey: day,
+          });
+        })()
+      : null;
+
+  const labOrdersPayload =
+    params.labOrders && params.labOrders.length > 0
+      ? params.labOrders.map((lab) => {
+          const labOrderId = id('lab-ord');
+          const resolvedStatus = lab.status || (lab.result ? 'RESULT' : 'ORDERED');
+          return removeUndefined({
+            labOrderId,
+            patientId: visitData.patientId,
+            visitId: visitData.visitId || params.visitId,
+            testId: lab.testId || null,
+            testName: lab.testName,
+            status: resolvedStatus,
+            result: lab.result || '',
+            notes: lab.notes || '',
+            orderedAt: timestamp,
+            updatedAt: timestamp,
+            dayKey: day,
+          });
+        })
+      : [];
+
+  const radiologyOrdersPayload =
+    params.radiologyOrders && params.radiologyOrders.length > 0
+      ? params.radiologyOrders.map((rad) => {
+          const radOrderId = id('rad-ord');
+          const resolvedStatus = rad.status || (rad.report ? 'REPORT' : rad.result ? 'RESULT' : 'ORDERED');
+          return removeUndefined({
+            radiologyOrderId: radOrderId,
+            patientId: visitData.patientId,
+            visitId: visitData.visitId || params.visitId,
+            radiologyTypeId: rad.radiologyTypeId || null,
+            radiologyName: rad.radiologyName,
+            status: resolvedStatus,
+            result: rad.result || '',
+            report: rad.report || '',
+            notes: rad.notes || '',
+            orderedAt: timestamp,
+            updatedAt: timestamp,
+            dayKey: day,
+          });
+        })
+      : [];
+
+  const followUpPayload = params.followUp
+    ? (() => {
+        const followUpId = id('fol');
+        return removeUndefined({
+          followUpId,
           patientId: visitData.patientId,
-          visitId: visitData.visitId,
-          testId: lab.testId || null,
-          testName: lab.testName,
-          status: resolvedStatus,
-          result: lab.result || '',
-          notes: lab.notes || '',
-          orderedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          sourceVisitId: visitData.visitId || params.visitId,
+          clinicLocationId,
+          scheduledDate: params.followUp.scheduledDate,
+          scheduledTime: null,
+          status: 'UPCOMING',
+          fee: params.followUp.fee,
+          isFree: params.followUp.isFree,
+          notes: params.followUp.notes || '',
+          createdAt: timestamp,
+          updatedAt: timestamp,
           dayKey: day,
         });
-      }
-    }
+      })()
+    : null;
 
-    // Save Radiology Orders atomically with actual clinical reports
-    if (params.radiologyOrders && params.radiologyOrders.length > 0) {
-      for (const rad of params.radiologyOrders) {
-        const radOrderId = id('rad-ord');
-        const radRef = doc(params.db, 'radiologyOrders', radOrderId);
-        const resolvedStatus = rad.status || (rad.report ? 'REPORT' : rad.result ? 'RESULT' : 'ORDERED');
-        tx.set(radRef, {
-          radiologyOrderId: radOrderId,
-          patientId: visitData.patientId,
-          visitId: visitData.visitId,
-          radiologyTypeId: rad.radiologyTypeId || null,
-          radiologyName: rad.radiologyName,
-          status: resolvedStatus,
-          result: rad.result || '',
-          report: rad.report || '',
-          notes: rad.notes || '',
-          orderedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          dayKey: day,
-        });
-      }
-    }
-
-    // Save Follow-Up atomically
-    if (params.followUp) {
-      const followUpId = id('fol');
-      const followUpRef = doc(params.db, 'followUps', followUpId);
-      tx.set(followUpRef, {
-        followUpId,
-        patientId: visitData.patientId,
-        sourceVisitId: visitData.visitId,
-        clinicLocationId: visitData.clinicLocationId || 'loc-mohandessin',
-        scheduledDate: params.followUp.scheduledDate,
-        scheduledTime: null,
-        status: 'UPCOMING',
-        fee: params.followUp.fee,
-        isFree: params.followUp.isFree,
-        notes: params.followUp.notes || '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        dayKey: day,
-      });
-    }
+  const { error } = await client.rpc('complete_visit', {
+    p_clinic_id: clinicId,
+    p_visit_id: params.visitId,
+    p_doctor_id: params.doctorId,
+    p_timestamp: timestamp,
+    p_clinical_data: removeUndefined(params.clinicalData || emptyClinicalData),
+    p_vital_signs: removeUndefined(params.vitalSigns || emptyVitals),
+    p_prescription: prescriptionPayload,
+    p_lab_orders: labOrdersPayload,
+    p_radiology_orders: radiologyOrdersPayload,
+    p_follow_up: followUpPayload,
   });
+
+  if (error) {
+    throw toArabicError(error, 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
+  }
 }
 
 export async function createAppointmentTransaction(params: {
@@ -412,40 +372,62 @@ export async function createAppointmentTransaction(params: {
   patient?: Patient | null;
   appointment: Appointment;
 }): Promise<void> {
-  await runTransaction(params.db, async (tx) => {
-    if (params.patient && params.patient.patientId) {
-      const patientRef = doc(params.db, 'patients', params.patient.patientId);
-      const patientSnap = await tx.get(patientRef);
-      if (patientSnap.exists()) {
-        tx.update(patientRef, { updatedAt: serverTimestamp() });
-      } else {
-        tx.set(patientRef, {
-          ...removeUndefined(params.patient),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    }
-    const appointmentRef = doc(params.db, 'appointments', params.appointment.appointmentId);
-    const sanitizedAppointment = removeUndefined(params.appointment);
-    if (!sanitizedAppointment.patientId && params.patient?.patientId) {
-      sanitizedAppointment.patientId = params.patient.patientId;
-    }
-    if (!sanitizedAppointment.dayKey) {
-      sanitizedAppointment.dayKey = toDayKey(sanitizedAppointment.scheduledDate || new Date());
-    }
-    tx.set(appointmentRef, {
-      ...sanitizedAppointment,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+  const client = requireDb();
+  const timestamp = now();
+
+  const sanitizedPatient =
+    params.patient && params.patient.patientId
+      ? removeUndefined({
+          ...params.patient,
+          createdAt: params.patient.createdAt || timestamp,
+          updatedAt: timestamp,
+        })
+      : null;
+
+  const sanitizedAppointment = removeUndefined({
+    ...params.appointment,
+    patientId: params.appointment.patientId || params.patient?.patientId || '',
+    dayKey: (params.appointment as any).dayKey || toDayKey(params.appointment.scheduledDate || new Date()),
+    createdAt: params.appointment.createdAt || timestamp,
+    updatedAt: timestamp,
   });
+
+  const { error } = await client.rpc('create_appointment', {
+    p_clinic_id: clinicId,
+    p_timestamp: timestamp,
+    p_appointment_id: params.appointment.appointmentId,
+    p_appointment_data: sanitizedAppointment,
+    p_patient_id: params.patient?.patientId || null,
+    p_patient_data: sanitizedPatient,
+  });
+
+  if (error) {
+    throw toArabicError(error, 'تعذر حفظ الموعد في قاعدة البيانات');
+  }
 }
 
-export async function deleteAppointmentTransaction(db: Firestore, appointmentId: string): Promise<void> {
-  await deleteDoc(doc(db, 'appointments', appointmentId));
+export async function deleteAppointmentTransaction(_db: Firestore, appointmentId: string): Promise<void> {
+  const client = requireDb();
+  const { error } = await client
+    .from('appointments')
+    .delete()
+    .eq('clinic_id', clinicId)
+    .eq('id', appointmentId);
+
+  if (error) {
+    throw toArabicError(error, 'تعذر حذف الموعد من قاعدة البيانات');
+  }
 }
 
-export async function deletePatientTransaction(db: Firestore, patientId: string): Promise<void> {
-  await deleteDoc(doc(db, 'patients', patientId));
+export async function deletePatientTransaction(_db: Firestore, patientId: string): Promise<void> {
+  const client = requireDb();
+  const { error } = await client
+    .from('patients')
+    .delete()
+    .eq('clinic_id', clinicId)
+    .eq('id', patientId);
+
+  if (error) {
+    throw toArabicError(error, 'تعذر حذف ملف المريض من قاعدة البيانات');
+  }
 }
