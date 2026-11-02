@@ -13,11 +13,11 @@ import {
   ExpenseCategoryItem,
   ClinicExpenseRecord,
 } from '../../utils/financeManager';
-import { db } from '../../services/firebase';
-import { doc, setDoc } from 'firebase/firestore';
 import {
   subscribeToServices,
   subscribeToExpenseCategories,
+  saveCatalogItem,
+  removeCatalogItem,
 } from '../../services/repositories';
 import { toEnglishDigits, formatAppTime } from '../../utils/numberUtils';
 import { useLanguage } from '../../i18n/LanguageContext';
@@ -69,12 +69,10 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
     };
   }, []);
 
-  // Sync directly from Firestore collections
+  // Sync directly from Supabase collections
   useEffect(() => {
-    if (!db) return;
-
     const unsubServices = subscribeToServices(
-      db,
+      null,
       (srvs) => {
         if (Array.isArray(srvs)) {
           if (srvs.length > 0) {
@@ -83,7 +81,7 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
           } else {
             const current = loadMedicalServices();
             current.forEach((s) => {
-              setDoc(doc(db!, 'services', s.id), s).catch(() => {});
+              saveCatalogItem(null, 'services', s.id, s as unknown as Record<string, unknown>).catch(() => {});
             });
           }
         }
@@ -92,7 +90,7 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
     );
 
     const unsubExpCats = subscribeToExpenseCategories(
-      db,
+      null,
       (cats) => {
         if (Array.isArray(cats)) {
           if (cats.length > 0) {
@@ -101,7 +99,7 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
           } else {
             const current = loadExpenseCategories();
             current.forEach((c) => {
-              setDoc(doc(db!, 'expenseCategories', c.id), c).catch(() => {});
+              saveCatalogItem(null, 'expense_categories', c.id, c as unknown as Record<string, unknown>).catch(() => {});
             });
           }
         }
@@ -220,6 +218,10 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
         createdBy: userProfile?.displayName || 'الاستقبال',
       };
 
+      const cleanedExpense = Object.fromEntries(
+        Object.entries(newExp).filter(([_, v]) => v !== undefined)
+      );
+      await saveCatalogItem(null, 'expenses', newExp.id, cleanedExpense);
       addClinicExpense(newExp);
 
       // Register into transactions stream
@@ -699,13 +701,14 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (onDeleteTransaction && txToDelete) {
-                    onDeleteTransaction(txToDelete.id);
+                    const targetId = txToDelete.id;
+                    setTxToDelete(null);
+                    await onDeleteTransaction(targetId);
                     setToast(`تم حذف الفاتورة بنجاح`);
                     setTimeout(() => setToast(null), 3000);
                     setRefreshKey((k) => k + 1);
-                    setTxToDelete(null);
                   }
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
@@ -748,12 +751,14 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  removeClinicExpense(expenseToDelete.id);
-                  setToast(`تم حذف مصروف ${expenseToDelete.category} بنجاح`);
+                onClick={async () => {
+                  const targetExp = expenseToDelete;
+                  setExpenseToDelete(null);
+                  await removeCatalogItem(null, 'expenses', targetExp.id).catch(() => {});
+                  removeClinicExpense(targetExp.id);
+                  setToast(`تم حذف مصروف ${targetExp.category} بنجاح`);
                   setTimeout(() => setToast(null), 3000);
                   setRefreshKey((k) => k + 1);
-                  setExpenseToDelete(null);
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
               >

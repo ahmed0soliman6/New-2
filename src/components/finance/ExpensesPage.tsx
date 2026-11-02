@@ -6,12 +6,12 @@ import {
   fetchTotal,
   fetchExpensesPage,
   type PeriodSel,
+  type PageCursor,
 } from '../../services/financePaged';
 import { usePagedList } from './usePagedList';
 import { PeriodPicker, periodLabel } from './PeriodPicker';
 import { Pager } from './Pager';
 import { toEnglishDigits, formatAppDate } from '../../utils/numberUtils';
-import type { DocumentSnapshot } from 'firebase/firestore';
 
 interface ExpensesPageProps {
   refreshKey: number;
@@ -46,7 +46,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({ refreshKey, onDelete
 
   // Paginated Expenses
   const fetchPage = useCallback(
-    async (after: DocumentSnapshot | null) => {
+    async (after: PageCursor | null) => {
       return fetchExpensesPage<ClinicExpenseRecord>(periodToRange(period), after);
     },
     [period]

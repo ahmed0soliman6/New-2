@@ -1,20 +1,36 @@
 import { useCallback, useEffect, useState } from 'react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from './firebase';
-import { mapDocs } from './repositories/common';
-import { meterQuery, type MeterSource } from './readMeter';
+import { supabase, clinicId } from './supabase';
+import { mapDocs, type SupabaseDocRow } from './repositories/common';
+import { meterRead, type MeterSource } from './readMeter';
+import { toDayKey } from '../utils/dayKey';
 import type { Invoice, Payment } from '../types/database';
 
+function matchesDayRange(dayKey: string | undefined, fallbackIso: string | undefined, fromKey: string, toKey: string): boolean {
+  const resolved = dayKey || (fallbackIso ? toDayKey(fallbackIso) || fallbackIso.slice(0, 10) : '');
+  if (!resolved) return false;
+  if (fromKey && resolved < fromKey) return false;
+  if (toKey && resolved > toKey) return false;
+  return true;
+}
+
 export async function fetchFinanceRange(fromKey: string, toKey: string, source?: MeterSource) {
-  if (!db) throw new Error('Firestore غير مهيأ');
-  const range = [where('dayKey', '>=', fromKey), where('dayKey', '<=', toKey)];
-  const [pSnap, iSnap] = await Promise.all([
-    getDocs(query(collection(db, 'payments'), ...range)),
-    getDocs(query(collection(db, 'invoices'), ...range)),
+  if (!supabase) throw new Error('عميل Supabase غير مهيأ');
+  const [pRes, iRes] = await Promise.all([
+    supabase.from('payments').select('id, data, updated_at').eq('clinic_id', clinicId),
+    supabase.from('invoices').select('id, data, updated_at').eq('clinic_id', clinicId),
   ]);
-  meterQuery('financeRange:payments', pSnap, source);
-  meterQuery('financeRange:invoices', iSnap, source);
-  return { payments: mapDocs<Payment>('payments', pSnap), invoices: mapDocs<Invoice>('invoices', iSnap) };
+  if (pRes.error) throw new Error(pRes.error.message);
+  if (iRes.error) throw new Error(iRes.error.message);
+
+  const payments = mapDocs<Payment>('payments', (pRes.data || []) as SupabaseDocRow[]).filter((p) =>
+    matchesDayRange(p.dayKey, p.paidAt, fromKey, toKey)
+  );
+  const invoices = mapDocs<Invoice>('invoices', (iRes.data || []) as SupabaseDocRow[]).filter((inv) =>
+    matchesDayRange(inv.dayKey, inv.createdAt, fromKey, toKey)
+  );
+
+  meterRead(source || 'مالية', Math.max(1, payments.length + invoices.length));
+  return { payments, invoices };
 }
 
 export function useFinanceRange(fromKey: string, toKey: string, enabled: boolean, source?: MeterSource) {

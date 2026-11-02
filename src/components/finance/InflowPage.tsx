@@ -8,13 +8,13 @@ import {
   fetchPaymentsPage,
   fetchUnpaidInvoices,
   type PeriodSel,
+  type PageCursor,
 } from '../../services/financePaged';
 import { buildTransactions } from '../../utils/buildTransactions';
 import { usePagedList } from './usePagedList';
 import { PeriodPicker, periodLabel } from './PeriodPicker';
 import { Pager } from './Pager';
 import { toEnglishDigits } from '../../utils/numberUtils';
-import type { DocumentSnapshot } from 'firebase/firestore';
 
 interface InflowPageProps {
   patientsCanonical: Patient[];
@@ -91,7 +91,7 @@ export const InflowPage: React.FC<InflowPageProps> = ({
 
   // Paginated Received Payments
   const fetchPage = useCallback(
-    async (after: DocumentSnapshot | null) => {
+    async (after: PageCursor | null) => {
       const res = await fetchPaymentsPage(periodToRange(period), after);
       const items = buildTransactions({
         payments: res.items,

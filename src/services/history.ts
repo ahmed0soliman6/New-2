@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { collection, getDocs, query, where, type Firestore } from 'firebase/firestore';
-import { db } from './firebase';
-import { mapDocs } from './repositories/common';
-import { meterQuery } from './readMeter';
+import { supabase, clinicId } from './supabase';
+import { mapDocs, resolveTableName, type SupabaseDocRow } from './repositories/common';
+import { meterRead } from './readMeter';
 import type { Visit, Prescription, LabOrder, RadiologyOrder, FollowUp, Invoice, Payment } from '../types/database';
 
 export interface PatientHistory {
@@ -18,25 +17,34 @@ export interface PatientHistory {
 const TTL_MS = 60_000;
 const cache = new Map<string, { at: number; data: PatientHistory }>();
 
-async function byPatient<T>(d: Firestore, name: string, patientId: string): Promise<T[]> {
-  const snap = await getDocs(query(collection(d, name), where('patientId', '==', patientId)));
-  meterQuery(`history:${name}`, snap);
-  return mapDocs<T>(name, snap);
+async function byPatient<T>(name: string, patientId: string): Promise<T[]> {
+  if (!supabase) throw new Error('عميل Supabase غير مهيأ');
+  const tableName = resolveTableName(name);
+  const { data, error } = await supabase
+    .from(tableName)
+    .select('id, data, updated_at')
+    .eq('clinic_id', clinicId);
+
+  if (error) throw new Error(error.message);
+  const all = mapDocs<T>(tableName, (data || []) as SupabaseDocRow[]);
+  const matched = all.filter((item) => (item as Record<string, unknown>).patientId === patientId);
+  meterRead('ملف مريض', Math.max(1, matched.length));
+  return matched;
 }
 
 export async function fetchPatientHistory(patientId: string, force = false): Promise<PatientHistory> {
-  if (!db) throw new Error('Firestore غير مهيأ');
+  if (!supabase) throw new Error('عميل Supabase غير مهيأ');
   const hit = cache.get(patientId);
   if (!force && hit && Date.now() - hit.at < TTL_MS) return hit.data;
 
   const [visits, prescriptions, labOrders, radiologyOrders, followUps, invoices, payments] = await Promise.all([
-    byPatient<Visit>(db, 'visits', patientId),
-    byPatient<Prescription>(db, 'prescriptions', patientId),
-    byPatient<LabOrder>(db, 'labOrders', patientId),
-    byPatient<RadiologyOrder>(db, 'radiologyOrders', patientId),
-    byPatient<FollowUp>(db, 'followUps', patientId),
-    byPatient<Invoice>(db, 'invoices', patientId),
-    byPatient<Payment>(db, 'payments', patientId),
+    byPatient<Visit>('visits', patientId),
+    byPatient<Prescription>('prescriptions', patientId),
+    byPatient<LabOrder>('lab_orders', patientId),
+    byPatient<RadiologyOrder>('radiology_orders', patientId),
+    byPatient<FollowUp>('follow_ups', patientId),
+    byPatient<Invoice>('invoices', patientId),
+    byPatient<Payment>('payments', patientId),
   ]);
   const data = { visits, prescriptions, labOrders, radiologyOrders, followUps, invoices, payments };
   cache.set(patientId, { at: Date.now(), data });

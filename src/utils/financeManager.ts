@@ -1,6 +1,5 @@
-import { db } from '../services/firebase';
 import { safeStorage, StorageKeys } from '../services/storage';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { saveCatalogItem, removeCatalogItem } from '../services/repositories/common';
 
 export interface MedicalServiceItem {
   id: string;
@@ -121,35 +120,29 @@ export function saveMedicalServices(services: MedicalServiceItem[]) {
 export function addMedicalService(service: MedicalServiceItem): MedicalServiceItem[] {
   cachedServices = [service, ...cachedServices.filter((s) => s.id !== service.id)];
   saveMedicalServices(cachedServices);
-  if (db) {
-    setDoc(doc(db, 'services', service.id), service).catch((err) =>
-      console.warn('Firestore service sync error:', err)
-    );
-  }
+  saveCatalogItem(null, 'services', service.id, service as unknown as Record<string, unknown>).catch((err) =>
+    console.warn('Supabase service sync error:', err)
+  );
   return cachedServices;
 }
 
 export function removeMedicalService(id: string): MedicalServiceItem[] {
   cachedServices = cachedServices.filter((s) => s.id !== id);
   saveMedicalServices(cachedServices);
-  if (db) {
-    deleteDoc(doc(db, 'services', id)).catch((err) =>
-      console.warn('Firestore service delete error:', err)
-    );
-  }
+  removeCatalogItem(null, 'services', id).catch((err) =>
+    console.warn('Supabase service delete error:', err)
+  );
   return cachedServices;
 }
 
 export function updateMedicalService(id: string, updates: Partial<MedicalServiceItem>): MedicalServiceItem[] {
   cachedServices = cachedServices.map((s) => (s.id === id ? { ...s, ...updates } : s));
   saveMedicalServices(cachedServices);
-  if (db) {
-    const target = cachedServices.find((s) => s.id === id);
-    if (target) {
-      setDoc(doc(db, 'services', id), target, { merge: true }).catch((err) =>
-        console.warn('Firestore service update error:', err)
-      );
-    }
+  const target = cachedServices.find((s) => s.id === id);
+  if (target) {
+    saveCatalogItem(null, 'services', id, target as unknown as Record<string, unknown>).catch((err) =>
+      console.warn('Supabase service update error:', err)
+    );
   }
   return cachedServices;
 }
@@ -190,22 +183,18 @@ export function addExpenseCategory(name: string): ExpenseCategoryItem[] {
   };
   cachedExpenseCategories = [...cachedExpenseCategories, newItem];
   saveExpenseCategories(cachedExpenseCategories);
-  if (db) {
-    setDoc(doc(db, 'expenseCategories', newItem.id), newItem).catch((err) =>
-      console.warn('Firestore expense category sync error:', err)
-    );
-  }
+  saveCatalogItem(null, 'expense_categories', newItem.id, newItem as unknown as Record<string, unknown>).catch((err) =>
+    console.warn('Supabase expense category sync error:', err)
+  );
   return cachedExpenseCategories;
 }
 
 export function removeExpenseCategory(id: string): ExpenseCategoryItem[] {
   cachedExpenseCategories = cachedExpenseCategories.filter((c) => c.id !== id && c.name !== id);
   saveExpenseCategories(cachedExpenseCategories);
-  if (db) {
-    deleteDoc(doc(db, 'expenseCategories', id)).catch((err) =>
-      console.warn('Firestore expense category delete error:', err)
-    );
-  }
+  removeCatalogItem(null, 'expense_categories', id).catch((err) =>
+    console.warn('Supabase expense category delete error:', err)
+  );
   return cachedExpenseCategories;
 }
 
@@ -238,24 +227,20 @@ export function saveClinicExpenses(expenses: ClinicExpenseRecord[]) {
 export function addClinicExpense(expense: ClinicExpenseRecord): ClinicExpenseRecord[] {
   cachedClinicExpenses = [expense, ...cachedClinicExpenses.filter((e) => e.id !== expense.id)];
   saveClinicExpenses(cachedClinicExpenses);
-  if (db) {
-    const cleanedExpense = Object.fromEntries(
-      Object.entries(expense).filter(([_, v]) => v !== undefined)
-    );
-    setDoc(doc(db, 'expenses', expense.id), cleanedExpense).catch((err) =>
-      console.warn('Firestore expense sync error:', err)
-    );
-  }
+  const cleanedExpense = Object.fromEntries(
+    Object.entries(expense).filter(([_, v]) => v !== undefined)
+  );
+  saveCatalogItem(null, 'expenses', expense.id, cleanedExpense).catch((err) =>
+    console.warn('Supabase expense sync error:', err)
+  );
   return cachedClinicExpenses;
 }
 
 export function removeClinicExpense(id: string): ClinicExpenseRecord[] {
   cachedClinicExpenses = cachedClinicExpenses.filter((e) => e.id !== id);
   saveClinicExpenses(cachedClinicExpenses);
-  if (db) {
-    deleteDoc(doc(db, 'expenses', id)).catch((err) =>
-      console.warn('Firestore expense delete error:', err)
-    );
-  }
+  removeCatalogItem(null, 'expenses', id).catch((err) =>
+    console.warn('Supabase expense delete error:', err)
+  );
   return cachedClinicExpenses;
 }

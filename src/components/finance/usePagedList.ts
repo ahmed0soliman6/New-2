@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DocumentSnapshot } from 'firebase/firestore';
+import type { PageCursor } from '../../services/financePaged';
 
 export interface PageData<T> {
   items: T[];
-  cursor: DocumentSnapshot | null;
+  cursor: PageCursor | null;
   hasNext: boolean;
 }
 
 export function usePagedList<T>(
-  fetchPage: (after: DocumentSnapshot | null) => Promise<PageData<T>>,
+  fetchPage: (after: PageCursor | null) => Promise<PageData<T>>,
   refreshKey: number
 ) {
   const [pageIndex, setPageIndex] = useState(0);
