@@ -671,14 +671,9 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
         updatedAt: new Date().toISOString(),
       };
 
-      // 1. Update Firestore
-      const { db } = await import('../../services/firebase');
-      const { doc, updateDoc } = await import('firebase/firestore');
-      if (db) {
-        const patientRef = doc(db, 'patients', patient.id);
-        await updateDoc(patientRef, updatedData);
-        console.log('Patient basic details successfully updated in Firestore!');
-      }
+      // 1. Update database
+      const { saveCatalogItem } = await import('../../services/repositories');
+      await saveCatalogItem(null, 'patients', patient.id, updatedData);
 
       // 2. Propagate to App state
       onSelectPatient({
@@ -708,14 +703,9 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
         updatedAt: new Date().toISOString(),
       };
 
-      // 1. Update Firestore
-      const { db } = await import('../../services/firebase');
-      const { doc, updateDoc } = await import('firebase/firestore');
-      if (db) {
-        const patientRef = doc(db, 'patients', patient.id);
-        await updateDoc(patientRef, updatedData);
-        console.log('Patient chief complaint and chronic conditions updated in Firestore!');
-      }
+      // 1. Update database
+      const { saveCatalogItem } = await import('../../services/repositories');
+      await saveCatalogItem(null, 'patients', patient.id, updatedData);
 
       // 2. Propagate to App state
       onSelectPatient({

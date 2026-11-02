@@ -173,6 +173,7 @@ import {
   publishAlert,
   saveCatalogItem,
   removeCatalogItem,
+  saveSettingsDocument,
 } from './services/repositories';
 import {
   loadAlertSettings,
@@ -459,9 +460,7 @@ function ClinicApp() {
       const updated = [...prev, newType];
       safeStorage.setJSON(StorageKeys.VISIT_TYPES, updated);
       if (db) {
-        import('firebase/firestore').then(({ doc, setDoc }) => {
-          setDoc(doc(db!, 'settings', 'visitTypes'), { items: updated }, { merge: true }).catch(() => {});
-        });
+        saveSettingsDocument(db, 'visitTypes', { items: updated }).catch(() => {});
       }
       return updated;
     });
@@ -472,9 +471,7 @@ function ClinicApp() {
       const updated = prev.filter((v) => v.id !== id);
       safeStorage.setJSON(StorageKeys.VISIT_TYPES, updated);
       if (db) {
-        import('firebase/firestore').then(({ doc, setDoc }) => {
-          setDoc(doc(db!, 'settings', 'visitTypes'), { items: updated }, { merge: true }).catch(() => {});
-        });
+        saveSettingsDocument(db, 'visitTypes', { items: updated }).catch(() => {});
       }
       return updated;
     });
@@ -485,9 +482,7 @@ function ClinicApp() {
       const updated = prev.map((v) => (v.id === id ? { ...v, fee } : v));
       safeStorage.setJSON(StorageKeys.VISIT_TYPES, updated);
       if (db) {
-        import('firebase/firestore').then(({ doc, setDoc }) => {
-          setDoc(doc(db!, 'settings', 'visitTypes'), { items: updated }, { merge: true }).catch(() => {});
-        });
+        saveSettingsDocument(db, 'visitTypes', { items: updated }).catch(() => {});
       }
       return updated;
     });

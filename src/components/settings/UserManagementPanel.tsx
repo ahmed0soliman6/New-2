@@ -121,24 +121,20 @@ export const UserManagementPanel: React.FC = () => {
     if (!supabase) return;
     void loadUsers();
 
-    const channel = supabase
-      .channel(`clinic-members-panel-${clinicId}-${Math.random().toString(36).slice(2, 8)}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'clinic_members',
-          filter: `clinic_id=eq.${clinicId}`,
-        },
-        () => {
-          void loadUsers();
-        }
-      )
-      .subscribe();
+    const handleMutated = () => {
+      void loadUsers();
+    };
+    window.addEventListener('soli_supabase_mutated', handleMutated);
+
+    const intervalId = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        void loadUsers();
+      }
+    }, 15000);
 
     return () => {
-      void supabase.removeChannel(channel);
+      clearInterval(intervalId);
+      window.removeEventListener('soli_supabase_mutated', handleMutated);
     };
   }, [loadUsers]);
 

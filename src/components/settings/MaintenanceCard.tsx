@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { db } from '../../services/firebase';
+import { supabase } from '../../services/supabase';
 import { backfillDayKeys, backfillPatientClinicalFlags } from '../../services/migrations/backfillDayKeys';
 
 export function MaintenanceCard() {
@@ -8,13 +8,13 @@ export function MaintenanceCard() {
   const push = (m: string) => setLog((l) => [...l.slice(-30), m]);
 
   const run = async () => {
-    if (!db || busy) return;
+    if (!supabase || busy) return;
     if (!window.confirm('أغلق النظام على كل الأجهزة الأخرى قبل البدء. متابعة؟')) return;
     setBusy(true);
     try {
-      const r1 = await backfillDayKeys(db, push);
+      const r1 = await backfillDayKeys(supabase, push);
       push('انتهى ترحيل التواريخ: ' + JSON.stringify(r1));
-      const r2 = await backfillPatientClinicalFlags(db);
+      const r2 = await backfillPatientClinicalFlags(supabase);
       push('انتهى ترحيل ملفات المرضى: ' + JSON.stringify(r2));
     } catch (e) {
       push('خطأ: ' + (e as Error).message);

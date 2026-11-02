@@ -1,6 +1,8 @@
-import { db } from '../services/firebase';
 import { safeStorage, StorageKeys } from '../services/storage';
-import { doc, setDoc, onSnapshot } from 'firebase/firestore';
+import {
+  saveSettingsDocument,
+  subscribeToLifestylePresets as subscribeRepoLifestylePresets,
+} from '../services/repositories';
 
 export const DEFAULT_LIFESTYLE_PRESETS = [
   'الامتناع التام عن الأطعمة الدسمة، الحارة، المقليات، والمشروبات الغازية.',
@@ -29,12 +31,11 @@ export function saveLifestylePresets(presets: string[]): void {
   safeStorage.setJSON(StorageKeys.LIFESTYLE_PRESETS, presets);
   window.dispatchEvent(new CustomEvent('soli_lifestyle_updated', { detail: presets }));
 
-  if (db) {
-    setDoc(doc(db, 'settings', 'lifestyleAdvice'), {
-      presets,
-      updatedAt: new Date().toISOString(),
-    }).catch((err) => console.warn('Firestore lifestyle sync notice:', err));
-  }
+  saveSettingsDocument(null, 'lifestylePresets', {
+    items: presets,
+    presets,
+    updatedAt: new Date().toISOString(),
+  }).catch((err) => console.warn('Lifestyle sync notice:', err));
 }
 
 export function addLifestylePreset(preset: string): string[] {
@@ -85,30 +86,23 @@ export function subscribeToLifestylePresets(
   };
   window.addEventListener('storage', handleStorage);
 
-  // 4. Firestore sync if available
-  let unsubFirestore: (() => void) | null = null;
-  if (db) {
-    try {
-      unsubFirestore = onSnapshot(
-        doc(db, 'settings', 'lifestyleAdvice'),
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            if (Array.isArray(data?.presets) && data.presets.length > 0) {
-              cachedLifestylePresets = data.presets;
-              safeStorage.setJSON(StorageKeys.LIFESTYLE_PRESETS, data.presets);
-              callback(data.presets);
-            }
-          }
-        },
-        (err) => console.warn('Lifestyle subscription error:', err)
-      );
-    } catch {}
-  }
+  // 4. Supabase sync
+  const unsubRepo = subscribeRepoLifestylePresets(
+    null,
+    (presets) => {
+      if (Array.isArray(presets) && presets.length > 0) {
+        cachedLifestylePresets = presets;
+        safeStorage.setJSON(StorageKeys.LIFESTYLE_PRESETS, presets);
+        callback(presets);
+      }
+    },
+    (err) => console.warn('Lifestyle subscription error:', err)
+  );
 
   return () => {
     window.removeEventListener('soli_lifestyle_updated', handleUpdate);
     window.removeEventListener('storage', handleStorage);
-    if (unsubFirestore) unsubFirestore();
+    unsubRepo();
   };
 }
+

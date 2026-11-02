@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:rules": "firebase emulators:exec --only firestore \"node tests/rules.test.mjs\""
+    "test:rls": "node --test tests/rls-clinic-isolation.test.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

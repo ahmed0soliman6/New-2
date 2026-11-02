@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../../services/firebase';
+import { saveCatalogItem } from '../../services/repositories';
 import { CLINIC_INFO } from '../../data/previewClinicData';
 import { AppointmentListItem, ScreenType, PatientListItem } from '../../types';
 import { usePermissions } from '../../context/AuthContext';
@@ -271,13 +270,12 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       setToastMessage(`تم تسجيل حضور المريض "${app.patientName}" وجارٍ فتح صفحة تسجيل الزيارة`);
       setTimeout(() => setToastMessage(null), 3500);
 
-      // Persist to Firestore immediately
-      if (db && app.id) {
-        setDoc(
-          doc(db, 'appointments', app.id),
-          { status: 'ARRIVED', updatedAt: new Date().toISOString() },
-          { merge: true }
-        ).catch((err) => console.warn('Failed to update appointment status in Firestore:', err));
+      // Persist to database immediately
+      if (app.id) {
+        saveCatalogItem(null, 'appointments', app.id, {
+          status: 'ARRIVED',
+          updatedAt: new Date().toISOString(),
+        }).catch((err) => console.warn('Failed to update appointment status:', err));
       }
 
       // Automatically launch intake screen
@@ -294,12 +292,11 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       setToastMessage(`تم إلغاء موعد "${app.patientName}" ونقله تلقائياً إلى الأرشيف`);
       setTimeout(() => setToastMessage(null), 3500);
 
-      if (db && app.id) {
-        setDoc(
-          doc(db, 'appointments', app.id),
-          { status: 'CANCELLED', updatedAt: new Date().toISOString() },
-          { merge: true }
-        ).catch((err) => console.warn('Failed to cancel appointment in Firestore:', err));
+      if (app.id) {
+        saveCatalogItem(null, 'appointments', app.id, {
+          status: 'CANCELLED',
+          updatedAt: new Date().toISOString(),
+        }).catch((err) => console.warn('Failed to cancel appointment:', err));
       }
       return;
     }
@@ -308,12 +305,11 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
     setToastMessage(`تم تحديث حالة موعد "${app.patientName}" إلى: مجدول`);
     setTimeout(() => setToastMessage(null), 3500);
 
-    if (db && app.id) {
-      setDoc(
-        doc(db, 'appointments', app.id),
-        { status: 'SCHEDULED', updatedAt: new Date().toISOString() },
-        { merge: true }
-      ).catch((err) => console.warn('Failed to reschedule appointment in Firestore:', err));
+    if (app.id) {
+      saveCatalogItem(null, 'appointments', app.id, {
+        status: 'SCHEDULED',
+        updatedAt: new Date().toISOString(),
+      }).catch((err) => console.warn('Failed to reschedule appointment:', err));
     }
   };
 
@@ -321,13 +317,12 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   // Converts appointment to Waiting Queue via PatientIntakeScreen:
   // Pre-fills existing patient data automatically, lets secretary pick visit type & intake info, then registers to queue & financials!
   const handlePatientArrived = (app: AppointmentListItem) => {
-    // Persist to Firestore immediately
-    if (db && app.id) {
-      setDoc(
-        doc(db, 'appointments', app.id),
-        { status: 'ARRIVED', updatedAt: new Date().toISOString() },
-        { merge: true }
-      ).catch((err) => console.warn('Failed to update appointment status in Firestore:', err));
+    // Persist to database immediately
+    if (app.id) {
+      saveCatalogItem(null, 'appointments', app.id, {
+        status: 'ARRIVED',
+        updatedAt: new Date().toISOString(),
+      }).catch((err) => console.warn('Failed to update appointment status:', err));
     }
 
     setToastMessage(`تم تسجيل حضور المريض "${app.patientName}" وجارٍ فتح صفحة تسجيل الزيارة`);

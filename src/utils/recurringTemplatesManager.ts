@@ -935,8 +935,7 @@ export const INITIAL_CLINICAL_GUIDES_TEMPLATES: RecurringRxTemplate[] = [
   },
 ];
 
-import { db } from '../services/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { saveSettingsDocument } from '../services/repositories';
 
 const STORAGE_KEY = 'soli_recurring_rx_templates';
 
@@ -961,11 +960,9 @@ export function saveRecurringTemplates(templates: RecurringRxTemplate[]): void {
   }
   window.dispatchEvent(new Event('soli_templates_updated'));
 
-  if (db) {
-    setDoc(doc(db, 'settings', 'recurringTemplates'), { items: templates }, { merge: true }).catch((err) => {
-      console.warn('Failed to sync recurring templates to Firestore:', err);
-    });
-  }
+  saveSettingsDocument(null, 'recurringTemplates', { items: templates }).catch((err) => {
+    console.warn('Failed to sync recurring templates:', err);
+  });
 }
 
 export function addOrUpdateRecurringTemplate(template: RecurringRxTemplate): RecurringRxTemplate[] {

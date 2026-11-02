@@ -1,4 +1,13 @@
-import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
+export interface QuerySnapshotLike {
+  metadata: { fromCache?: boolean };
+  docs: Array<unknown>;
+  docChanges: () => Array<unknown>;
+}
+
+export interface DocumentSnapshotLike {
+  metadata: { fromCache?: boolean };
+  exists: () => boolean;
+}
 
 export type MeterSource =
   | 'تحميل أول'
@@ -74,7 +83,7 @@ function recordInitialListenerCount(label: string, docCount: number) {
 }
 
 /** يعدّ docChanges من الخادم فقط. أول لقطة لكل مستمع تُصنف "تحميل أول" والباقي "تحديثات حية" */
-export function meterQuery(label: string, snap: QuerySnapshot, source?: MeterSource) {
+export function meterQuery(label: string, snap: QuerySnapshotLike, source?: MeterSource) {
   if (snap.metadata.fromCache) return;
   const base = source ?? sourceOf(label);
   const first = !seenLabels.has(label);
@@ -89,7 +98,7 @@ export function meterQuery(label: string, snap: QuerySnapshot, source?: MeterSou
   if (n > 0) add(finalSource, n);
 }
 
-export function meterDoc(label: string, snap: DocumentSnapshot, source?: MeterSource) {
+export function meterDoc(label: string, snap: DocumentSnapshotLike, source?: MeterSource) {
   if (snap.metadata.fromCache) return;
   const first = !seenLabels.has(label);
   seenLabels.add(label);

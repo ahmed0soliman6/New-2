@@ -1,7 +1,6 @@
-import {
-  collection, doc, documentId, getDocs, limit, orderBy, query, startAfter,
-  where, writeBatch, type Firestore, type QueryDocumentSnapshot,
-} from 'firebase/firestore';
+import { supabase, clinicId } from '../supabase';
+import { resolveTableName } from '../repositories/common';
+import { notifyTableMutated } from '../offlineSync';
 import { toDate, toDayKey } from '../../utils/dayKey';
 
 const TARGETS: { name: string; dateFields: string[] }[] = [
@@ -13,7 +12,6 @@ const TARGETS: { name: string; dateFields: string[] }[] = [
   { name: 'radiologyOrders', dateFields: ['orderedAt', 'createdAt'] },
   { name: 'followUps', dateFields: ['createdAt'] },
 ];
-const PAGE = 300;            // أقل من حد 500 للدفعة
 const WRITE_BUDGET = 8000;   // حد أمان لكل تشغيلة (الحد اليومي المجاني 20,000 كتابة)
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -21,56 +19,80 @@ export type BackfillReport = Record<string, { scanned: number; updated: number; 
   stoppedEarly?: boolean;
 };
 
-export async function backfillDayKeys(db: Firestore, onProgress?: (msg: string) => void): Promise<BackfillReport> {
+export async function backfillDayKeys(_db: unknown, onProgress?: (msg: string) => void): Promise<BackfillReport> {
   const report: BackfillReport = {} as BackfillReport;
+  if (!supabase) return report;
+
   let writes = 0;
 
   for (const t of TARGETS) {
     report[t.name] = { scanned: 0, updated: 0, skipped: 0, noDate: 0 };
-    let cursor: QueryDocumentSnapshot | undefined;
+    const tableName = resolveTableName(t.name);
 
-    for (;;) {
-      const base = [orderBy(documentId()), ...(cursor ? [startAfter(cursor)] : []), limit(PAGE)];
-      const snap = await getDocs(query(collection(db, t.name), ...base));
-      if (snap.empty) break;
+    const { data: rows, error } = await supabase
+      .from(tableName)
+      .select('id, data')
+      .eq('clinic_id', clinicId);
 
-      const batch = writeBatch(db);
-      let inBatch = 0;
-      for (const d of snap.docs) {
-        report[t.name].scanned++;
-        const data = d.data();
-        if (typeof data.dayKey === 'string' && DAY_RE.test(data.dayKey)) { report[t.name].skipped++; continue; }
-        const raw = t.dateFields.map((f) => data[f]).find(Boolean);
-        if (!toDate(raw)) { report[t.name].noDate++; continue; }
-        batch.update(d.ref, { dayKey: toDayKey(raw) });
-        inBatch++;
+    if (error || !rows) continue;
+
+    const toUpsert: Array<{ clinic_id: string; id: string; data: Record<string, any>; updated_at: string }> = [];
+    const nowIso = new Date().toISOString();
+
+    for (const row of rows) {
+      report[t.name].scanned++;
+      const data = (row.data && typeof row.data === 'object' ? row.data : {}) as Record<string, any>;
+      if (typeof data.dayKey === 'string' && DAY_RE.test(data.dayKey)) {
+        report[t.name].skipped++;
+        continue;
       }
-      if (inBatch) {
-        if (writes + inBatch > WRITE_BUDGET) { report.stoppedEarly = true; return report; }
-        await batch.commit();
-        writes += inBatch;
-        report[t.name].updated += inBatch;
+      const raw = t.dateFields.map((f) => data[f]).find(Boolean);
+      if (!toDate(raw)) {
+        report[t.name].noDate++;
+        continue;
       }
-      onProgress?.(`${t.name}: فُحص ${report[t.name].scanned} / حُدّث ${report[t.name].updated}`);
-      cursor = snap.docs[snap.docs.length - 1];
-      if (snap.size < PAGE) break;
+      toUpsert.push({
+        clinic_id: clinicId,
+        id: row.id,
+        data: { ...data, dayKey: toDayKey(raw) },
+        updated_at: nowIso,
+      });
     }
+
+    if (toUpsert.length > 0) {
+      if (writes + toUpsert.length > WRITE_BUDGET) {
+        report.stoppedEarly = true;
+        return report;
+      }
+      const { error: upsertErr } = await supabase
+        .from(tableName)
+        .upsert(toUpsert, { onConflict: 'clinic_id,id' });
+      if (!upsertErr) {
+        writes += toUpsert.length;
+        report[t.name].updated += toUpsert.length;
+        notifyTableMutated(tableName, false);
+      }
+    }
+
+    onProgress?.(`${t.name}: فُحص ${report[t.name].scanned} / حُدّث ${report[t.name].updated}`);
   }
   return report;
 }
 
 /** يضبط hasClinicalFile / visitsCount / lastVisitAt / lastDiagnosis للمرضى الحاليين */
-export async function backfillPatientClinicalFlags(db: Firestore) {
-  const [visitsSnap, rxSnap, patientsSnap] = await Promise.all([
-    getDocs(query(collection(db, 'visits'), where('status', '==', 'COMPLETED'))),
-    getDocs(collection(db, 'prescriptions')),
-    getDocs(collection(db, 'patients')),
+export async function backfillPatientClinicalFlags(_db: unknown) {
+  if (!supabase) return { patientsUpdated: 0 };
+
+  const [visitsRes, rxRes, patientsRes] = await Promise.all([
+    supabase.from('visits').select('id, data').eq('clinic_id', clinicId),
+    supabase.from('prescriptions').select('id, data').eq('clinic_id', clinicId),
+    supabase.from('patients').select('id, data').eq('clinic_id', clinicId),
   ]);
 
   const stats = new Map<string, { count: number; last: Date | null; diag: string }>();
-  visitsSnap.forEach((d) => {
-    const v = d.data();
-    if (!v.patientId) return;
+  (visitsRes.data || []).forEach((row) => {
+    const v = (row.data || {}) as Record<string, any>;
+    if (v.status !== 'COMPLETED' || !v.patientId) return;
     const s = stats.get(v.patientId) ?? { count: 0, last: null, diag: '' };
     s.count++;
     const when = toDate(v.completedAt ?? v.createdAt);
@@ -82,26 +104,43 @@ export async function backfillPatientClinicalFlags(db: Firestore) {
   });
 
   const withRx = new Set<string>();
-  rxSnap.forEach((d) => { const pid = d.data().patientId; if (pid) withRx.add(pid); });
+  (rxRes.data || []).forEach((row) => {
+    const pid = (row.data as Record<string, any>)?.patientId;
+    if (pid) withRx.add(pid);
+  });
 
-  const existing = new Set(patientsSnap.docs.map((d) => d.id));
+  const patientsMap = new Map<string, Record<string, any>>();
+  (patientsRes.data || []).forEach((row) => {
+    patientsMap.set(row.id, (row.data || {}) as Record<string, any>);
+  });
+
   const ids = new Set<string>([...stats.keys(), ...withRx]);
+  const nowIso = new Date().toISOString();
+  const toUpsert: Array<{ clinic_id: string; id: string; data: Record<string, any>; updated_at: string }> = [];
 
-  let batch = writeBatch(db);
-  let n = 0;
-  let total = 0;
   for (const pid of ids) {
-    if (!existing.has(pid)) continue;
+    const existingData = patientsMap.get(pid);
+    if (!existingData) continue;
     const s = stats.get(pid);
-    batch.update(doc(db, 'patients', pid), {
-      hasClinicalFile: true,
-      visitsCount: s?.count ?? 0,
-      lastDiagnosis: s?.diag ?? '',
-      ...(s?.last ? { lastVisitAt: s.last.toISOString() } : {}),
+    toUpsert.push({
+      clinic_id: clinicId,
+      id: pid,
+      data: {
+        ...existingData,
+        hasClinicalFile: true,
+        visitsCount: s?.count ?? 0,
+        lastDiagnosis: s?.diag ?? '',
+        ...(s?.last ? { lastVisitAt: s.last.toISOString() } : {}),
+      },
+      updated_at: nowIso,
     });
-    n++; total++;
-    if (n === 400) { await batch.commit(); batch = writeBatch(db); n = 0; }
   }
-  if (n) await batch.commit();
-  return { patientsUpdated: total };
+
+  if (toUpsert.length > 0) {
+    await supabase.from('patients').upsert(toUpsert, { onConflict: 'clinic_id,id' });
+    notifyTableMutated('patients', false);
+  }
+
+  return { patientsUpdated: toUpsert.length };
 }
+

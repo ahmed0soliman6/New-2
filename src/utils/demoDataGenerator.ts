@@ -1,5 +1,7 @@
-import { doc, setDoc, deleteDoc, collection, getDocs, writeBatch, type Firestore } from 'firebase/firestore';
-import { saveClinicExpenses, DEFAULT_CLINIC_EXPENSES, loadClinicExpenses } from './financeManager';
+import { supabase, clinicId } from '../services/supabase';
+import { resolveTableName } from '../services/repositories/common';
+import { notifyTableMutated } from '../services/offlineSync';
+import { saveClinicExpenses } from './financeManager';
 import { toDayKey } from './dayKey';
 import type {
   Patient,
@@ -7,11 +9,6 @@ import type {
   Visit,
   Invoice,
   Payment,
-  FollowUp,
-  Prescription,
-  Medication,
-  LabOrder,
-  RadiologyOrder,
 } from '../types/database';
 
 const PATIENTS_POOL = [
@@ -62,7 +59,7 @@ function generateDateInMonth(monthsAgo: number): string {
 /**
  * Generates 1 year of realistic clinic data (Visits, Invoices, Payments, Expenses, Patients, Appointments)
  */
-export async function generateOneYearDemoData(db: Firestore | null): Promise<void> {
+export async function generateOneYearDemoData(_db?: unknown): Promise<void> {
   const generatedPatients: Patient[] = [];
   const generatedAppointments: Appointment[] = [];
   const generatedVisits: Visit[] = [];
@@ -258,28 +255,41 @@ export async function generateOneYearDemoData(db: Firestore | null): Promise<voi
     );
   }
 
-  // 4. Save to Firestore (in batch groups of 50 elements) or locally
-  if (db) {
-    const allDataToSet = [
-      ...generatedPatients.map(p => ({ col: 'patients', id: p.patientId, data: p })),
-      ...generatedAppointments.map(a => ({ col: 'appointments', id: a.appointmentId, data: a })),
-      ...generatedVisits.map(v => ({ col: 'visits', id: v.visitId, data: v })),
-      ...generatedInvoices.map(i => ({ col: 'invoices', id: i.invoiceId, data: i })),
-      ...generatedPayments.map(pay => ({ col: 'payments', id: pay.paymentId, data: pay })),
+  // 4. Save to Supabase or locally
+  if (supabase) {
+    const nowIso = new Date().toISOString();
+    const tableBatches: Array<{ table: string; rows: Array<{ clinic_id: string; id: string; data: unknown; updated_at: string }> }> = [
+      {
+        table: 'patients',
+        rows: generatedPatients.map((p) => ({ clinic_id: clinicId, id: p.patientId, data: p, updated_at: nowIso })),
+      },
+      {
+        table: 'appointments',
+        rows: generatedAppointments.map((a) => ({ clinic_id: clinicId, id: a.appointmentId, data: a, updated_at: nowIso })),
+      },
+      {
+        table: 'visits',
+        rows: generatedVisits.map((v) => ({ clinic_id: clinicId, id: v.visitId, data: v, updated_at: nowIso })),
+      },
+      {
+        table: 'invoices',
+        rows: generatedInvoices.map((i) => ({ clinic_id: clinicId, id: i.invoiceId, data: i, updated_at: nowIso })),
+      },
+      {
+        table: 'payments',
+        rows: generatedPayments.map((pay) => ({ clinic_id: clinicId, id: pay.paymentId, data: pay, updated_at: nowIso })),
+      },
     ];
 
-    // Chunk into sets of 500 (max Firestore batch size is 500)
-    for (let i = 0; i < allDataToSet.length; i += 450) {
-      const chunk = allDataToSet.slice(i, i + 450);
-      const batch = writeBatch(db);
-      chunk.forEach((item) => {
-        batch.set(doc(db, item.col, item.id), item.data);
-      });
-      await batch.commit();
+    for (const group of tableBatches) {
+      if (group.rows.length > 0) {
+        await supabase.from(group.table).upsert(group.rows, { onConflict: 'clinic_id,id' });
+      }
     }
+    notifyTableMutated(['patients', 'appointments', 'visits', 'invoices', 'payments'], true);
   }
 
-  // Save expenses to local storage
+  // Save expenses to local storage & Supabase
   saveClinicExpenses(generatedExpenses);
 }
 
@@ -287,7 +297,7 @@ export async function generateOneYearDemoData(db: Firestore | null): Promise<voi
  * Clears patients, dynamic visits, and transactional/financial elements from the database (Patients, Visits, Invoices, Payments, Appointments, follow-ups, etc.)
  * This leaves settings, configuration, and medical catalogs/guides completely untouched.
  */
-export async function clearAllDatabaseCollections(db: Firestore | null): Promise<void> {
+export async function clearAllDatabaseCollections(_db?: unknown): Promise<void> {
   // Clear local storage expenses
   saveClinicExpenses([]);
   try {
@@ -296,7 +306,7 @@ export async function clearAllDatabaseCollections(db: Firestore | null): Promise
     // Ignore storage issues in private modes
   }
 
-  if (!db) return;
+  if (!supabase) return;
 
   const collectionsToClear = [
     'patients',
@@ -309,21 +319,17 @@ export async function clearAllDatabaseCollections(db: Firestore | null): Promise
     'labOrders',
     'radiologyOrders',
     'expenses',
-    'transactions'
+    'transactions',
   ];
 
   for (const colName of collectionsToClear) {
+    const tableName = resolveTableName(colName);
     try {
-      const querySnapshot = await getDocs(collection(db, colName));
-      if (!querySnapshot.empty) {
-        const batch = writeBatch(db);
-        querySnapshot.docs.forEach((d) => {
-          batch.delete(doc(db, colName, d.id));
-        });
-        await batch.commit();
-      }
+      await supabase.from(tableName).delete().eq('clinic_id', clinicId);
     } catch (e) {
-      console.warn(`Error clearing collection ${colName}:`, e);
+      console.warn(`Error clearing table ${tableName}:`, e);
     }
   }
+  notifyTableMutated(['*'], true);
 }
+

@@ -5,10 +5,10 @@
  * for admin password recovery without storing cleartext tokens anywhere.
  */
 
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { initializeApp, deleteApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
-import { requireFirebase, firebaseConfig } from './firebase';
+import { createClient } from '@supabase/supabase-js';
+import { supabase, clinicId } from './supabase';
+
+const RECOVERY_DOC_ID = '_system_recovery';
 
 // Helper: Convert ArrayBuffer to Hex String
 function buf2hex(buffer: ArrayBuffer): string {
@@ -146,15 +146,16 @@ async function decryptWithCode(code: string, salt: Uint8Array, ciphertextHex: st
 }
 
 /**
- * Saves a new Admin Recovery Code into Firestore using PBKDF2 hash and an encrypted escrow envelope.
+ * Saves a new Admin Recovery Code into Supabase settings using PBKDF2 hash and an encrypted escrow envelope.
  * Plaintext code is NEVER saved.
  */
 export async function setupAdminRecoveryCode(params: {
   recoveryCode: string;
   adminCurrentPassword?: string;
 }): Promise<void> {
-  const { db, auth } = requireFirebase();
-  const currentUser = auth.currentUser;
+  if (!supabase) throw new Error('عميل Supabase غير مهيأ.');
+  const { data: sessionData } = await supabase.auth.getSession();
+  const currentUser = sessionData?.session?.user;
   if (!currentUser) throw new Error('يجب تسجيل الدخول كمدير لحفظ رمز الاسترداد.');
 
   // Generate 16-byte random cryptographic salt
@@ -168,29 +169,38 @@ export async function setupAdminRecoveryCode(params: {
   // Encrypt admin verification payload (stored securely in envelope)
   const adminEmail = currentUser.email || 'admin@auth.solimedical.local';
   const payloadToEscrow = JSON.stringify({
-    uid: currentUser.uid,
+    uid: currentUser.id,
     email: adminEmail,
     adminPass: params.adminCurrentPassword || 'admin1234',
     created: Date.now(),
   });
 
   const { ciphertext, iv } = await encryptWithCode(params.recoveryCode, salt, payloadToEscrow);
+  const nowIso = new Date().toISOString();
 
-  await setDoc(
-    doc(db, '_system', 'recovery'),
+  const { error } = await supabase.from('settings').upsert(
     {
-      version: 2,
-      salt: saltHex,
-      hash: hashHex,
-      envelope: ciphertext,
-      iv: iv,
-      targetEmail: adminEmail,
-      attempts: 0,
-      lockedUntil: null,
-      updatedAt: serverTimestamp(),
+      clinic_id: clinicId,
+      id: RECOVERY_DOC_ID,
+      data: {
+        version: 2,
+        salt: saltHex,
+        hash: hashHex,
+        envelope: ciphertext,
+        iv: iv,
+        targetEmail: adminEmail,
+        attempts: 0,
+        lockedUntil: null,
+        updatedAt: nowIso,
+      },
+      updated_at: nowIso,
     },
-    { merge: true }
+    { onConflict: 'clinic_id,id' }
   );
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 /**
@@ -198,9 +208,15 @@ export async function setupAdminRecoveryCode(params: {
  */
 export async function hasAdminRecoveryConfigured(): Promise<boolean> {
   try {
-    const { db } = requireFirebase();
-    const snap = await getDoc(doc(db, '_system', 'recovery'));
-    return snap.exists() && Boolean(snap.data()?.hash);
+    if (!supabase) return false;
+    const { data: row } = await supabase
+      .from('settings')
+      .select('data')
+      .eq('clinic_id', clinicId)
+      .eq('id', RECOVERY_DOC_ID)
+      .maybeSingle();
+    const rec = row?.data as Record<string, any> | undefined;
+    return Boolean(rec?.hash);
   } catch {
     return false;
   }
@@ -215,7 +231,7 @@ export async function recoverAdminPasswordWithCode(params: {
   recoveryCode: string;
   newPassword: string;
 }): Promise<{ success: boolean; message: string }> {
-  const { db } = requireFirebase();
+  if (!supabase) throw new Error('عميل Supabase غير مهيأ.');
   const normalizedUsername = params.username.trim().toLowerCase();
 
   if (normalizedUsername !== 'admin') {
@@ -226,14 +242,17 @@ export async function recoverAdminPasswordWithCode(params: {
     throw new Error('كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.');
   }
 
-  const recoveryDocRef = doc(db, '_system', 'recovery');
-  const recoverySnap = await getDoc(recoveryDocRef);
+  const { data: recoveryRow } = await supabase
+    .from('settings')
+    .select('data')
+    .eq('clinic_id', clinicId)
+    .eq('id', RECOVERY_DOC_ID)
+    .maybeSingle();
 
-  if (!recoverySnap.exists() || !recoverySnap.data()?.hash) {
+  const data = (recoveryRow?.data || {}) as Record<string, any>;
+  if (!data?.hash) {
     throw new Error('لم يتم تعيين رمز استرداد للمدير في هذا النظام من قبل.');
   }
-
-  const data = recoverySnap.data();
 
   // Rate Limiting / Lockout Check
   const now = Date.now();
@@ -248,13 +267,18 @@ export async function recoverAdminPasswordWithCode(params: {
   if (calculatedHash !== data.hash) {
     const currentAttempts = (data.attempts || 0) + 1;
     const isLocked = currentAttempts >= 5;
-    await setDoc(
-      recoveryDocRef,
+    await supabase.from('settings').upsert(
       {
-        attempts: currentAttempts,
-        lockedUntil: isLocked ? now + 15 * 60 * 1000 : null, // 15 min lockout
+        clinic_id: clinicId,
+        id: RECOVERY_DOC_ID,
+        data: {
+          ...data,
+          attempts: currentAttempts,
+          lockedUntil: isLocked ? now + 15 * 60 * 1000 : null,
+        },
+        updated_at: new Date().toISOString(),
       },
-      { merge: true }
+      { onConflict: 'clinic_id,id' }
     );
 
     if (isLocked) {
@@ -278,40 +302,68 @@ export async function recoverAdminPasswordWithCode(params: {
   const adminEmail = data.targetEmail || decryptedPayload.email || 'admin@auth.solimedical.local';
   const knownPass = decryptedPayload.adminPass || 'admin1234';
 
-  // Perform password update using a secondary isolated Firebase App
-  const secondary = initializeApp(firebaseConfig, `recovery-${Date.now()}`);
-  const secondaryAuth = getAuth(secondary);
+  const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim() || '';
+  const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim() || '';
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error('إعدادات Supabase غير مكتملة.');
+  }
+
+  const secondaryClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
 
   try {
-    let credential;
-    try {
-      credential = await signInWithEmailAndPassword(secondaryAuth, adminEmail, knownPass);
-    } catch {
-      // Fallback try common initial pass or direct credential
-      credential = await signInWithEmailAndPassword(secondaryAuth, adminEmail, 'admin1234');
+    let signInRes = await secondaryClient.auth.signInWithPassword({
+      email: adminEmail,
+      password: knownPass,
+    });
+
+    if (signInRes.error) {
+      signInRes = await secondaryClient.auth.signInWithPassword({
+        email: adminEmail,
+        password: 'admin1234',
+      });
     }
 
-    await updatePassword(credential.user, params.newPassword);
+    if (signInRes.error || !signInRes.data.user) {
+      throw new Error(signInRes.error?.message || 'تعذر التحقق من جلسة المدير لاسترداد كلمة المرور.');
+    }
 
-    // Update escrow envelope with the new password so future recoveries remain seamless
+    const { error: updateErr } = await secondaryClient.auth.updateUser({
+      password: params.newPassword,
+    });
+    if (updateErr) {
+      throw new Error(updateErr.message);
+    }
+
     const updatedPayload = JSON.stringify({
-      uid: credential.user.uid,
+      uid: signInRes.data.user.id,
       email: adminEmail,
       adminPass: params.newPassword,
       recoveredAt: Date.now(),
     });
     const { ciphertext, iv } = await encryptWithCode(params.recoveryCode, salt, updatedPayload);
+    const nowIso = new Date().toISOString();
 
-    await setDoc(
-      recoveryDocRef,
+    await supabase.from('settings').upsert(
       {
-        envelope: ciphertext,
-        iv: iv,
-        attempts: 0,
-        lockedUntil: null,
-        lastRecoveredAt: serverTimestamp(),
+        clinic_id: clinicId,
+        id: RECOVERY_DOC_ID,
+        data: {
+          ...data,
+          envelope: ciphertext,
+          iv: iv,
+          attempts: 0,
+          lockedUntil: null,
+          lastRecoveredAt: nowIso,
+        },
+        updated_at: nowIso,
       },
-      { merge: true }
+      { onConflict: 'clinic_id,id' }
     );
 
     return {
@@ -319,7 +371,7 @@ export async function recoverAdminPasswordWithCode(params: {
       message: 'تم استرداد حساب المدير وتحديث كلمة المرور بنجاح! يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.',
     };
   } finally {
-    await signOut(secondaryAuth).catch(() => undefined);
-    await deleteApp(secondary);
+    await secondaryClient.auth.signOut().catch(() => undefined);
   }
 }
+

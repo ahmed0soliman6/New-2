@@ -1,4 +1,12 @@
 import { supabase, clinicId } from '../supabase';
+import {
+  getCachedTableRows,
+  putCachedTableRows,
+  deleteCachedTableRow,
+  enqueueOfflineMutation,
+  syncTableIncremental,
+  notifyTableMutated,
+} from '../offlineSync';
 
 export type DbClient = unknown;
 export type UnsubscribeFn = () => void;
@@ -252,7 +260,7 @@ function evaluateConstraints<T>(items: T[], constraints: unknown[]): T[] {
   return result;
 }
 
-let channelCounter = 0;
+const SYNC_POLL_INTERVAL_MS = 15000;
 
 export function subscribeQuery<T>(
   _db: DbClient,
@@ -262,32 +270,25 @@ export function subscribeQuery<T>(
   error: (reason: Error) => void,
   _label?: string
 ): UnsubscribeFn {
-  if (!supabase) {
-    error(new Error('عميل Supabase غير مهيأ.'));
-    return () => {};
-  }
-
-  const client = supabase;
   const tableName = resolveTableName(String(name));
   let isCancelled = false;
 
-  const fetchLatest = async () => {
+  const emitRows = (rows: SupabaseDocRow[]) => {
+    if (isCancelled) return;
+    const mapped = mapDocs<T>(tableName, rows);
+    const filtered = evaluateConstraints<T>(mapped, constraints);
+    next(filtered);
+  };
+
+  const runSync = async (forceFull = false) => {
     try {
-      const { data, error: queryError } = await client
-        .from(tableName)
-        .select('id, data, updated_at')
-        .eq('clinic_id', clinicId);
-
+      const { rows, error: syncErr } = await syncTableIncremental(tableName, forceFull);
       if (isCancelled) return;
-
-      if (queryError) {
-        error(handleFirestoreError(new Error(queryError.message), OperationType.LIST, tableName));
+      if (syncErr && !rows.length) {
+        error(handleFirestoreError(syncErr, OperationType.LIST, tableName));
         return;
       }
-
-      const mapped = mapDocs<T>(tableName, (data || []) as SupabaseDocRow[]);
-      const filtered = evaluateConstraints<T>(mapped, constraints);
-      next(filtered);
+      emitRows(rows);
     } catch (err) {
       if (!isCancelled) {
         error(handleFirestoreError(err, OperationType.LIST, tableName));
@@ -295,30 +296,43 @@ export function subscribeQuery<T>(
     }
   };
 
-  void fetchLatest();
+  // 1. Emit immediately from IndexedDB cache if available, then sync with Supabase
+  void getCachedTableRows(tableName).then((cached) => {
+    if (!isCancelled && cached.length > 0) {
+      emitRows(cached);
+    }
+    if (!isCancelled) {
+      void runSync(cached.length === 0);
+    }
+  });
 
-  const channelName = `realtime_${tableName}_${clinicId}_${++channelCounter}`;
-  const channel = client
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: tableName,
-        filter: `clinic_id=eq.${clinicId}`,
-      },
-      () => {
-        if (!isCancelled) {
-          void fetchLatest();
-        }
-      }
-    )
-    .subscribe();
+  // 2. Listen for local mutations / online recovery events
+  const handleMutated = (evt: Event) => {
+    if (isCancelled) return;
+    const detail = (evt as CustomEvent<{ tables?: string[]; forceFull?: boolean }>).detail;
+    const tables = detail?.tables || [];
+    if (tables.includes('*') || tables.includes(tableName)) {
+      void runSync(Boolean(detail?.forceFull));
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('soli_supabase_mutated', handleMutated);
+  }
+
+  // 3. Incremental polling via updated_at (no Realtime channels)
+  const intervalId = setInterval(() => {
+    if (!isCancelled && (typeof document === 'undefined' || document.visibilityState === 'visible')) {
+      void runSync(false);
+    }
+  }, SYNC_POLL_INTERVAL_MS);
 
   return () => {
     isCancelled = true;
-    void client.removeChannel(channel);
+    clearInterval(intervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('soli_supabase_mutated', handleMutated);
+    }
   };
 }
 
@@ -337,15 +351,24 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
   itemId: string,
   data: T
 ): Promise<void> {
-  if (!supabase) {
-    throw handleFirestoreError(
-      new Error('عميل Supabase غير مهيأ.'),
-      OperationType.WRITE,
-      `${collectionName}/${itemId}`
-    );
+  const tableName = resolveTableName(String(collectionName));
+  const nowIso = new Date().toISOString();
+
+  const cachedRows = await getCachedTableRows(tableName);
+  const cachedExisting = cachedRows.find((r) => r.id === itemId);
+  const localPrev =
+    cachedExisting?.data && typeof cachedExisting.data === 'object'
+      ? cachedExisting.data
+      : {};
+
+  if (!supabase || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    const mergedOffline = { ...localPrev, ...data };
+    await putCachedTableRows(tableName, [{ id: itemId, data: mergedOffline, updated_at: nowIso }]);
+    await enqueueOfflineMutation('upsert', tableName, itemId, mergedOffline, nowIso);
+    notifyTableMutated(tableName, false);
+    return;
   }
 
-  const tableName = resolveTableName(String(collectionName));
   try {
     const { data: existing } = await supabase
       .from(tableName)
@@ -357,7 +380,7 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
     const prevData =
       existing?.data && typeof existing.data === 'object'
         ? (existing.data as Record<string, unknown>)
-        : {};
+        : localPrev;
 
     const mergedData = {
       ...prevData,
@@ -369,7 +392,7 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
         clinic_id: clinicId,
         id: itemId,
         data: mergedData,
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       },
       { onConflict: 'clinic_id,id' }
     );
@@ -377,6 +400,9 @@ export async function saveCatalogItem<T extends Record<string, unknown>>(
     if (upsertErr) {
       throw new Error(upsertErr.message);
     }
+
+    await putCachedTableRows(tableName, [{ id: itemId, data: mergedData, updated_at: nowIso }]);
+    notifyTableMutated(tableName, false);
   } catch (err) {
     throw handleFirestoreError(err, OperationType.WRITE, `${tableName}/${itemId}`);
   }
@@ -387,15 +413,15 @@ export async function removeCatalogItem(
   collectionName: FirestoreCollectionName | string,
   itemId: string
 ): Promise<void> {
-  if (!supabase) {
-    throw handleFirestoreError(
-      new Error('عميل Supabase غير مهيأ.'),
-      OperationType.DELETE,
-      `${collectionName}/${itemId}`
-    );
+  const tableName = resolveTableName(String(collectionName));
+
+  if (!supabase || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    await deleteCachedTableRow(tableName, itemId);
+    await enqueueOfflineMutation('delete', tableName, itemId);
+    notifyTableMutated(tableName, false);
+    return;
   }
 
-  const tableName = resolveTableName(String(collectionName));
   try {
     const { error: delErr } = await supabase
       .from(tableName)
@@ -406,6 +432,9 @@ export async function removeCatalogItem(
     if (delErr) {
       throw new Error(delErr.message);
     }
+
+    await deleteCachedTableRow(tableName, itemId);
+    notifyTableMutated(tableName, false);
   } catch (err) {
     throw handleFirestoreError(err, OperationType.DELETE, `${tableName}/${itemId}`);
   }
@@ -416,50 +445,6 @@ export async function saveSettingsDocument<T extends Record<string, unknown>>(
   docName: SettingsDocId | string,
   data: T
 ): Promise<void> {
-  if (!supabase) {
-    throw handleFirestoreError(
-      new Error('عميل Supabase غير مهيأ.'),
-      OperationType.WRITE,
-      `${FirestoreCollections.SETTINGS}/${docName}`
-    );
-  }
-
-  try {
-    const { data: existing } = await supabase
-      .from(FirestoreCollections.SETTINGS)
-      .select('data')
-      .eq('clinic_id', clinicId)
-      .eq('id', docName)
-      .maybeSingle();
-
-    const prevData =
-      existing?.data && typeof existing.data === 'object'
-        ? (existing.data as Record<string, unknown>)
-        : {};
-
-    const mergedData = {
-      ...prevData,
-      ...data,
-    };
-
-    const { error: upsertErr } = await supabase.from(FirestoreCollections.SETTINGS).upsert(
-      {
-        clinic_id: clinicId,
-        id: docName,
-        data: mergedData,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'clinic_id,id' }
-    );
-
-    if (upsertErr) {
-      throw new Error(upsertErr.message);
-    }
-  } catch (err) {
-    throw handleFirestoreError(
-      err,
-      OperationType.WRITE,
-      `${FirestoreCollections.SETTINGS}/${docName}`
-    );
-  }
+  await saveCatalogItem(_db, FirestoreCollections.SETTINGS, String(docName), data);
 }
+

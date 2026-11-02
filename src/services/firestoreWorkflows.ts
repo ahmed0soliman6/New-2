@@ -1,4 +1,5 @@
 import { supabase, clinicId } from './supabase';
+import { notifyTableMutated } from './offlineSync';
 import type {
   Appointment,
   Patient,
@@ -116,6 +117,7 @@ export async function checkInAppointmentTransaction(params: {
   }
 
   const payload = data as { appointment: Appointment; visit: Visit };
+  notifyTableMutated(['appointments', 'visits', 'invoices', 'payments'], false);
   return {
     appointment: payload.appointment,
     visit: payload.visit,
@@ -172,6 +174,7 @@ export async function registerWalkInTransaction(params: {
     throw toArabicError(error, 'تعذر تسجيل زيارة المريض في قاعدة البيانات');
   }
 
+  notifyTableMutated(['patients', 'visits', 'invoices', 'payments', 'appointments'], false);
   return data as Visit;
 }
 
@@ -218,6 +221,7 @@ export async function startVisitTransaction(_db: Firestore, visitId: string, doc
   if (updateError) {
     throw toArabicError(updateError, 'تعذر تحديث حالة الزيارة لبدء الكشف');
   }
+  notifyTableMutated(['visits'], false);
 }
 
 export async function completeVisitTransaction(params: {
@@ -365,6 +369,7 @@ export async function completeVisitTransaction(params: {
   if (error) {
     throw toArabicError(error, 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
   }
+  notifyTableMutated(['visits', 'patients', 'prescriptions', 'lab_orders', 'radiology_orders', 'follow_ups'], false);
 }
 
 export async function createAppointmentTransaction(params: {
@@ -404,6 +409,7 @@ export async function createAppointmentTransaction(params: {
   if (error) {
     throw toArabicError(error, 'تعذر حفظ الموعد في قاعدة البيانات');
   }
+  notifyTableMutated(['appointments', 'patients'], false);
 }
 
 export async function deleteAppointmentTransaction(_db: Firestore, appointmentId: string): Promise<void> {
@@ -417,6 +423,7 @@ export async function deleteAppointmentTransaction(_db: Firestore, appointmentId
   if (error) {
     throw toArabicError(error, 'تعذر حذف الموعد من قاعدة البيانات');
   }
+  notifyTableMutated(['appointments'], true);
 }
 
 export async function deletePatientTransaction(_db: Firestore, patientId: string): Promise<void> {
@@ -430,4 +437,5 @@ export async function deletePatientTransaction(_db: Firestore, patientId: string
   if (error) {
     throw toArabicError(error, 'تعذر حذف ملف المريض من قاعدة البيانات');
   }
+  notifyTableMutated(['patients'], true);
 }

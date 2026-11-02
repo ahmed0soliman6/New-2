@@ -6,7 +6,6 @@ import {
   buildAppointmentReminderMessage,
   generateAllDayTimeOptions,
 } from '../../utils/clinicBranches';
-import { db } from '../../services/firebase';
 import { saveSettingsDocument } from '../../services/repositories';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { formatAppDate } from '../../utils/numberUtils';
@@ -168,12 +167,10 @@ export const ClinicBranchesPanel: React.FC = () => {
 
     setBranches(updatedList);
     saveClinicBranches(updatedList);
-    if (db) {
-      saveSettingsDocument(db, 'clinicBranches', {
-        branches: updatedList,
-        updatedAt: new Date().toISOString(),
-      }).catch((err) => console.warn('Firestore branch sync error:', err));
-    }
+    saveSettingsDocument(null, 'clinicBranches', {
+      branches: updatedList,
+      updatedAt: new Date().toISOString(),
+    }).catch((err) => console.warn('Branch sync error:', err));
 
     setIsModalOpen(false);
   };
@@ -190,12 +187,10 @@ export const ClinicBranchesPanel: React.FC = () => {
     const updated = branches.filter((b) => b.id !== id);
     setBranches(updated);
     saveClinicBranches(updated);
-    if (db) {
-      saveSettingsDocument(db, 'clinicBranches', {
-        branches: updated,
-        updatedAt: new Date().toISOString(),
-      }).catch((err) => console.warn('Firestore branch sync error:', err));
-    }
+    saveSettingsDocument(null, 'clinicBranches', {
+      branches: updated,
+      updatedAt: new Date().toISOString(),
+    }).catch((err) => console.warn('Branch sync error:', err));
     showToast(`تم حذف فرع "${name}" بنجاح.`);
   };
 
@@ -205,12 +200,10 @@ export const ClinicBranchesPanel: React.FC = () => {
     const updated = [item, ...branches.filter((_, i) => i !== index)];
     setBranches(updated);
     saveClinicBranches(updated);
-    if (db) {
-      saveSettingsDocument(db, 'clinicBranches', {
-        branches: updated,
-        updatedAt: new Date().toISOString(),
-      }).catch((err) => console.warn('Firestore branch sync error:', err));
-    }
+    saveSettingsDocument(null, 'clinicBranches', {
+      branches: updated,
+      updatedAt: new Date().toISOString(),
+    }).catch((err) => console.warn('Branch sync error:', err));
     showToast(`تم تعيين فرع "${item.name}" كفرع رئيسي وافتراضي للعيادة ✓`);
   };
 

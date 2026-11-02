@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { formatBranchTime, generateAllDayTimeOptions } from '../../utils/clinicBranches';
 import { QrCodeImage } from '../QrCodeImage';
-import { doc, setDoc } from 'firebase/firestore';
 import { exportPrescriptionToPdf } from '../../utils/exportPrescriptionPdf';
 import { printPrescriptionDocument } from '../../utils/printPrescription';
 import { CLINIC_INFO } from '../../data/previewClinicData';
-import { db } from '../../services/firebase';
-import { saveSettingsDocument, subscribeToPrescriptionSettings } from '../../services/repositories';
+import { supabase } from '../../services/supabase';
+import { saveCatalogItem, saveSettingsDocument, subscribeToPrescriptionSettings } from '../../services/repositories';
 import { safeStorage, StorageKeys } from '../../services/storage';
 import { usePermissions } from '../../context/AuthContext';
 import { PermissionGate } from '../auth/PermissionGate';
@@ -145,16 +144,12 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
       const birthYear = editAge ? new Date().getFullYear() - Number(editAge) : 1988;
       const calculatedDOB = `${birthYear}-01-01`;
 
-      if (db) {
-        await setDoc(
-          doc(db, 'patients', patient.id),
-          {
-            fullName: trimmedName,
-            dateOfBirth: calculatedDOB,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
+      if (supabase) {
+        await saveCatalogItem(supabase, 'patients', patient.id, {
+          fullName: trimmedName,
+          dateOfBirth: calculatedDOB,
+          updatedAt: new Date().toISOString(),
+        });
       }
 
       onUpdatePatient?.({
@@ -185,9 +180,9 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
 
   // Real-time synchronization across accounts from Firestore
   useEffect(() => {
-    if (!db) return;
+    if (!supabase) return;
     const unsubscribe = subscribeToPrescriptionSettings<PrescriptionLayoutSettings>(
-      db,
+      supabase,
       (remoteConfig) => {
         if (remoteConfig && Object.keys(remoteConfig).length > 0) {
           setConfig((prev) => ({
@@ -216,9 +211,9 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     setAutoSaveStatus('saving');
     const timer = setTimeout(async () => {
       try {
-        if (db) {
-          await saveSettingsDocument(db, 'prescriptionSettings', config as unknown as Record<string, unknown>);
-          await saveSettingsDocument(db, 'doctorProfile', {
+        if (supabase) {
+          await saveSettingsDocument(supabase, 'prescriptionSettings', config as unknown as Record<string, unknown>);
+          await saveSettingsDocument(supabase, 'doctorProfile', {
             doctorNameAr: config.doctorName,
             doctorNameEn: config.doctorNameEn,
             specialtyAr: config.specialtyAr,
@@ -322,9 +317,9 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     try {
       assertPermission('settings.edit', 'حفظ إعدادات الروشتة والطباعة');
       setIsSaving(true);
-      if (db) {
-        await saveSettingsDocument(db, 'prescriptionSettings', config as unknown as Record<string, unknown>);
-        await saveSettingsDocument(db, 'doctorProfile', {
+      if (supabase) {
+        await saveSettingsDocument(supabase, 'prescriptionSettings', config as unknown as Record<string, unknown>);
+        await saveSettingsDocument(supabase, 'doctorProfile', {
           doctorNameAr: config.doctorName,
           doctorNameEn: config.doctorNameEn,
           specialtyAr: config.specialtyAr,

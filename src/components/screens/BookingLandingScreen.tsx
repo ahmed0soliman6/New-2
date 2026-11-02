@@ -14,11 +14,12 @@ import { getActiveVisitTypes } from '../../utils/financeManager';
 import { AppointmentListItem } from '../../types';
 import { QrCodeImage } from '../QrCodeImage';
 import { safeStorage } from '../../services/storage';
-import { db } from '../../services/firebase';
-import { subscribeToPrescriptionSettings } from '../../services/repositories/settingsRepo';
+import { supabase } from '../../services/supabase';
+import { subscribeToPrescriptionSettings, subscribeToVisitTypes, subscribeToServices } from '../../services/repositories';
+import { createAppointmentTransaction } from '../../services/firestoreWorkflows';
 import { toDayKey } from '../../utils/dayKey';
 import { useLanguage } from '../../i18n/LanguageContext';
-import { meterQuery, meterDoc, meterWrite } from '../../services/readMeter';
+import { meterRead, meterWrite } from '../../services/readMeter';
 import {
   validateBooking,
   cleanName,
@@ -140,12 +141,11 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
     };
   }, [doctorProfile, language]);
 
-  // Real-time Firestore subscription to fetch real doctor settings, clinic branches, visit types and services
   useEffect(() => {
-    if (!db) return;
+    if (!supabase) return;
 
     const unsub = subscribeToPrescriptionSettings(
-      db,
+      supabase,
       (settings: any) => {
         if (settings && Object.keys(settings).length > 0) {
           // Sync with local storage as secondary backup
@@ -185,47 +185,29 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
       (err) => console.warn('Public Booking Live Settings Sync Error:', err)
     );
 
-    // Real-time Firestore subscription to fetch visit types
-    let unsubVisitTypes = () => {};
-    import('firebase/firestore').then(({ doc, onSnapshot }) => {
-      unsubVisitTypes = onSnapshot(
-        doc(db, 'settings', 'visitTypes'),
-        (snap) => {
-          meterDoc('booking:visitTypes', snap, 'حجوزات');
-          if (snap.exists()) {
-            const data = snap.data();
-            const items = (data.items || data.types || []) as any[];
-            if (Array.isArray(items) && items.length > 0) {
-              localStorage.setItem('soli_visit_types', JSON.stringify(items));
-              window.dispatchEvent(new Event('soli_visit_types_updated'));
-            }
-          }
-        },
-        (err) => console.warn('Public Visit Types Sync Error:', err)
-      );
-    });
+    const unsubVisitTypes = subscribeToVisitTypes(
+      supabase,
+      (items) => {
+        if (Array.isArray(items) && items.length > 0) {
+          meterRead('حجوزات', 1);
+          localStorage.setItem('soli_visit_types', JSON.stringify(items));
+          window.dispatchEvent(new Event('soli_visit_types_updated'));
+        }
+      },
+      (err) => console.warn('Public Visit Types Sync Error:', err)
+    );
 
-    // Real-time Firestore subscription to fetch services
-    let unsubServices = () => {};
-    import('firebase/firestore').then(({ collection, onSnapshot }) => {
-      unsubServices = onSnapshot(
-        collection(db, 'services'),
-        (snap) => {
-          meterQuery('booking:services', snap, 'حجوزات');
-          const items: any[] = [];
-          snap.forEach((docSnap) => {
-            if (docSnap.exists()) {
-              items.push({ id: docSnap.id, ...docSnap.data() });
-            }
-          });
-          if (items.length > 0) {
-            localStorage.setItem('soli_services', JSON.stringify(items));
-            window.dispatchEvent(new Event('soli_services_updated'));
-          }
-        },
-        (err) => console.warn('Public Services Sync Error:', err)
-      );
-    });
+    const unsubServices = subscribeToServices(
+      supabase,
+      (items) => {
+        if (Array.isArray(items) && items.length > 0) {
+          meterRead('حجوزات', items.length);
+          localStorage.setItem('soli_services', JSON.stringify(items));
+          window.dispatchEvent(new Event('soli_services_updated'));
+        }
+      },
+      (err) => console.warn('Public Services Sync Error:', err)
+    );
 
     return () => {
       unsub();
@@ -476,10 +458,7 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
 
     setSubmitting(true);
     try {
-      const { db } = await import('../../services/firebase');
-      if (!db) throw new Error('قاعدة البيانات غير متاحة حالياً');
-
-      const { doc, writeBatch } = await import('firebase/firestore');
+      if (!supabase) throw new Error('قاعدة البيانات غير متاحة حالياً');
 
       const stamp = Date.now();
       const patientId = `pat-online-${stamp}`;
@@ -524,11 +503,11 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
         type: visitType,
       };
 
-      // دفعة واحدة: إما ينجح الاثنان معًا أو يفشلان معًا
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'patients', patientId), patientRecord);
-      batch.set(doc(db, 'appointments', appointmentId), appointmentRecord);
-      await batch.commit();
+      await createAppointmentTransaction({
+        db: supabase,
+        patient: patientRecord as any,
+        appointment: appointmentRecord as any,
+      });
 
       meterWrite(2);
 

@@ -37,10 +37,9 @@ import {
   MedicalServiceItem,
   ExpenseCategoryItem,
 } from '../../utils/financeManager';
-import { db } from '../../services/firebase';
-import { doc, writeBatch } from 'firebase/firestore';
+import { supabase } from '../../services/supabase';
 import { safeStorage, StorageKeys } from '../../services/storage';
-import { subscribeToServices, subscribeToExpenseCategories } from '../../services/repositories';
+import { subscribeToServices, subscribeToExpenseCategories, saveCatalogItem } from '../../services/repositories';
 
 interface ChronicItem {
   id: string;
@@ -209,9 +208,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     let unsubServices = () => {};
     let unsubExpCats = () => {};
 
-    if (db) {
+    if (supabase) {
       unsubServices = subscribeToServices(
-        db,
+        supabase,
         (srvs) => {
           if (Array.isArray(srvs) && srvs.length > 0) {
             setMedicalServicesList(srvs as MedicalServiceItem[]);
@@ -221,7 +220,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       );
 
       unsubExpCats = subscribeToExpenseCategories(
-        db,
+        supabase,
         (cats) => {
           if (Array.isArray(cats) && cats.length > 0) {
             setExpenseCategoriesList(cats as ExpenseCategoryItem[]);
@@ -447,12 +446,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         }
 
         let restoredRecordsCount = 0;
-        if (db && (Array.isArray(data.patients) || Array.isArray(data.visits) || Array.isArray(data.appointments))) {
-          const batch = writeBatch(db);
+        if (supabase && (Array.isArray(data.patients) || Array.isArray(data.visits) || Array.isArray(data.appointments))) {
+          const ops: Promise<void>[] = [];
           if (Array.isArray(data.patients)) {
             data.patients.forEach((p: any) => {
               if (p.patientId) {
-                batch.set(doc(db, 'patients', p.patientId), p, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'patients', p.patientId, p));
                 restoredRecordsCount++;
               }
             });
@@ -460,7 +459,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           if (Array.isArray(data.appointments)) {
             data.appointments.forEach((a: any) => {
               if (a.appointmentId) {
-                batch.set(doc(db, 'appointments', a.appointmentId), a, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'appointments', a.appointmentId, a));
                 restoredRecordsCount++;
               }
             });
@@ -468,7 +467,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           if (Array.isArray(data.visits)) {
             data.visits.forEach((v: any) => {
               if (v.visitId) {
-                batch.set(doc(db, 'visits', v.visitId), v, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'visits', v.visitId, v));
                 restoredRecordsCount++;
               }
             });
@@ -476,7 +475,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           if (Array.isArray(data.invoices)) {
             data.invoices.forEach((inv: any) => {
               if (inv.invoiceId) {
-                batch.set(doc(db, 'invoices', inv.invoiceId), inv, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'invoices', inv.invoiceId, inv));
                 restoredRecordsCount++;
               }
             });
@@ -484,7 +483,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           if (Array.isArray(data.payments)) {
             data.payments.forEach((pay: any) => {
               if (pay.paymentId) {
-                batch.set(doc(db, 'payments', pay.paymentId), pay, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'payments', pay.paymentId, pay));
                 restoredRecordsCount++;
               }
             });
@@ -492,12 +491,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           if (Array.isArray(data.prescriptions)) {
             data.prescriptions.forEach((rx: any) => {
               if (rx.prescriptionId) {
-                batch.set(doc(db, 'prescriptions', rx.prescriptionId), rx, { merge: true });
+                ops.push(saveCatalogItem(supabase, 'prescriptions', rx.prescriptionId, rx));
                 restoredRecordsCount++;
               }
             });
           }
-          await batch.commit();
+          await Promise.all(ops);
         }
 
         const successMsg = restoredRecordsCount > 0

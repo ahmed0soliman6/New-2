@@ -3,7 +3,10 @@ import type {
   SystemSettings,
   DoctorProfile,
 } from '../../types/database';
-import { supabase, clinicId } from '../supabase';
+import {
+  getCachedTableRows,
+  syncTableIncremental,
+} from '../offlineSync';
 import {
   FirestoreCollections,
   SettingsDocs,
@@ -22,7 +25,7 @@ export interface ClinicStatusState {
   message?: string;
 }
 
-let settingsChannelSeq = 0;
+const SETTINGS_POLL_MS = 15000;
 
 function subscribeSettingDoc<T>(
   docId: string,
@@ -30,42 +33,37 @@ function subscribeSettingDoc<T>(
   next: (val: T | null) => void,
   error: (reason: Error) => void
 ): UnsubscribeFn {
-  if (!supabase) {
-    error(new Error('عميل Supabase غير مهيأ.'));
-    return () => {};
-  }
-
-  const client = supabase;
   let isCancelled = false;
 
-  const fetchDoc = async () => {
+  const emitFromRows = (rows: Array<{ id: string; data: Record<string, unknown> }>) => {
+    if (isCancelled) return;
+    const row = rows.find((r) => r.id === docId);
+    if (row && row.data && typeof row.data === 'object') {
+      const normalized = normalize(row.data) as Record<string, any>;
+      next(extract(normalized));
+    } else {
+      next(null);
+    }
+  };
+
+  const syncDoc = async (forceFull = false) => {
     try {
-      const { data: row, error: queryErr } = await client
-        .from(FirestoreCollections.SETTINGS)
-        .select('id, data, updated_at')
-        .eq('clinic_id', clinicId)
-        .eq('id', docId)
-        .maybeSingle();
-
+      const { rows, error: syncErr } = await syncTableIncremental(
+        FirestoreCollections.SETTINGS,
+        forceFull
+      );
       if (isCancelled) return;
-
-      if (queryErr) {
+      if (syncErr && !rows.length) {
         error(
           handleFirestoreError(
-            new Error(queryErr.message),
+            syncErr,
             OperationType.GET,
             `${FirestoreCollections.SETTINGS}/${docId}`
           )
         );
         return;
       }
-
-      if (row && row.data && typeof row.data === 'object') {
-        const normalized = normalize(row.data) as Record<string, any>;
-        next(extract(normalized));
-      } else {
-        next(null);
-      }
+      emitFromRows(rows);
     } catch (err) {
       if (!isCancelled) {
         error(
@@ -79,37 +77,40 @@ function subscribeSettingDoc<T>(
     }
   };
 
-  void fetchDoc();
+  void getCachedTableRows(FirestoreCollections.SETTINGS).then((cached) => {
+    if (!isCancelled && cached.length > 0) {
+      emitFromRows(cached);
+    }
+    if (!isCancelled) {
+      void syncDoc(cached.length === 0);
+    }
+  });
 
-  const channelName = `settings_${docId}_${clinicId}_${++settingsChannelSeq}`;
-  const channel = client
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: FirestoreCollections.SETTINGS,
-        filter: `clinic_id=eq.${clinicId}`,
-      },
-      (payload) => {
-        if (isCancelled) return;
-        const newRow = payload.new as { id?: string } | undefined;
-        const oldRow = payload.old as { id?: string } | undefined;
-        if (!newRow?.id && !oldRow?.id) {
-          void fetchDoc();
-          return;
-        }
-        if (newRow?.id === docId || oldRow?.id === docId) {
-          void fetchDoc();
-        }
-      }
-    )
-    .subscribe();
+  const handleMutated = (evt: Event) => {
+    if (isCancelled) return;
+    const detail = (evt as CustomEvent<{ tables?: string[]; forceFull?: boolean }>).detail;
+    const tables = detail?.tables || [];
+    if (tables.includes('*') || tables.includes(FirestoreCollections.SETTINGS)) {
+      void syncDoc(Boolean(detail?.forceFull));
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('soli_supabase_mutated', handleMutated);
+  }
+
+  const intervalId = setInterval(() => {
+    if (!isCancelled && (typeof document === 'undefined' || document.visibilityState === 'visible')) {
+      void syncDoc(false);
+    }
+  }, SETTINGS_POLL_MS);
 
   return () => {
     isCancelled = true;
-    void client.removeChannel(channel);
+    clearInterval(intervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('soli_supabase_mutated', handleMutated);
+    }
   };
 }
 
