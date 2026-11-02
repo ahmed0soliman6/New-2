@@ -188,7 +188,7 @@ export function ReadOptCard() {
                   </div>
                 </td>
                 <td className="py-2.5 px-3 text-[11px] text-purple-600 dark:text-purple-400 hidden sm:table-cell">
-                  الكتابات ليست قراءات وتُحسب منفصلة في حصة Firebase
+                  الكتابات ليست قراءات وتُحسب منفصلة في حصة Supabase
                 </td>
                 <td className="py-2.5 px-3 text-left">
                   <span className="inline-block font-mono text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-500/15 px-2.5 py-0.5 rounded-md min-w-[36px] text-center">
@@ -207,7 +207,7 @@ export function ReadOptCard() {
           info
         </span>
         <span>
-          هذه أرقام تقديرية لهذا الجهاز اليوم، وأرقام Firebase Usage هي المرجع الرسمي. الحد المجاني 50,000 قراءة يوميًا.
+          هذه أرقام تقديرية لهذا الجهاز اليوم، وأرقام Supabase Usage هي المرجع الرسمي.
         </span>
       </div>
 

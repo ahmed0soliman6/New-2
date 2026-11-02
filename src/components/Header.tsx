@@ -538,7 +538,7 @@ Wishing you great health and wellness ✨`
                   <h3 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5]">
                     حالة الاتصال ومزامنة قاعدة البيانات
                   </h3>
-                  <p className="text-[11px] text-slate-400">Firebase Firestore Cloud Database</p>
+                  <p className="text-[11px] text-slate-400">Supabase Cloud Database</p>
                 </div>
               </div>
               <button
@@ -592,7 +592,7 @@ Wishing you great health and wellness ✨`
               )}
 
               <p className="text-[11px] text-slate-500 dark:text-[#bbc9ca] leading-relaxed">
-                يضمن نظام المزامنة الفوري حفظ كافة الكشوفات والفواتير والروشتات في قاعدة بيانات Firebase Firestore السحابية فور إدخالها، مع إمكانية استمرار العمل أوفلاين والمزامنة التلقائية عند عودة الشبكة.
+                يضمن نظام المزامنة الفوري حفظ كافة الكشوفات والفواتير والروشتات في قاعدة بيانات Supabase السحابية فور إدخالها، مع إمكانية استمرار العمل أوفلاين والمزامنة التلقائية عند عودة الشبكة.
               </p>
             </div>
 
