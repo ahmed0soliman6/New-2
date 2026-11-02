@@ -230,6 +230,40 @@ export async function deleteCachedTableRow(table: string, id: string): Promise<v
   });
 }
 
+export async function clearCachedTables(tables: string[]): Promise<void> {
+  const db = await openOfflineDb();
+  for (const table of tables) {
+    const metaKey = makeMetaKey(table);
+    memoryMetaFallback.delete(metaKey);
+    const prefix = `${clinicId}:${table}:`;
+    for (const k of Array.from(memoryFallback.keys())) {
+      if (k.startsWith(prefix)) memoryFallback.delete(k);
+    }
+    if (db) {
+      await new Promise<void>((resolve) => {
+        try {
+          const tx = db.transaction([STORE_RECORDS, STORE_META], 'readwrite');
+          const store = tx.objectStore(STORE_RECORDS);
+          const index = store.index('by_clinic_table');
+          const req = index.openKeyCursor(IDBKeyRange.only([clinicId, table]));
+          req.onsuccess = () => {
+            const cursor = req.result;
+            if (cursor) {
+              store.delete(cursor.primaryKey);
+              cursor.continue();
+            }
+          };
+          tx.objectStore(STORE_META).delete(metaKey);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
+      });
+    }
+  }
+}
+
 async function getLastSyncedAt(table: string): Promise<string | null> {
   const metaKey = makeMetaKey(table);
   const db = await openOfflineDb();

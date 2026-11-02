@@ -135,15 +135,25 @@ export function removeMedicalService(id: string): MedicalServiceItem[] {
   return cachedServices;
 }
 
+let updateServiceDebounceTimer: any = null;
+
 export function updateMedicalService(id: string, updates: Partial<MedicalServiceItem>): MedicalServiceItem[] {
   cachedServices = cachedServices.map((s) => (s.id === id ? { ...s, ...updates } : s));
-  saveMedicalServices(cachedServices);
-  const target = cachedServices.find((s) => s.id === id);
-  if (target) {
-    saveCatalogItem(null, 'services', id, target as unknown as Record<string, unknown>).catch((err) =>
-      console.warn('Supabase service update error:', err)
-    );
+  safeStorage.setJSON(StorageKeys.SERVICES, cachedServices);
+  
+  if (updateServiceDebounceTimer) {
+    clearTimeout(updateServiceDebounceTimer);
   }
+  updateServiceDebounceTimer = setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('soli_services_updated', { detail: cachedServices }));
+    const target = cachedServices.find((s) => s.id === id);
+    if (target) {
+      saveCatalogItem(null, 'services', id, target as unknown as Record<string, unknown>).catch((err) =>
+        console.warn('Supabase service update error:', err)
+      );
+    }
+  }, 400);
+
   return cachedServices;
 }
 

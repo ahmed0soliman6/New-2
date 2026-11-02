@@ -507,11 +507,15 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
                     قيمة الخدمة (ج.م) *
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    required
-                    value={invAmount}
-                    onChange={(e) => setInvAmount(Number(e.target.value))}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    placeholder="0"
+                    value={invAmount === 0 ? '' : invAmount}
+                    onChange={(e) => {
+                      const clean = toEnglishDigits(e.target.value).replace(/[^0-9]/g, '');
+                      setInvAmount(clean === '' ? 0 : Number(clean));
+                    }}
                     className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-white text-xs p-2.5 rounded-xl border border-slate-200 dark:border-white/10 font-mono font-bold focus:outline-none"
                   />
                 </div>
@@ -521,11 +525,15 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
                     الخصم (إن وجد)
                   </label>
                   <input
-                    type="number"
-                    min="0"
-                    max={invAmount}
-                    value={invDiscount}
-                    onChange={(e) => setInvDiscount(Number(e.target.value))}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    placeholder="0"
+                    value={invDiscount === 0 ? '' : invDiscount}
+                    onChange={(e) => {
+                      const clean = toEnglishDigits(e.target.value).replace(/[^0-9]/g, '');
+                      setInvDiscount(clean === '' ? 0 : Number(clean));
+                    }}
                     className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-white text-xs p-2.5 rounded-xl border border-slate-200 dark:border-white/10 font-mono focus:outline-none"
                   />
                 </div>

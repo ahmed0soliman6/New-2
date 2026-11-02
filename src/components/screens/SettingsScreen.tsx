@@ -10,9 +10,6 @@ import { MedicalCatalogsManager } from '../settings/MedicalCatalogsManager';
 import { UserManagementPanel } from '../settings/UserManagementPanel';
 import { RecurringTemplatesManager } from '../settings/RecurringTemplatesManager';
 import { ChangePasswordCard } from '../settings/ChangePasswordCard';
-import { ClinicBranchesPanel } from '../settings/ClinicBranchesPanel';
-import { MaintenanceCard } from '../settings/MaintenanceCard';
-import { ReadOptCard } from '../settings/ReadOptCard';
 import { APP_VERSION } from '../../constants/version';
 import { usePermissions } from '../../context/AuthContext';
 import { PermissionGate } from '../auth/PermissionGate';
@@ -40,6 +37,7 @@ import {
 import { supabase } from '../../services/supabase';
 import { safeStorage, StorageKeys } from '../../services/storage';
 import { subscribeToServices, subscribeToExpenseCategories, saveCatalogItem } from '../../services/repositories';
+import { toEnglishDigits } from '../../utils/numberUtils';
 
 interface ChronicItem {
   id: string;
@@ -154,15 +152,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const { language, setLanguage, t, isRTL } = useLanguage();
   const isAdmin = role === 'admin';
   const canDeleteSettings = isAdmin || canDelete('system-settings') || canPerform('system-settings', 'delete');
-  const canRunMaintenance = isAdmin || role === 'doctor' || canDeleteSettings;
   const [activeSettingsSection, setActiveSettingsSection] = useState<
     'general' | 'catalogs' | 'users'
   >('general');
 
   // Accordion Collapsible Open States (All folded/collapsed by default)
   const [openCards, setOpenCards] = useState<Record<string, boolean>>({
-    language: false,
-    branches: false,
     pricing: false,
     password: false,
     services: false,
@@ -191,9 +186,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [expenseCategoriesList, setExpenseCategoriesList] = useState<ExpenseCategoryItem[]>(loadExpenseCategories);
 
   const [newServiceName, setNewServiceName] = useState('');
-  const [newServicePrice, setNewServicePrice] = useState<number>(200);
+  const [newServicePrice, setNewServicePrice] = useState<string>('');
   const [showAddServiceModal, setShowAddServiceModal] = useState(false);
   const [deleteConfirmServiceId, setDeleteConfirmServiceId] = useState<string | null>(null);
+
+  // Local buffer states to prevent race conditions during typing
+  const [servicePriceBuffer, setServicePriceBuffer] = useState<Record<string, string>>({});
+  const [visitFeeBuffer, setVisitFeeBuffer] = useState<Record<string, string>>({});
 
   const [newExpenseCategoryInput, setNewExpenseCategoryInput] = useState('');
   const [deleteConfirmExpenseCatId, setDeleteConfirmExpenseCatId] = useState<string | null>(null);
@@ -267,19 +266,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   // Add Visit Type Modal/Input state
   const [showAddVisitModal, setShowAddVisitModal] = useState(false);
   const [newVisitName, setNewVisitName] = useState('');
-  const [newVisitFee, setNewVisitFee] = useState<number>(250);
+  const [newVisitFee, setNewVisitFee] = useState<string>('');
 
   const handleAddNewVisitSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newVisitName.trim()) return;
+    const cleanFee = Number(toEnglishDigits(newVisitFee).replace(/[^0-9]/g, '')) || 0;
     onAddVisitType({
       id: `vt-${Date.now()}`,
       name: newVisitName.trim(),
-      fee: Number(newVisitFee) || 0,
+      fee: cleanFee,
     });
     setSavedToast(`تم حفظ وإضافة نوع الزيارة: "${newVisitName.trim()}" تلقائياً ✓`);
     setNewVisitName('');
-    setNewVisitFee(250);
+    setNewVisitFee('');
     setShowAddVisitModal(false);
     setTimeout(() => setSavedToast(null), 3000);
   };
@@ -571,7 +571,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               }`}
             >
               <span className="material-symbols-outlined text-base">tune</span>
-              <span>{language === 'en' ? 'General Settings & Language' : 'إعدادات النظام واللغة'}</span>
+              <span>{language === 'en' ? 'General Settings' : 'إعدادات النظام العامة'}</span>
             </button>
 
             <button
@@ -653,161 +653,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       {activeSettingsSection === 'general' && (
         <div className="w-full max-w-4xl mx-auto flex flex-col gap-4">
             
-            {/* ACCORDION CARD 0: System Language & Translation (لغة النظام والواجهة) */}
-            <div className="bg-white dark:bg-[#111A2E] rounded-2xl border border-slate-200 dark:border-white/5 shadow-xs overflow-hidden transition-all">
-              <button
-                type="button"
-                onClick={() => toggleCard('language')}
-                className={`w-full p-5 flex items-center justify-between ${isRTL ? 'text-right' : 'text-left'} cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5 transition-colors`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-teal-50 dark:bg-[#00c2cb]/15 text-[#008f97] dark:text-[#00c2cb] flex items-center justify-center font-bold">
-                    <span className="material-symbols-outlined text-xl">translate</span>
-                  </div>
-                  <div>
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>{language === 'en' ? '1. System Language & Localization' : '1. لغة النظام والواجهة (Language)'}</span>
-                      <span className="text-[10px] bg-teal-500/10 text-[#008f97] dark:text-[#00c2cb] px-2 py-0.5 rounded-full border border-teal-500/20 font-bold">
-                        {language === 'en' ? 'English' : 'العربية'}
-                      </span>
-                    </h2>
-                    <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
-                      {language === 'en'
-                        ? 'Switch interface language between Arabic and English with instant RTL/LTR support'
-                        : 'التبديل الفوري بين واجهة اللغة العربية والإنجليزية مع دعم كامل للاتجاه والمصطلحات الطبية'}
-                    </p>
-                  </div>
-                </div>
-                <span
-                  className="material-symbols-outlined text-slate-400 text-2xl transition-transform duration-200"
-                  style={{ transform: openCards.language ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                >
-                  expand_more
-                </span>
-              </button>
-
-              {openCards.language && (
-                <div className="p-5 pt-0 border-t border-slate-100 dark:border-white/5 space-y-4 text-xs">
-                  <div className="pt-3">
-                    <p className="font-bold text-slate-800 dark:text-[#dde2f5] mb-3">
-                      {language === 'en' ? 'Select Active System Language:' : 'اختر لغة واجهة النظام الحالية:'}
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* Arabic Option */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLanguage('ar');
-                          setSavedToast('تم تحويل لغة النظام إلى العربية بنجاح ✓');
-                          setTimeout(() => setSavedToast(null), 3000);
-                        }}
-                        className={`p-4 rounded-xl border-2 transition-all flex items-start gap-3 cursor-pointer text-right ${
-                          language === 'ar'
-                            ? 'border-[#00c2cb] bg-[#00c2cb]/10 dark:bg-[#00c2cb]/15 shadow-sm'
-                            : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 bg-slate-50/50 dark:bg-[#18233C]/50'
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                          language === 'ar' ? 'border-[#00c2cb] bg-[#00c2cb]' : 'border-slate-400'
-                        }`}>
-                          {language === 'ar' && <span className="w-2 h-2 rounded-full bg-white"></span>}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold text-sm text-slate-900 dark:text-[#dde2f5]">العربية (Arabic)</span>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-700 dark:text-[#45dee7] font-bold">الافتراضية RTL</span>
-                          </div>
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                            واجهة النظام باللغة العربية مع دعم كامل للاتجاه من اليمين لليسار.
-                          </p>
-                        </div>
-                      </button>
-
-                      {/* English Option */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLanguage('en');
-                          setSavedToast('System language switched to English successfully ✓');
-                          setTimeout(() => setSavedToast(null), 3000);
-                        }}
-                        className={`p-4 rounded-xl border-2 transition-all flex items-start gap-3 cursor-pointer text-left ${
-                          language === 'en'
-                            ? 'border-[#00c2cb] bg-[#00c2cb]/10 dark:bg-[#00c2cb]/15 shadow-sm'
-                            : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 bg-slate-50/50 dark:bg-[#18233C]/50'
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                          language === 'en' ? 'border-[#00c2cb] bg-[#00c2cb]' : 'border-slate-400'
-                        }`}>
-                          {language === 'en' && <span className="w-2 h-2 rounded-full bg-white"></span>}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold text-sm text-slate-900 dark:text-[#dde2f5]">English (الإنجليزية)</span>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-bold">LTR Layout</span>
-                          </div>
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                            Professional English interface with standardized clinical terminology and LTR layout.
-                          </p>
-                        </div>
-                      </button>
-                    </div>
-
-                    <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/5 text-[11px] text-slate-600 dark:text-slate-300 flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[#00c2cb] text-base shrink-0">info</span>
-                      <span>
-                        {language === 'en'
-                          ? 'Note: Switching languages updates navigation, buttons, titles, and system screens immediately. Patient data and clinical notes remain in their original recorded text.'
-                          : 'ملاحظة: تغيير لغة النظام يغير فوراً كافة القوائم والأزرار والعناوين في النظام مع الحفاظ التام على بيانات المرضى والملاحظات الطبية المدخلة كما هي.'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* ACCORDION CARD: Clinic Branches & Contact Details (فروع العيادة والعناوين وأرقام التواصل) */}
-            <div className="bg-white dark:bg-[#111A2E] rounded-2xl border border-slate-200 dark:border-white/5 shadow-xs overflow-hidden transition-all">
-              <button
-                type="button"
-                onClick={() => toggleCard('branches')}
-                className={`w-full p-5 flex items-center justify-between ${isRTL ? 'text-right' : 'text-left'} cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5 transition-colors`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-teal-50 dark:bg-[#00c2cb]/15 text-[#008f97] dark:text-[#00c2cb] flex items-center justify-center font-bold">
-                    <span className="material-symbols-outlined text-xl">apartment</span>
-                  </div>
-                  <div>
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>{language === 'en' ? '2. Clinic Branches & Official Contacts' : '2. فروع العيادة والعناوين وأرقام التواصل'}</span>
-                      <span className="text-[10px] bg-teal-500/10 text-[#008f97] dark:text-[#00c2cb] px-2 py-0.5 rounded-full border border-teal-500/20 font-bold">
-                        {language === 'en' ? 'Branches & WhatsApp' : 'الفروع والواتساب'}
-                      </span>
-                    </h2>
-                    <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
-                      {language === 'en'
-                        ? 'Manage clinic branches, addresses, reservation phone numbers, and working hours used in reminders & Rx'
-                        : 'إدارة وتعديل فروع العيادة، العناوين الحقيقية، أرقام هواتف تأكيد الحجز ومواعيد العمل المستخدمة في رسائل الواتساب والروشتة'}
-                    </p>
-                  </div>
-                </div>
-                <span
-                  className="material-symbols-outlined text-slate-400 text-2xl transition-transform duration-200"
-                  style={{ transform: openCards.branches ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                >
-                  expand_more
-                </span>
-              </button>
-
-              {openCards.branches && (
-                <div className="p-5 pt-2 border-t border-slate-100 dark:border-white/5">
-                  <ClinicBranchesPanel />
-                </div>
-              )}
-            </div>
-
-            {/* ACCORDION CARD 2: Visit Pricing & Types (تسعير الكشوفات وأنواع الزيارات) */}
+            {/* ACCORDION CARD 1: Visit Pricing & Types (تسعير الكشوفات وأنواع الزيارات) */}
             <div className="bg-white dark:bg-[#111A2E] rounded-2xl border border-slate-200 dark:border-white/5 shadow-xs overflow-hidden transition-all">
               <button
                 type="button"
@@ -820,7 +666,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>{language === 'en' ? '2. Visit Pricing & Types' : '2. تسعير الكشوفات وأنواع الزيارات'}</span>
+                      <span>{language === 'en' ? '1. Visit Pricing & Types' : '1. تسعير الكشوفات وأنواع الزيارات'}</span>
                       <span className="text-[10px] bg-teal-500/10 text-[#008f97] dark:text-[#00c2cb] px-2 py-0.5 rounded-full border border-teal-500/20 font-bold">
                         {visitTypesList.length} {language === 'en' ? 'types' : 'أنواع زيارات'}
                       </span>
@@ -870,15 +716,41 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                           <div className="flex items-center gap-1 text-xs text-slate-600 dark:text-[#859394]">
                             <span>السعر:</span>
                             <input
-                              type="number"
-                              value={vt.fee}
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              placeholder="0"
+                              value={
+                                visitFeeBuffer[vt.id] !== undefined
+                                  ? visitFeeBuffer[vt.id]
+                                  : vt.fee === 0
+                                  ? ''
+                                  : String(vt.fee)
+                              }
                               onChange={(e) => {
-                                const fee = Number(e.target.value);
-                                onUpdateVisitTypeFee(vt.id, fee);
-                                setSavedToast(`تم حفظ سعر ${vt.name} (${fee} ج.م) تلقائياً ✓`);
-                                setTimeout(() => setSavedToast(null), 2500);
+                                const cleanVal = toEnglishDigits(e.target.value).replace(/[^0-9]/g, '');
+                                setVisitFeeBuffer((prev) => ({ ...prev, [vt.id]: cleanVal }));
                               }}
-                              className="w-20 bg-white dark:bg-[#18233C] px-2 py-1 rounded-lg border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center"
+                              onBlur={() => {
+                                const raw = visitFeeBuffer[vt.id];
+                                if (raw !== undefined) {
+                                  const fee = raw === '' ? 0 : Number(raw);
+                                  onUpdateVisitTypeFee(vt.id, fee);
+                                  setSavedToast(`تم حفظ سعر ${vt.name} (${fee} ج.م) تلقائياً ✓`);
+                                  setTimeout(() => setSavedToast(null), 2500);
+                                  setVisitFeeBuffer((prev) => {
+                                    const next = { ...prev };
+                                    delete next[vt.id];
+                                    return next;
+                                  });
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              className="w-20 bg-white dark:bg-[#18233C] px-2 py-1 rounded-lg border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center focus:outline-none focus:border-[#00c2cb]"
                             />
                             <span>ج.م</span>
                           </div>
@@ -934,10 +806,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <input
-                        type="number"
-                        value={freeFollowupDays}
-                        onChange={(e) => handleUpdateFollowupDays(Number(e.target.value))}
-                        className="w-20 bg-white dark:bg-[#18233C] p-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={freeFollowupDays === 0 ? '' : String(freeFollowupDays)}
+                        onChange={(e) => {
+                          const cleanVal = toEnglishDigits(e.target.value).replace(/[^0-9]/g, '');
+                          handleUpdateFollowupDays(cleanVal === '' ? 0 : Number(cleanVal));
+                        }}
+                        className="w-20 bg-white dark:bg-[#18233C] p-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center focus:outline-none focus:border-[#00c2cb]"
                       />
                       <span className="text-xs font-bold text-slate-600 dark:text-slate-400">يوماً</span>
                     </div>
@@ -946,14 +823,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               )}
             </div>
 
-            {/* ACCORDION CARD 3: Change Password Card */}
+            {/* ACCORDION CARD 2: Change Password Card */}
             <ChangePasswordCard
-              cardNumber={3}
+              cardNumber={2}
               isOpen={!!openCards.password}
               onToggle={() => toggleCard('password')}
             />
 
-            {/* ACCORDION CARD 4: Medical Services & Pricing */}
+            {/* ACCORDION CARD 3: Medical Services & Pricing */}
             <div className="bg-white dark:bg-[#111A2E] rounded-2xl border border-slate-200 dark:border-white/5 shadow-xs overflow-hidden transition-all">
               <button
                 type="button"
@@ -966,7 +843,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>4. خدمات وبنود الوارد (الخدمات الطبية والتسعير)</span>
+                      <span>3. خدمات وبنود الوارد (الخدمات الطبية والتسعير)</span>
                       <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 font-bold">
                         {medicalServicesList.length} خدمة طبية
                       </span>
@@ -1016,12 +893,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                         />
                         <div className="sm:col-span-4 flex items-center gap-2">
                           <input
-                            type="number"
-                            min="0"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             value={newServicePrice}
-                            onChange={(e) => setNewServicePrice(Number(e.target.value))}
-                            placeholder="السعر (ج.م)"
-                            className="w-full bg-white dark:bg-[#18233C] px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center focus:outline-none"
+                            onChange={(e) => setNewServicePrice(toEnglishDigits(e.target.value).replace(/[^0-9]/g, ''))}
+                            placeholder="0"
+                            className="w-full bg-white dark:bg-[#18233C] px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center focus:outline-none focus:border-[#00c2cb]"
                           />
                           <span className="text-xs font-bold text-slate-500 shrink-0">ج.م</span>
                         </div>
@@ -1038,15 +916,16 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                           type="button"
                           onClick={() => {
                             if (!newServiceName.trim()) return;
+                            const cleanPrice = Number(toEnglishDigits(newServicePrice).replace(/[^0-9]/g, '')) || 0;
                             const newSrv: MedicalServiceItem = {
                               id: `srv-${Date.now()}`,
                               name: newServiceName.trim(),
-                              price: Number(newServicePrice) || 0,
+                              price: cleanPrice,
                             };
                             const updated = addMedicalService(newSrv);
                             setMedicalServicesList(updated);
                             setNewServiceName('');
-                            setNewServicePrice(200);
+                            setNewServicePrice('');
                             setShowAddServiceModal(false);
                             setSavedToast(`تمت إضافة الخدمة الطبية "${newSrv.name}" بنجاح ✓`);
                             setTimeout(() => setSavedToast(null), 3000);
@@ -1073,14 +952,42 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                           <div className="flex items-center gap-1 text-xs text-slate-600 dark:text-[#859394]">
                             <span>السعر:</span>
                             <input
-                              type="number"
-                              value={srv.price}
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              placeholder="0"
+                              value={
+                                servicePriceBuffer[srv.id] !== undefined
+                                  ? servicePriceBuffer[srv.id]
+                                  : srv.price === 0
+                                  ? ''
+                                  : String(srv.price)
+                              }
                               onChange={(e) => {
-                                const newPrice = Number(e.target.value);
-                                const updated = updateMedicalService(srv.id, { price: newPrice });
-                                setMedicalServicesList(updated);
+                                const cleanVal = toEnglishDigits(e.target.value).replace(/[^0-9]/g, '');
+                                setServicePriceBuffer((prev) => ({ ...prev, [srv.id]: cleanVal }));
                               }}
-                              className="w-20 bg-white dark:bg-[#18233C] px-2 py-1 rounded-lg border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center"
+                              onBlur={() => {
+                                const raw = servicePriceBuffer[srv.id];
+                                if (raw !== undefined) {
+                                  const price = raw === '' ? 0 : Number(raw);
+                                  const updated = updateMedicalService(srv.id, { price });
+                                  setMedicalServicesList(updated);
+                                  setSavedToast(`تم حفظ سعر خدمة "${srv.name}" (${price} ج.م) تلقائياً ✓`);
+                                  setTimeout(() => setSavedToast(null), 2500);
+                                  setServicePriceBuffer((prev) => {
+                                    const next = { ...prev };
+                                    delete next[srv.id];
+                                    return next;
+                                  });
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              className="w-20 bg-white dark:bg-[#18233C] px-2 py-1 rounded-lg border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold text-xs text-center focus:outline-none focus:border-[#00c2cb]"
                             />
                             <span>ج.م</span>
                           </div>
@@ -1141,7 +1048,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>5. بنود المنصرف (مصروفات العيادة)</span>
+                      <span>4. بنود المنصرف (مصروفات العيادة)</span>
                       <span className="text-[10px] bg-rose-500/10 text-rose-600 dark:text-rose-400 px-2 py-0.5 rounded-full border border-rose-500/20 font-bold">
                         {expenseCategoriesList.length} بنود مصروفات
                       </span>
@@ -1268,7 +1175,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>6. نظام التنبيهات والأصوات المتقدم</span>
+                      <span>5. نظام التنبيهات والأصوات المتقدم</span>
                       <span className="text-[10px] bg-amber-500/10 text-amber-600 dark:text-amber-400 px-2 py-0.5 rounded-full border border-amber-500/20 font-bold">
                         {alertConfig.audioEnabled ? 'الصوت يعمل ✓' : 'الصوت صامت'}
                       </span>
@@ -1495,7 +1402,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5]">
-                      7. تخصيص أقسام شاشة الكشف الطبي (عرض وإخفاء)
+                      6. تخصيص أقسام شاشة الكشف الطبي (عرض وإخفاء)
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
                       إظهار أو إخفاء أقسام العلامات الحيوية والتحاليل والأشعة بغرفة الكشف (تحفظ تلقائياً)
@@ -1647,7 +1554,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>8. القوائم المتكررة وبروتوكولات الروشتة</span>
+                      <span>7. القوائم المتكررة وبروتوكولات الروشتة</span>
                       <span className="px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 font-bold text-[10px]">
                         {savedTemplates.length} قائمة وبروتوكول
                       </span>
@@ -1692,7 +1599,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>9. إدارة البيانات والبيانات التجريبية</span>
+                      <span>8. إدارة البيانات والبيانات التجريبية</span>
                       <span className="text-[10px] bg-amber-500/10 text-amber-600 dark:text-[#F59E0B] px-2 py-0.5 rounded-full border border-amber-500/20 font-bold">
                         أدوات المطورين والتهيئة
                       </span>
@@ -1784,7 +1691,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                             <span>حذف بيانات المتصفح من ملفات المرضى والزيارات والفواتير</span>
                           </h4>
                           <p className="text-[11px] text-slate-500 dark:text-[#859394] leading-relaxed">
-                            تقوم هذه الميزة بحذف ملفات المرضى، كشف الزيارات، الحجوزات، الفواتير والمدفوعات من ذاكرة المتصفح الحالي فقط، مع بقاء الأدلة الطبية الثابتة وإعدادات وتنسيقات صفحة الروشتة وصفحة الإعدادات كاملة كما هي، ويتم استدعاء وجلب البيانات الرسمية المسجلة على السحابة (Firestore) تلقائياً لتحديث العرض.
+                            تقوم هذه الميزة بحذف ملفات المرضى، كشف الزيارات، الحجوزات، الفواتير والمدفوعات من ذاكرة المتصفح الحالي فقط، مع بقاء الأدلة الطبية الثابتة وإعدادات وتنسيقات صفحة الروشتة وصفحة الإعدادات كاملة كما هي، ويتم استدعاء وجلب البيانات الرسمية المسجلة على السحابة (Supabase) تلقائياً لتحديث العرض.
                           </p>
                         </div>
                         <button
@@ -1817,7 +1724,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                             <span>حذف بيانات المرضى والزيارات من السحابة نهائياً</span>
                           </h4>
                           <p className="text-[11px] text-slate-600 dark:text-[#bbc9ca] leading-relaxed">
-                            تحذير هام: سيؤدي هذا الإجراء إلى مسح كافة ملفات وسجلات المرضى، الزيارات، الحجوزات، الفواتير، والمدفوعات بشكل نهائي من المتصفح ومن قاعدة البيانات السحابية (Firestore). سيتم الإبقاء على البيانات الثابتة من الأدلة الطبية (الأدوية، التشخيصات، الفحوصات) وتنسيقات وإعدادات صفحة الروشتة وصفحة الإعدادات لتجنب إعادة ضبط البنية التحتية للعيادة.
+                            تحذير هام: سيؤدي هذا الإجراء إلى مسح كافة ملفات وسجلات المرضى، الزيارات، الحجوزات، الفواتير، والمدفوعات بشكل نهائي من المتصفح ومن قاعدة البيانات السحابية (Supabase). سيتم الإبقاء على البيانات الثابتة من الأدلة الطبية (الأدوية، التشخيصات، الفحوصات) وتنسيقات وإعدادات صفحة الروشتة وصفحة الإعدادات لتجنب إعادة ضبط البنية التحتية للعيادة.
                           </p>
                         </div>
                         <button
@@ -1848,19 +1755,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     </>
                   )}
 
-                  {/* Block 4: Maintenance & Backfill Tools (ترحيل المفاتيح الزمنية dayKey ومؤشرات المرضى ووضع توفير القراءات) */}
-                  {canRunMaintenance && (
-                    <div className="pt-2 space-y-4">
-                      <ReadOptCard />
-                      <MaintenanceCard />
-                    </div>
-                  )}
-
                 </div>
               )}
             </div>
 
-            {/* ACCORDION CARD 10: Cloud Backup & Data Export */}
+            {/* ACCORDION CARD 9: Cloud Backup & Data Export */}
             <div className="bg-white dark:bg-[#111A2E] rounded-2xl border border-slate-200 dark:border-white/5 shadow-xs overflow-hidden transition-all">
               <button
                 type="button"
@@ -1873,9 +1772,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   </div>
                   <div>
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
-                      <span>10. النسخ الاحتياطي السحابي وتصدير واستيراد البيانات</span>
+                      <span>9. النسخ الاحتياطي السحابي وتصدير واستيراد البيانات</span>
                       <span className="text-[10px] bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 px-2 py-0.5 rounded-full border border-cyan-500/20 font-bold">
-                        Firestore Cloud Sync
+                        Supabase Cloud Sync
                       </span>
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
@@ -1897,7 +1796,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     <div className="flex items-center gap-2">
                       <span className="material-symbols-outlined text-emerald-500 text-xl">verified</span>
                       <span className="font-bold text-slate-800 dark:text-[#dde2f5]">
-                        المزامنة السحابية الحية (Firestore Cloud Sync) نشطة
+                        المزامنة السحابية الحية (Supabase Cloud Sync) نشطة
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-[#859394] leading-relaxed">
@@ -1929,38 +1828,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                         onChange={handleImportBackupFile}
                         className="hidden"
                       />
-                    </div>
-                  </div>
-
-                  {/* Interactive Standalone HTML Architecture Map (Archify Standard) */}
-                  <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#080e1b] border border-slate-200 dark:border-white/5 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[#00c2cb] text-xl">account_tree</span>
-                      <span className="font-bold text-slate-800 dark:text-[#dde2f5]">
-                        الخريطة المعمارية والتشغيلية التفاعلية للنظام (Archify Interactive HTML)
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 dark:text-[#859394] leading-relaxed">
-                      صفحة HTML تفاعلية مستقلة بالكامل تعمل بدون إنترنت؛ تشرح دورة المريض، البنية المعمارية والأمان، مخطط علاقات قاعدة البيانات (16 مجموعة)، والدليل التشغيلي للأدوار مع إمكانية تتبع المسارات ومشاركتها.
-                    </p>
-                    <div className="flex flex-wrap items-center gap-3 pt-1">
-                      <a
-                        href={`${import.meta.env.BASE_URL}soli-medical-architecture.html`}
-                        download="soli-medical-architecture.html"
-                        className="px-4 py-2.5 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95"
-                      >
-                        <span className="material-symbols-outlined text-base">download</span>
-                        <span>تحميل الخريطة التفاعلية المستقلة (HTML)</span>
-                      </a>
-                      <a
-                        href={`${import.meta.env.BASE_URL}soli-medical-architecture.html`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-4 py-2.5 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-[#18233C] dark:hover:bg-[#242a38] text-slate-800 dark:text-[#dde2f5] font-bold text-xs flex items-center gap-2 transition-all cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-base">open_in_new</span>
-                        <span>معاينة الخريطة التفاعلية في المتصفح</span>
-                      </a>
                     </div>
                   </div>
                 </div>
@@ -2004,11 +1871,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <div className="space-y-1.5">
                 <label className="font-bold text-slate-800 dark:text-[#dde2f5]">سعر الزيارة (بالجنية المصري)</label>
                 <input
-                  type="number"
-                  required
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   value={newVisitFee}
-                  onChange={(e) => setNewVisitFee(Number(e.target.value))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold focus:outline-none"
+                  onChange={(e) => setNewVisitFee(toEnglishDigits(e.target.value).replace(/[^0-9]/g, ''))}
+                  placeholder="0"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-200 dark:border-white/10 text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-[#00c2cb]"
                 />
               </div>
 

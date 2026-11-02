@@ -121,13 +121,25 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
     const handleUpdate = () => {
       setVisitTypes(getMergedVisitTypesAndServices());
     };
+    const handleBranchesUpdate = () => {
+      setBranches(getClinicBranches());
+      setDoctorProfile(getPrescriptionDoctorInfo());
+    };
+
     window.addEventListener('soli_visit_types_updated', handleUpdate);
     window.addEventListener('soli_services_updated', handleUpdate);
+    window.addEventListener('soli_branches_updated', handleBranchesUpdate);
+    window.addEventListener('soli_prescription_updated', handleBranchesUpdate);
     window.addEventListener('storage', handleUpdate);
+    window.addEventListener('storage', handleBranchesUpdate);
+
     return () => {
       window.removeEventListener('soli_visit_types_updated', handleUpdate);
       window.removeEventListener('soli_services_updated', handleUpdate);
+      window.removeEventListener('soli_branches_updated', handleBranchesUpdate);
+      window.removeEventListener('soli_prescription_updated', handleBranchesUpdate);
       window.removeEventListener('storage', handleUpdate);
+      window.removeEventListener('storage', handleBranchesUpdate);
     };
   }, []);
 

@@ -190,7 +190,7 @@ import { buildTransactions } from './utils/buildTransactions';
 import { READ_OPT, HOT_DAYS, APPT_PAST_DAYS } from './config/readOpt';
 import { subscribeMerged } from './services/repositories/windowed';
 import { invalidatePatientHistory } from './services/history';
-import { hasRecentLocalWrite } from './services/offlineSync';
+import { hasRecentLocalWrite, clearCachedTables } from './services/offlineSync';
 
 // Merged full initial reference catalogs combining database.ts and previewMedicalCatalogs.ts
 const INITIAL_RADIOLOGY_FULL: RadiologyType[] = (() => {
@@ -535,6 +535,21 @@ function ClinicApp() {
       safeStorage.setJSON(StorageKeys.CLINIC_EXPENSES, []);
       window.dispatchEvent(new CustomEvent('soli_clinic_expenses_updated'));
 
+      const tables = [
+        'patients',
+        'visits',
+        'invoices',
+        'payments',
+        'appointments',
+        'follow_ups',
+        'prescriptions',
+        'lab_orders',
+        'radiology_orders',
+        'expenses',
+        'transactions',
+      ];
+      await clearCachedTables(tables);
+
       setPatientsCanonical([]);
       setVisitsCanonical([]);
       setInvoicesCanonical([]);
@@ -547,10 +562,10 @@ function ClinicApp() {
       setActiveExamPatient(null);
       setActivePrescription([]);
 
-      // Force-reload / Re-fetch the registered database records from Firestore cloud
+      // Force-reload / Re-fetch the registered database records from Supabase cloud
       setSyncRetryCounter((c) => c + 1);
 
-      alert('تم تفريغ ذاكرة المتصفح محلياً وتحميل البيانات الفعلية الموجودة على السحابة (Firestore) فقط ✓');
+      alert('تم تفريغ ذاكرة المتصفح محلياً وتحميل البيانات الفعلية المسجلة على السحابة (Supabase) فقط ✓');
     } catch (err) {
       console.error(err);
       alert('حدث خطأ أثناء مسح المتصفح وإعادة الاستدعاء.');
@@ -578,7 +593,7 @@ function ClinicApp() {
       setActiveExamPatient(null);
       setActivePrescription([]);
 
-      alert('تم حذف وتدمير سجلات المرضى والزيارات والمواعيد بالكامل من المتصفح ومن قاعدة بيانات السحابة (Firestore) نهائياً ✓');
+      alert('تم حذف وتدمير سجلات المرضى والزيارات والمواعيد بالكامل من المتصفح ومن قاعدة بيانات السحابة (Supabase) نهائياً ✓');
     } catch (err) {
       console.error(err);
       alert('حدث خطأ أثناء تدمير ومسح بيانات السحابة.');

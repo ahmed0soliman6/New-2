@@ -1,6 +1,6 @@
 import { supabase, clinicId } from '../services/supabase';
 import { resolveTableName } from '../services/repositories/common';
-import { notifyTableMutated } from '../services/offlineSync';
+import { notifyTableMutated, clearCachedTables } from '../services/offlineSync';
 import { saveClinicExpenses } from './financeManager';
 import { toDayKey } from './dayKey';
 import type {
@@ -330,6 +330,10 @@ export async function clearAllDatabaseCollections(_db?: unknown): Promise<void> 
       console.warn(`Error clearing table ${tableName}:`, e);
     }
   }
+
+  // Clear local offline IndexedDB cache for all cleared collections
+  await clearCachedTables(collectionsToClear.map(resolveTableName));
+
   notifyTableMutated(['*'], true);
 }
 

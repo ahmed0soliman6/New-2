@@ -106,11 +106,64 @@ export function formatAppTime(
 /**
  * Global input interceptor:
  * Automatically converts any Arabic/Indic numerals to English numerals in all input fields
- * across the entire application in real-time as the user types or pastes.
+ * across the entire application in real-time as the user types, presses keys, or pastes.
  */
 export function initArabicToEnglishDigitsGlobalListener(): () => void {
   if (typeof window === 'undefined') return () => {};
 
+  // 1. Intercept keydown event before browser type="number" filters out non-ASCII digits
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (!e.key || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (ARABIC_DIGITS_REGEX.test(e.key)) {
+      const englishDigit = ARABIC_INDIC_DIGITS_MAP[e.key];
+      if (englishDigit) {
+        const target = e.target;
+        if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+          e.preventDefault();
+          // Try inserting text natively so React and undo history work
+          const executed = document.execCommand('insertText', false, englishDigit);
+          if (!executed) {
+            const val = target.value || '';
+            const start = target.selectionStart ?? val.length;
+            const end = target.selectionEnd ?? val.length;
+            target.value = val.slice(0, start) + englishDigit + val.slice(end);
+            try {
+              target.setSelectionRange(start + 1, start + 1);
+            } catch {
+              // Ignore for inputs that disallow setSelectionRange
+            }
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+      }
+    }
+  };
+
+  // 2. Intercept beforeinput event for virtual keyboards / mobile
+  const handleBeforeInput = (e: any) => {
+    if (e.data && ARABIC_DIGITS_REGEX.test(e.data)) {
+      const convertedData = toEnglishDigits(e.data);
+      const target = e.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        if (typeof e.preventDefault === 'function') {
+          e.preventDefault();
+          const executed = document.execCommand('insertText', false, convertedData);
+          if (!executed) {
+            const val = target.value || '';
+            const start = target.selectionStart ?? val.length;
+            const end = target.selectionEnd ?? val.length;
+            target.value = val.slice(0, start) + convertedData + val.slice(end);
+            try {
+              target.setSelectionRange(start + convertedData.length, start + convertedData.length);
+            } catch {}
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+      }
+    }
+  };
+
+  // 3. Fallback input event listener (handles paste, autocomplete, etc.)
   const handleInputEvent = (e: Event) => {
     const target = e.target;
     if (
@@ -134,28 +187,17 @@ export function initArabicToEnglishDigitsGlobalListener(): () => void {
     }
   };
 
-  const handleBeforeInput = (e: any) => {
-    if (e.data && ARABIC_DIGITS_REGEX.test(e.data)) {
-      const convertedData = toEnglishDigits(e.data);
-      // If execCommand is supported or insertText, we can insert the converted text
-      const target = e.target;
-      if (
-        (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
-        !e.defaultPrevented
-      ) {
-        // Let standard input fire, then handleInputEvent cleans it up
-      }
-    }
-  };
-
-  // Attach capture listener so it fires before React synthetic events
-  document.addEventListener('input', handleInputEvent, true);
+  // Attach capture listeners so they fire before React synthetic events & native browser drops
+  window.addEventListener('keydown', handleKeyDown, true);
   document.addEventListener('beforeinput', handleBeforeInput, true);
+  document.addEventListener('input', handleInputEvent, true);
   document.addEventListener('paste', handleInputEvent, true);
 
   return () => {
-    document.removeEventListener('input', handleInputEvent, true);
+    window.removeEventListener('keydown', handleKeyDown, true);
     document.removeEventListener('beforeinput', handleBeforeInput, true);
+    document.removeEventListener('input', handleInputEvent, true);
     document.removeEventListener('paste', handleInputEvent, true);
   };
 }
+
