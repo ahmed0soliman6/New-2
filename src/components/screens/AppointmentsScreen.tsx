@@ -5,7 +5,13 @@ import { AppointmentListItem, ScreenType, PatientListItem } from '../../types';
 import { usePermissions } from '../../context/AuthContext';
 import { toEnglishDigits, formatAppDate } from '../../utils/numberUtils';
 import { useLanguage } from '../../i18n/LanguageContext';
-import { getClinicBranches, findBranch } from '../../utils/clinicBranches';
+import {
+  getClinicBranches,
+  findBranch,
+  isDateMatchingBranchDays,
+  getUpcomingDateSuggestions,
+  getNextValidWorkingDate,
+} from '../../utils/clinicBranches';
 import { WhatsappReminderModal } from '../modals/WhatsappReminderModal';
 
 export interface FollowUpItem {
@@ -104,10 +110,17 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   const [isWhatsappModalOpen, setIsWhatsappModalOpen] = useState(false);
   const [whatsappRawText, setWhatsappRawText] = useState('');
 
+  // Card 1 Collapsible state (folded by default as requested)
+  const [isAddAppointmentOpen, setIsAddAppointmentOpen] = useState(false);
+
+  // Pagination / Limit states: display 10 records by default with "إظهار المزيد"
+  const [showAllAppointments, setShowAllAppointments] = useState(false);
+  const [showAllFollowUps, setShowAllFollowUps] = useState(false);
+
   // Clinic Branches from system settings / configuration
   const clinicBranches = useMemo(() => getClinicBranches(), []);
   const [selectedBranch, setSelectedBranch] = useState<string>(() => {
-    return clinicBranches[0]?.name || 'الفرع الرئيسي - المهندسين';
+    return clinicBranches[0]?.name || 'ميت عزون';
   });
 
   // Dedicated WhatsApp Reminder Modal state
@@ -139,6 +152,35 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   const [visitType, setVisitType] = useState(() => activeVisitTypes[0]?.name || 'كشف جديد');
   const [appointmentNotes, setAppointmentNotes] = useState('');
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
+
+  // Active branch object based on selectedBranch
+  const activeBranch = useMemo(() => {
+    return clinicBranches.find((b) => b.name === selectedBranch || b.id === selectedBranch) || clinicBranches[0];
+  }, [clinicBranches, selectedBranch]);
+
+  // Validation: Check if selected date matches the branch working days
+  const isDateValid = useMemo(() => {
+    if (!activeBranch) return true;
+    return isDateMatchingBranchDays(scheduledDate, activeBranch.workingHours);
+  }, [scheduledDate, activeBranch]);
+
+  // Get next 3 available working dates suggestions for the active branch
+  const upcomingSuggestions = useMemo(() => {
+    if (!activeBranch) return [];
+    return getUpcomingDateSuggestions(activeBranch.workingHours);
+  }, [activeBranch]);
+
+  // Handle branch selection change with intelligent date sync
+  const handleBranchChange = (newBranchName: string) => {
+    setSelectedBranch(newBranchName);
+    const targetBranch = clinicBranches.find((b) => b.name === newBranchName || b.id === newBranchName);
+    if (targetBranch) {
+      const nextDate = getNextValidWorkingDate(scheduledDate, targetBranch.workingHours);
+      if (nextDate && nextDate !== scheduledDate) {
+        setScheduledDate(nextDate);
+      }
+    }
+  };
 
   // Sync visitType if list updates in settings
   React.useEffect(() => {
@@ -258,7 +300,13 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
         (f.medicalCode && f.medicalCode.toLowerCase().includes(q))
       );
     });
-    return list.sort((a, b) => a.daysRemaining - b.daysRemaining);
+    // Sort newest first by due date or last visit date descending
+    return list.sort((a, b) => {
+      const dateA = new Date(a.dueDate || a.lastVisitDate || '2020-01-01').getTime();
+      const dateB = new Date(b.dueDate || b.lastVisitDate || '2020-01-01').getTime();
+      if (!isNaN(dateB) && !isNaN(dateA) && dateB !== dateA) return dateB - dateA;
+      return (b.id || '').localeCompare(a.id || '');
+    });
   }, [activeFollowUps, followupSearch]);
 
   // Update Status handler:
@@ -411,7 +459,27 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
     }, 3500);
   };
 
-  // Parse text from WhatsApp request
+  // Helper to parse time string (e.g., '05:00 م', '05:15 م', '09:00 ص', '5:00 PM') into 24h 'HH:mm' for input[type="time"]
+  const parseTimeTo24Hour = (timeStr: string): string => {
+    if (!timeStr) return '';
+    const eng = toEnglishDigits(timeStr).trim();
+    const isPM = eng.includes('م') || /pm/i.test(eng);
+    const isAM = eng.includes('ص') || /am/i.test(eng);
+    const cleanNumbers = eng.replace(/[^\d:]/g, '');
+    const parts = cleanNumbers.split(':');
+    if (parts.length >= 2) {
+      let h = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      if (!isNaN(h) && !isNaN(m)) {
+        if (isPM && h < 12) h += 12;
+        if (isAM && h === 12) h = 0;
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+      }
+    }
+    return cleanNumbers;
+  };
+
+  // Parse text from WhatsApp request (100% compatible with BookingLandingScreen format)
   const handleParseWhatsappText = () => {
     if (!whatsappRawText.trim()) return;
 
@@ -425,37 +493,43 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
 
     const lines = whatsappRawText.split('\n').map((l) => l.trim()).filter(Boolean);
 
-    // 1. Structured Field Extraction
+    // 1. Structured Field Extraction (Compatible with BookingLandingScreen format: "الاسم: ...", "رقم الهاتف: ...", etc.)
     for (const line of lines) {
-      if (line.includes('الاسم:') || line.includes('اسم المريض:')) {
-        parsedName = line.split(':')[1]?.trim() || '';
-      } else if (line.includes('رقم الهاتف:') || line.includes('الهاتف:')) {
-        parsedPhone = line.split(':')[1]?.trim() || '';
+      if (line.includes('الاسم:') || line.includes('اسم المريض:') || line.startsWith('الاسم :')) {
+        const val = line.split(':')[1]?.trim() || '';
+        if (val && val !== 'اسم المريض') parsedName = val;
+      } else if (line.includes('رقم الهاتف:') || line.includes('الهاتف:') || line.startsWith('موبايل:') || line.startsWith('الجوال:')) {
+        const val = line.split(':')[1]?.trim() || '';
+        if (val && !val.includes('بدون هاتف')) parsedPhone = val;
       } else if (line.includes('التاريخ:')) {
         parsedDate = line.split(':')[1]?.trim() || '';
       } else if (line.includes('الوقت:') || line.includes('الساعة:')) {
         parsedTime = line.split(':')[1]?.trim() || '';
       } else if (line.includes('فرع العيادة:') || line.includes('الفرع:') || line.includes('مكان الكشف:')) {
         parsedBranch = line.split(':')[1]?.trim() || '';
-      } else if (line.includes('نوع الموعد:')) {
-        parsedVisitType = line.split(':')[1]?.trim() || parsedVisitType;
+      } else if (line.includes('نوع الموعد:') || line.includes('نوع الكشف:') || line.includes('النوع:')) {
+        const val = line.split(':')[1]?.trim() || '';
+        if (val) parsedVisitType = val;
       } else if (line.includes('ملاحظات الموعد:') || line.includes('ملاحظات:')) {
         const val = line.split(':')[1]?.trim() || '';
-        if (val && !val.includes('لا توجد')) {
+        if (val && !val.includes('لا توجد') && !val.includes('بدون ملاحظات')) {
           parsedNotes = val;
         }
       }
     }
 
-    // 2. Extract phone fallback via regex
+    // 2. Extract phone fallback via regex if not found in structured line
     if (!parsedPhone) {
       const phoneMatch = whatsappRawText.match(/(?:01[0125]\d{8}|\+?201[0125]\d{8})/);
       if (phoneMatch) {
         parsedPhone = phoneMatch[0];
       }
     }
+    if (parsedPhone) {
+      parsedPhone = toEnglishDigits(parsedPhone).replace(/[^\d+]/g, '');
+    }
 
-    // 3. Extract name fallback
+    // 3. Extract name fallback if not found
     if (!parsedName) {
       const nameKeywords = ['اسمي', 'اسم', 'الاسم:', 'أنا', 'المريض:', 'المريض'];
       for (const kw of nameKeywords) {
@@ -485,7 +559,9 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
 
     // 4. Match visit type
     const foundVt = activeVisitTypes.find((vt) =>
-      whatsappRawText.includes(vt.name) ||
+      vt.name === parsedVisitType ||
+      vt.name.includes(parsedVisitType) ||
+      parsedVisitType.includes(vt.name) ||
       (vt.name.includes('متابعة') && (whatsappRawText.includes('متابعة') || whatsappRawText.includes('استشارة'))) ||
       (vt.name.includes('كشف') && whatsappRawText.includes('كشف')) ||
       (vt.name.includes('طوارئ') && whatsappRawText.includes('طوارئ'))
@@ -496,21 +572,38 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
 
     // 5. Match branch
     if (parsedBranch) {
-      const matchedBranch = clinicBranches.find((b) => b.name.includes(parsedBranch) || parsedBranch.includes(b.name));
+      const matchedBranch = clinicBranches.find(
+        (b) => b.name.includes(parsedBranch) || parsedBranch.includes(b.name) || (b.id && parsedBranch.includes(b.id))
+      );
       if (matchedBranch) {
         setSelectedBranch(matchedBranch.name);
       }
     }
 
-    // Populate form
+    // 6. Date formatting (convert Arabic numerals / normalize to YYYY-MM-DD)
+    if (parsedDate) {
+      const engDate = toEnglishDigits(parsedDate).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(engDate)) {
+        setScheduledDate(engDate);
+      } else if (/^\d{4}\/\d{2}\/\d{2}$/.test(engDate)) {
+        setScheduledDate(engDate.replace(/\//g, '-'));
+      } else if (/^(\d{2})[-/](\d{2})[-/](\d{4})$/.test(engDate)) {
+        const parts = engDate.split(/[-/]/);
+        setScheduledDate(`${parts[2]}-${parts[1]}-${parts[0]}`);
+      }
+    }
+
+    // 7. Time slot formatting (convert '05:00 م' or '5:00 PM' to 24h '17:00')
+    if (parsedTime) {
+      const formatted24h = parseTimeTo24Hour(parsedTime);
+      if (formatted24h) {
+        setScheduledTime(formatted24h);
+      }
+    }
+
+    // Populate form fields
     setPatientName(parsedName);
     if (parsedPhone) setPhone(parsedPhone);
-    if (parsedDate && /^\d{4}-\d{2}-\d{2}$/.test(parsedDate)) {
-      setScheduledDate(parsedDate);
-    }
-    if (parsedTime) {
-      setScheduledTime(parsedTime);
-    }
     setVisitType(parsedVisitType);
     if (parsedNotes) {
       setAppointmentNotes(parsedNotes);
@@ -522,9 +615,10 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       );
     }
 
+    setIsAddAppointmentOpen(true);
     setIsWhatsappModalOpen(false);
     setWhatsappRawText('');
-    setToastMessage('تم استخراج جميع بيانات الموعد تلقائياً وتعبئة النموذج بسرعة! ✓');
+    setToastMessage('تم استخراج جميع بيانات الموعد تلقائياً وتعبئة النموذج بنجاح! ✓');
     setTimeout(() => setToastMessage(null), 3500);
   };
 
@@ -539,13 +633,16 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* البطاقة الأولى (في أعلى الصفحة): إضافة موعد جديد */}
+      {/* البطاقة الأولى (في أعلى الصفحة): إضافة موعد جديد (مطوية تلقائياً) */}
       {/* ========================================================================= */}
-      <div className="bg-white dark:bg-[#111A2E] p-5 sm:p-7 rounded-3xl border border-slate-200 dark:border-white/5 shadow-sm space-y-5">
-        {/* Card 1 Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-white/5 pb-4">
+      <div className="bg-white dark:bg-[#111A2E] rounded-3xl border border-slate-200 dark:border-white/5 shadow-sm overflow-hidden transition-all">
+        {/* Card 1 Header - Clickable for Fold / Expand */}
+        <div
+          onClick={() => setIsAddAppointmentOpen(!isAddAppointmentOpen)}
+          className="p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer hover:bg-slate-50/70 dark:hover:bg-white/[0.02] transition-colors"
+        >
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-[#00c2cb]/15 text-[#008f97] dark:text-[#00c2cb] border border-[#00c2cb]/30 flex items-center justify-center font-bold text-xl shadow-xs">
+            <div className="w-12 h-12 rounded-2xl bg-[#00c2cb]/15 text-[#008f97] dark:text-[#00c2cb] border border-[#00c2cb]/30 flex items-center justify-center font-bold text-xl shadow-xs shrink-0">
               <span className="material-symbols-outlined text-2xl">calendar_add_on</span>
             </div>
             <div>
@@ -561,231 +658,289 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
             </div>
           </div>
 
-          {/* WhatsApp Import Button */}
-          <button
-            type="button"
-            onClick={() => setIsWhatsappModalOpen(true)}
-            className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-emerald-50 dark:bg-[#25D366]/15 hover:bg-[#25D366] text-emerald-800 dark:text-[#25D366] hover:text-white border border-emerald-200 dark:border-[#25D366]/30 text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 shadow-2xs"
-          >
-            <span className="material-symbols-outlined text-base">chat</span>
-            <span>إضافة من طلب واتساب</span>
-          </button>
-        </div>
-
-        {/* Feedback alert */}
-        {formFeedback && (
-          <div className="p-3 rounded-xl bg-teal-50 dark:bg-[#00c2cb]/15 border border-[#00c2cb]/30 text-xs font-bold text-[#008f97] dark:text-[#45dee7] flex items-center gap-2 animate-in fade-in">
-            <span className="material-symbols-outlined text-base">check_circle</span>
-            <span>{formFeedback}</span>
-          </div>
-        )}
-
-        {/* Form Container */}
-        <form onSubmit={handleSaveNewAppointment} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Patient Name */}
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">person</span>
-                  <span>اسم المريض</span>
-                </span>
-                <span className="text-[11px] text-slate-400 font-normal">ثلاثي أو رباعي</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  required
-                  value={patientName}
-                  onChange={(e) => setPatientName(e.target.value)}
-                  placeholder="مثال: جمال على محمد"
-                  className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
-                />
-              </div>
-            </div>
-
-            {/* Phone */}
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">call</span>
-                  <span>رقم الهاتف</span>
-                </span>
-                <span className="text-[11px] text-slate-400 font-normal">لإرسال تذكير واتساب</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="tel"
-                  dir="ltr"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="مثال: 01012345678"
-                  className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 font-mono focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
-                />
-              </div>
-            </div>
-
-            {/* Date Input with Native Interactive Calendar Picker and prominent badge button */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">calendar_month</span>
-                  <span>التاريخ</span>
-                </span>
-                <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">فتح التقويم</span>
-              </label>
-              <div className="relative group flex items-center">
-                <input
-                  type="date"
-                  required
-                  value={scheduledDate}
-                  onChange={(e) => setScheduledDate(e.target.value)}
-                  onClick={(e) => {
-                    try {
-                      (e.currentTarget as any).showPicker?.();
-                    } catch {}
-                  }}
-                  className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 pl-11 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-mono shadow-2xs font-bold"
-                  title="انقر لاختيار التاريخ بسهولة من التقويم"
-                />
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    const input = e.currentTarget.parentElement?.querySelector('input[type="date"]') as any;
-                    try {
-                      input?.showPicker?.();
-                    } catch {
-                      input?.focus();
-                    }
-                  }}
-                  className="absolute left-1.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 flex items-center justify-center transition-all cursor-pointer border border-[#00c2cb]/30 shadow-xs"
-                  title="فتح التقويم"
-                >
-                  <span className="material-symbols-outlined text-lg">calendar_month</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Time Input with Native Interactive Clock Picker and prominent badge button */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">schedule</span>
-                  <span>الوقت</span>
-                </span>
-                <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">اختيار الساعة</span>
-              </label>
-              <div className="relative group flex items-center">
-                <input
-                  type="time"
-                  required
-                  value={scheduledTime}
-                  onChange={(e) => setScheduledTime(e.target.value)}
-                  onClick={(e) => {
-                    try {
-                      (e.currentTarget as any).showPicker?.();
-                    } catch {}
-                  }}
-                  className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 pl-11 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-mono shadow-2xs font-bold"
-                  title="انقر لاختيار الوقت بسهولة من الساعة"
-                />
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    const input = e.currentTarget.parentElement?.querySelector('input[type="time"]') as any;
-                    try {
-                      input?.showPicker?.();
-                    } catch {
-                      input?.focus();
-                    }
-                  }}
-                  className="absolute left-1.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 flex items-center justify-center transition-all cursor-pointer border border-[#00c2cb]/30 shadow-xs"
-                  title="فتح الساعة"
-                >
-                  <span className="material-symbols-outlined text-lg">schedule</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Branch Selector - Loaded dynamically from clinic settings */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">domain</span>
-                  <span>فرع العيادة</span>
-                </span>
-                <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">مكان الكشف</span>
-              </label>
-              <select
-                value={selectedBranch}
-                onChange={(e) => setSelectedBranch(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-bold shadow-2xs"
+          {/* Action Buttons: Toggle Collapse Chevron + (WhatsApp Import shown ONLY when open) */}
+          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+            {isAddAppointmentOpen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsWhatsappModalOpen(true);
+                }}
+                className="w-full sm:w-auto px-4 py-2 rounded-xl bg-emerald-50 dark:bg-[#25D366]/15 hover:bg-[#25D366] text-emerald-800 dark:text-[#25D366] hover:text-white border border-emerald-200 dark:border-[#25D366]/30 text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 shadow-2xs animate-in fade-in"
               >
-                {clinicBranches.map((b) => (
-                  <option key={b.id || b.name} value={b.name}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <span className="material-symbols-outlined text-base">chat</span>
+                <span>إضافة من طلب واتساب</span>
+              </button>
+            )}
 
-            {/* Visit Type - Dynamically synced with Settings types */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">medical_services</span>
-                  <span>نوع الموعد</span>
-                </span>
-                <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">من بطاقة الإعدادات</span>
-              </label>
-              <select
-                value={visitType}
-                onChange={(e) => setVisitType(e.target.value)}
-                className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-bold shadow-2xs"
-              >
-                {activeVisitTypes.map((vt, index) => (
-                  <option key={`${vt.id}-${index}`} value={vt.name}>
-                    {vt.name} ({vt.fee} ج.م)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Appointment Notes */}
-            <div className="space-y-1.5 md:col-span-2 lg:col-span-4">
-              <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">edit_note</span>
-                <span>ملاحظات الموعد</span>
-              </label>
-              <input
-                type="text"
-                value={appointmentNotes}
-                onChange={(e) => setAppointmentNotes(e.target.value)}
-                placeholder="مثال: متابعة قرحة المعدة، كشف مستعجل..."
-                className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
-              />
-            </div>
-          </div>
-
-          {/* Form Action Button */}
-          <div className="pt-2 flex justify-end">
             <button
-              type="submit"
-              className="w-full sm:w-auto px-8 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-black text-xs shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95"
+              type="button"
+              className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#18233C] text-slate-600 dark:text-slate-300 flex items-center justify-center border border-slate-200 dark:border-white/10 transition-transform duration-200 cursor-pointer shrink-0"
+              style={{ transform: isAddAppointmentOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+              title={isAddAppointmentOpen ? 'طي النموذج' : 'توسيع النموذج'}
             >
-              <span className="material-symbols-outlined text-base">event_available</span>
-              <span>حفظ الموعد</span>
+              <span className="material-symbols-outlined text-xl">expand_more</span>
             </button>
           </div>
-        </form>
+        </div>
+
+        {/* Collapsible Form Body */}
+        {isAddAppointmentOpen && (
+          <div className="p-5 sm:p-7 pt-0 border-t border-slate-100 dark:border-white/5 space-y-5 animate-in fade-in duration-200">
+            {/* Feedback alert */}
+            {formFeedback && (
+              <div className="p-3 rounded-xl bg-teal-50 dark:bg-[#00c2cb]/15 border border-[#00c2cb]/30 text-xs font-bold text-[#008f97] dark:text-[#45dee7] flex items-center gap-2 animate-in fade-in">
+                <span className="material-symbols-outlined text-base">check_circle</span>
+                <span>{formFeedback}</span>
+              </div>
+            )}
+
+            {/* Form Container */}
+            <form onSubmit={handleSaveNewAppointment} className="space-y-4 pt-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Patient Name */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">person</span>
+                      <span>اسم المريض</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-normal">ثلاثي أو رباعي</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      required
+                      value={patientName}
+                      onChange={(e) => setPatientName(e.target.value)}
+                      placeholder="مثال: جمال على محمد"
+                      className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
+                    />
+                  </div>
+                </div>
+
+                {/* Phone */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">call</span>
+                      <span>رقم الهاتف</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-normal">لإرسال تذكير واتساب</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="tel"
+                      dir="ltr"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="مثال: 01012345678"
+                      className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 font-mono focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
+                    />
+                  </div>
+                </div>
+
+                {/* 1. Branch Selector (مكان الكشف) - وضع قبل التاريخ ويظهر الأيام المتاحة */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">domain</span>
+                      <span>فرع العيادة (مكان الكشف)</span>
+                    </span>
+                    <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">أيام الكشف</span>
+                  </label>
+                  <select
+                    value={selectedBranch}
+                    onChange={(e) => handleBranchChange(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-bold shadow-2xs"
+                  >
+                    {clinicBranches.map((b) => (
+                      <option key={b.id || b.name} value={b.name}>
+                        {b.name} {b.workingHours ? `(${b.workingHours})` : ''}
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Active Branch Working Days & Hours badge */}
+                  {activeBranch?.workingHours && (
+                    <div className="flex items-center gap-1.5 text-[11px] text-[#008f97] dark:text-[#00c2cb] font-semibold bg-teal-50 dark:bg-[#00c2cb]/10 px-2.5 py-1 rounded-lg border border-teal-200/50 dark:border-[#00c2cb]/20 mt-1">
+                      <span className="material-symbols-outlined text-xs">event_available</span>
+                      <span>أيام الكشف المعتمدة: {activeBranch.workingHours}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Date Input - بعد فرع العيادة، مع التحقق من أيام عمل الفرع واقتراح الأيام البديلة */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">calendar_month</span>
+                      <span>التاريخ المطلوب</span>
+                    </span>
+                    <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">فتح التقويم</span>
+                  </label>
+                  <div className="relative group flex items-center">
+                    <input
+                      type="date"
+                      required
+                      value={scheduledDate}
+                      onChange={(e) => setScheduledDate(e.target.value)}
+                      onClick={(e) => {
+                        try {
+                          (e.currentTarget as any).showPicker?.();
+                        } catch {}
+                      }}
+                      className={`w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 pl-11 rounded-xl border ${
+                        !isDateValid
+                          ? 'border-rose-500 ring-2 ring-rose-500/20'
+                          : 'border-slate-200 dark:border-white/10'
+                      } focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-mono shadow-2xs font-bold`}
+                      title="انقر لاختيار التاريخ بسهولة من التقويم"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        const input = e.currentTarget.parentElement?.querySelector('input[type="date"]') as any;
+                        try {
+                          input?.showPicker?.();
+                        } catch {
+                          input?.focus();
+                        }
+                      }}
+                      className="absolute left-1.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 flex items-center justify-center transition-all cursor-pointer border border-[#00c2cb]/30 shadow-xs"
+                      title="فتح التقويم"
+                    >
+                      <span className="material-symbols-outlined text-lg">calendar_month</span>
+                    </button>
+                  </div>
+
+                  {/* Warning Box when selected date is closed for the branch */}
+                  {!isDateValid && (
+                    <div className="mt-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/25 text-rose-800 dark:text-rose-300 text-xs animate-in fade-in">
+                      <div className="flex items-center gap-1.5 font-bold mb-1 text-rose-600 dark:text-rose-400">
+                        <span className="material-symbols-outlined text-sm">warning</span>
+                        <span>عفواً، العيادة مغلقة في هذا اليوم.</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        الرجاء اختيار أحد الأيام المتاحة التالية للحجز مباشرة:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {upcomingSuggestions.map((s) => (
+                          <button
+                            key={s.dateStr}
+                            type="button"
+                            onClick={() => setScheduledDate(s.dateStr)}
+                            className="px-2.5 py-1 text-[10px] rounded-lg bg-emerald-500/15 text-emerald-800 dark:text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30 transition-all cursor-pointer font-bold shrink-0 shadow-2xs"
+                          >
+                            {s.dayLabel}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Time Input */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">schedule</span>
+                      <span>الوقت</span>
+                    </span>
+                    <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">اختيار الساعة</span>
+                  </label>
+                  <div className="relative group flex items-center">
+                    <input
+                      type="time"
+                      required
+                      value={scheduledTime}
+                      onChange={(e) => setScheduledTime(e.target.value)}
+                      onClick={(e) => {
+                        try {
+                          (e.currentTarget as any).showPicker?.();
+                        } catch {}
+                      }}
+                      className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 pl-11 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-mono shadow-2xs font-bold"
+                      title="انقر لاختيار الوقت بسهولة من الساعة"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        const input = e.currentTarget.parentElement?.querySelector('input[type="time"]') as any;
+                        try {
+                          input?.showPicker?.();
+                        } catch {
+                          input?.focus();
+                        }
+                      }}
+                      className="absolute left-1.5 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 flex items-center justify-center transition-all cursor-pointer border border-[#00c2cb]/30 shadow-xs"
+                      title="فتح الساعة"
+                    >
+                      <span className="material-symbols-outlined text-lg">schedule</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. Visit Type */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">medical_services</span>
+                      <span>نوع الموعد</span>
+                    </span>
+                    <span className="text-[10px] text-teal-600 dark:text-[#00c2cb] font-bold">من بطاقة الإعدادات</span>
+                  </label>
+                  <select
+                    value={visitType}
+                    onChange={(e) => setVisitType(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb] cursor-pointer font-bold shadow-2xs"
+                  >
+                    {activeVisitTypes.map((vt, index) => (
+                      <option key={`${vt.id}-${index}`} value={vt.name}>
+                        {vt.name} ({vt.fee} ج.م)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Appointment Notes */}
+                <div className="space-y-1.5 md:col-span-2 lg:col-span-4">
+                  <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-sm text-[#008f97] dark:text-[#00c2cb]">edit_note</span>
+                    <span>ملاحظات الموعد</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={appointmentNotes}
+                    onChange={(e) => setAppointmentNotes(e.target.value)}
+                    placeholder="مثال: متابعة قرحة المعدة، كشف مستعجل..."
+                    className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-[#00c2cb]"
+                  />
+                </div>
+              </div>
+
+              {/* Form Action Button */}
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="submit"
+                  className="w-full sm:w-auto px-8 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-black text-xs shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-95"
+                >
+                  <span className="material-symbols-outlined text-base">event_available</span>
+                  <span>حفظ الموعد</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
 
       {/* ========================================================================= */}
       {/* البطاقة الثانية (تحت إضافة الموعد): إدارة المواعيد والتقويم (أسماء المواعيد) */}
       {/* ========================================================================= */}
-      <div className="bg-white dark:bg-[#111A2E] p-5 sm:p-7 rounded-3xl border border-slate-200 dark:border-white/5 shadow-sm space-y-6">
+      <div className="bg-[#f0f5fb] dark:bg-[#0b1528] p-5 sm:p-7 rounded-3xl border border-blue-200/80 dark:border-blue-500/25 shadow-sm space-y-6 transition-colors">
         {/* Card 2 Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-white/5 pb-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-blue-100 dark:border-blue-500/15 pb-4">
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-2xl bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30 flex items-center justify-center font-bold text-xl shadow-xs">
               <span className="material-symbols-outlined text-2xl">event_upcoming</span>
@@ -798,7 +953,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                 </span>
               </h2>
               <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
-                نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض
+                نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض (الأحدث أولاً)
               </p>
             </div>
           </div>
@@ -815,7 +970,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
               className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
                 showArchive
                   ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
-                  : 'bg-slate-100 dark:bg-[#18233C] text-slate-700 dark:text-[#dde2f5] border-slate-200 dark:border-white/10 hover:bg-slate-200 dark:hover:bg-white/5'
+                  : 'bg-white dark:bg-[#18233C] text-slate-700 dark:text-[#dde2f5] border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-white/5'
               }`}
             >
               <span className="material-symbols-outlined text-base">inventory_2</span>
@@ -829,7 +984,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                 setStatusFilter(e.target.value);
                 setShowArchive(false);
               }}
-              className="bg-slate-50 dark:bg-[#18233C] text-slate-900 dark:text-[#dde2f5] text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-[#00c2cb] cursor-pointer font-bold"
+              className="bg-white dark:bg-[#18233C] text-slate-900 dark:text-[#dde2f5] text-xs px-3 py-2 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-[#00c2cb] cursor-pointer font-bold shadow-2xs"
             >
               <option value="all">كل المواعيد (مجدول)</option>
               <option value="مجدول">1. مجدول</option>
@@ -849,14 +1004,14 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
             value={appointmentSearch}
             onChange={(e) => setAppointmentSearch(e.target.value)}
             placeholder="بحث باسم المريض أو رقم الهاتف في المواعيد..."
-            className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs pr-10 pl-4 py-2.5 rounded-xl border border-slate-200 dark:border-white/5 focus:outline-none focus:ring-1 focus:ring-[#00c2cb]"
+            className="w-full bg-white dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs pr-10 pl-4 py-2.5 rounded-xl border border-blue-100 dark:border-white/5 focus:outline-none focus:ring-1 focus:ring-[#00c2cb]"
           />
         </div>
 
-        {/* Appointments List */}
-        <div className="space-y-3">
+        {/* Appointments List (Max 10 with show-more scroll) */}
+        <div className={`space-y-3 ${showAllAppointments && displayedAppointments.length > 10 ? 'max-h-[600px] overflow-y-auto pr-1' : ''}`}>
           {displayedAppointments.length === 0 ? (
-            <div className="p-8 rounded-2xl bg-slate-50 dark:bg-[#080e1b] border border-dashed border-slate-200 dark:border-white/10 text-center space-y-2">
+            <div className="p-8 rounded-2xl bg-white/80 dark:bg-[#080e1b] border border-dashed border-slate-200 dark:border-white/10 text-center space-y-2">
               <span className="material-symbols-outlined text-3xl text-slate-400">event_busy</span>
               <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
                 لا توجد مواعيد تطابق الفلتر المحدد حالياً
@@ -874,7 +1029,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
               </button>
             </div>
           ) : (
-            displayedAppointments.map((app) => {
+            (showAllAppointments ? displayedAppointments : displayedAppointments.slice(0, 10)).map((app) => {
               const isScheduled = app.status === 'مجدول' || app.status === 'بانتظار التأكيد';
               const isWaiting =
                 app.status === 'فى الانتظار حضر المريض' ||
@@ -885,18 +1040,18 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
               return (
                 <div
                   key={app.id}
-                  className="p-4 rounded-2xl bg-slate-50/80 dark:bg-[#080e1b] border border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5 group shadow-2xs"
+                  className="p-4 rounded-2xl bg-white/95 dark:bg-[#111e38] border border-blue-100 dark:border-blue-500/20 hover:border-blue-300 dark:hover:border-blue-400/40 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5 group shadow-2xs"
                 >
                   {/* Right Details: Time + Name + Status Badge + Meta */}
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     {/* Date & Time Box */}
-                    <div className="px-3 py-1.5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-white/5 text-center shrink-0 min-w-[85px] shadow-2xs">
+                    <div className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-[#0c162c] border border-blue-100 dark:border-blue-900/40 text-center shrink-0 min-w-[85px] shadow-2xs">
                       <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-                        {app.date || 'اليوم'}
+                        {toEnglishDigits(app.date || 'اليوم')}
                       </div>
                       <div className="font-mono font-black text-xs text-[#008f97] dark:text-[#00c2cb] flex items-center justify-center gap-1 mt-0.5">
                         <span className="material-symbols-outlined text-[12px]">schedule</span>
-                        <span>{app.timeSlot || app.time || '09:00 ص'}</span>
+                        <span>{toEnglishDigits(app.timeSlot || app.time || '09:00 ص')}</span>
                       </div>
                     </div>
 
@@ -942,7 +1097,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                         </span>
                         <span>•</span>
                         <span className="font-mono" dir="ltr">
-                          {app.phone || 'بدون هاتف'}
+                          {toEnglishDigits(app.phone || 'بدون هاتف')}
                         </span>
                         {app.notes && (
                           <>
@@ -1019,6 +1174,26 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
             })
           )}
         </div>
+
+        {/* Show More / Show Less Button for Appointments (> 10 records) */}
+        {displayedAppointments.length > 10 && (
+          <div className="pt-2 flex justify-center border-t border-blue-100 dark:border-blue-500/15">
+            <button
+              type="button"
+              onClick={() => setShowAllAppointments(!showAllAppointments)}
+              className="px-5 py-2.5 rounded-xl bg-white hover:bg-blue-50 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-xs font-bold border border-blue-200 dark:border-blue-800/60 transition-all cursor-pointer flex items-center gap-2 shadow-2xs active:scale-95"
+            >
+              <span className="material-symbols-outlined text-base">
+                {showAllAppointments ? 'expand_less' : 'expand_more'}
+              </span>
+              <span>
+                {showAllAppointments
+                  ? 'عرض أول 10 مواعيد فقط (طي)'
+                  : `إظهار المزيد من المواعيد (باقي ${displayedAppointments.length - 10} موعد)`}
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ========================================================================= */}
@@ -1061,8 +1236,8 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
           </div>
         </div>
 
-        {/* Follow-ups Cards Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Follow-ups Cards Grid (Max 10 with show-more scroll) */}
+        <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${showAllFollowUps && displayedFollowUps.length > 10 ? 'max-h-[640px] overflow-y-auto pr-1' : ''}`}>
           {displayedFollowUps.length === 0 ? (
             <div className="col-span-2 p-8 rounded-2xl bg-slate-50 dark:bg-[#080e1b] border border-dashed border-slate-200 dark:border-white/10 text-center space-y-2">
               <span className="material-symbols-outlined text-3xl text-slate-400">check_circle</span>
@@ -1071,7 +1246,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
               </p>
             </div>
           ) : (
-            displayedFollowUps.map((fu) => (
+            (showAllFollowUps ? displayedFollowUps : displayedFollowUps.slice(0, 10)).map((fu) => (
               <div
                 key={fu.id}
                 className="p-4 rounded-2xl bg-slate-50/80 dark:bg-[#080e1b] border border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col justify-between gap-3 group shadow-2xs"
@@ -1159,6 +1334,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                       setPhone(fu.phone);
                       setVisitType('متابعة');
                       setAppointmentNotes(`متابعة دورية: ${fu.diagnosis}`);
+                      setIsAddAppointmentOpen(true);
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                       setToastMessage(`تم نسخ بيانات المريض (${fu.patientName}) في نموذج إضافة موعد بالأعلى`);
                       setTimeout(() => setToastMessage(null), 3500);
@@ -1174,6 +1350,26 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
             ))
           )}
         </div>
+
+        {/* Show More / Show Less Button for Follow-ups (> 10 records) */}
+        {displayedFollowUps.length > 10 && (
+          <div className="pt-2 flex justify-center border-t border-slate-100 dark:border-white/5">
+            <button
+              type="button"
+              onClick={() => setShowAllFollowUps(!showAllFollowUps)}
+              className="px-5 py-2.5 rounded-xl bg-teal-50 hover:bg-teal-100 dark:bg-[#00c2cb]/15 dark:hover:bg-[#00c2cb]/25 text-[#008f97] dark:text-[#00c2cb] text-xs font-bold border border-teal-200 dark:border-[#00c2cb]/30 transition-all cursor-pointer flex items-center gap-2 shadow-2xs active:scale-95"
+            >
+              <span className="material-symbols-outlined text-base">
+                {showAllFollowUps ? 'expand_less' : 'expand_more'}
+              </span>
+              <span>
+                {showAllFollowUps
+                  ? 'عرض أول 10 متابعات فقط (طي)'
+                  : `إظهار المزيد من المتابعات (باقي ${displayedFollowUps.length - 10} مريض)`}
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ========================================================================= */}
@@ -1201,44 +1397,16 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
             </div>
 
             <p className="text-xs text-slate-500 dark:text-[#859394] leading-relaxed">
-              انسخ نص رسالة الحجز المرسلة من المريض على واتساب، وسيقوم النظام الذكي تلقائياً باستخراج الاسم ورقم الهاتف ونوع الكشف وتعبئة نموذج الموعد.
+              انسخ نص رسالة الحجز المرسلة من المريض أو من صفحة حجز العيادة، وسيقوم النظام تلقائياً باستخراج الاسم ورقم الهاتف والتاريخ والوقت والفرع ونوع الكشف وتعبئة نموذج الموعد مباشرة.
             </p>
 
             <textarea
-              rows={4}
+              rows={6}
               value={whatsappRawText}
               onChange={(e) => setWhatsappRawText(e.target.value)}
-              placeholder="الصق رسالة الواتساب هنا... مثال: 
-مرحباً دكتور العيادة، عايز أحجز كشف باطنة باسم جمال على محمد ورقمي 01021434947 يوم الاثنين 9 صباحاً"
-              className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs p-3.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-[#00c2cb] resize-none"
+              placeholder={`طلب حجز موعد جديد 🏥\n---------------------------\nالاسم: أحمد سليمان محمد\nرقم الهاتف: 01012345678\nالتاريخ: 2026-11-03\nالوقت: 05:00 م\nفرع العيادة: ميت عزون\nنوع الموعد: كشف جديد\nملاحظات الموعد: كشف مستعجل...`}
+              className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] placeholder:text-slate-400 text-xs p-3.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-[#00c2cb] resize-none font-mono leading-relaxed"
             />
-
-            {/* Quick Presets */}
-            <div className="flex items-center gap-2 flex-wrap text-xs">
-              <span className="text-slate-400 font-bold">رسائل سريعة تجريبية:</span>
-              <button
-                type="button"
-                onClick={() =>
-                  setWhatsappRawText(
-                    'مساء الخير العيادة الطبية، حجز كشف مستعجل، الاسم: جمال على محمد، هاتف: 01021434947'
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
-              >
-                نموذج 1: جمال علي محمد
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setWhatsappRawText(
-                    'السلام عليكم، متابعة واستشارة بعد كورس العلاج، اسم المريضة: سارة إبراهيم محمود - 01145829103'
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-[11px] font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
-              >
-                نموذج 2: سارة إبراهيم
-              </button>
-            </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100 dark:border-white/5">
               <button

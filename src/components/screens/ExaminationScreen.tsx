@@ -2262,11 +2262,12 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
         <div
           id="printable-prescription-pad"
           style={{
-            padding: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
             paddingTop: prescriptionConfig.preprintedPaperMode ? '25mm' : MARGIN_VALUES[prescriptionConfig.headerMarginTop] || '7mm',
             paddingBottom: prescriptionConfig.preprintedPaperMode ? '20mm' : MARGIN_VALUES[prescriptionConfig.footerMarginBottom] || '7mm',
+            paddingLeft: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
+            paddingRight: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
           }}
-          className="w-[148mm] h-[210mm] min-h-[210mm] bg-white text-slate-900 flex flex-col justify-between p-[7mm]"
+          className="w-[148mm] h-[210mm] min-h-[210mm] bg-white text-slate-900 flex flex-col justify-between"
         >
           {/* Header Area */}
           {!prescriptionConfig.preprintedPaperMode && prescriptionConfig.showHeader ? (
@@ -2494,11 +2495,12 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
                     width: '100%',
                     maxWidth: '480px',
                     minWidth: '380px',
-                    padding: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
                     paddingTop: prescriptionConfig.preprintedPaperMode ? '25mm' : MARGIN_VALUES[prescriptionConfig.headerMarginTop] || '7mm',
                     paddingBottom: prescriptionConfig.preprintedPaperMode ? '20mm' : MARGIN_VALUES[prescriptionConfig.footerMarginBottom] || '7mm',
+                    paddingLeft: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
+                    paddingRight: MARGIN_VALUES[prescriptionConfig.outerMargin] || '7mm',
                   }}
-                  className="bg-white text-slate-900 min-h-[580px] flex flex-col justify-between p-6 leading-relaxed select-none"
+                  className="bg-white text-slate-900 min-h-[580px] flex flex-col justify-between leading-relaxed select-none"
                   dir="rtl"
                 >
                   {/* Header Area */}

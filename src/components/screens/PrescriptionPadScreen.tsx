@@ -1400,9 +1400,10 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
             id="printable-prescription-pad"
             dir="rtl"
             style={{
-              padding: MARGIN_VALUES[config.outerMargin] || '7mm',
               paddingTop: config.preprintedPaperMode ? '25mm' : MARGIN_VALUES[config.headerMarginTop] || '7mm',
               paddingBottom: config.preprintedPaperMode ? '20mm' : MARGIN_VALUES[config.footerMarginBottom] || '7mm',
+              paddingLeft: MARGIN_VALUES[config.outerMargin] || '7mm',
+              paddingRight: MARGIN_VALUES[config.outerMargin] || '7mm',
             }}
             className="w-full max-w-[560px] bg-white text-slate-900 rounded-2xl shadow-2xl border border-slate-300 min-h-[680px] flex flex-col justify-between transition-all print:m-0 print:border-none print:shadow-none print:w-full print:max-w-none text-right"
           >
