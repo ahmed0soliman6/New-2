@@ -212,9 +212,8 @@ export const UserManagementPanel: React.FC = () => {
     }
 
     const targetUser = users.find((u) => u.uid === uid);
-    if (targetUser && normalizeRole(targetUser.role) === 'admin' && normalizeRole(editRole) !== 'admin') {
-      // Prompt confirmation before changing admin role
-      setRoleModalTarget({ user: targetUser, selectedRole: editRole });
+    if (targetUser && targetUser.uid === currentUid && normalizeRole(editRole) !== 'admin') {
+      setError('لا يمكنك خفض صلاحية حسابك الحالي المسجل به.');
       return;
     }
 
@@ -236,14 +235,14 @@ export const UserManagementPanel: React.FC = () => {
     }
   };
 
-  // 4. Role Change Modal & Direct Firestore Save
+  // 4. Role Change Modal & Direct Database Save
   const openRoleChangeModal = (user: ManagedUser, presetRole?: UserRole) => {
     if (!hasPermission('roles.manage')) {
       setError('ليس لديك صلاحية لتعديل أدوار وصلاحيات المستخدمين.');
       return;
     }
-    if (normalizeRole(user.role) === 'admin') {
-      setError('دور المدير ثابت ومحمي في قاعدة البيانات ولا يمكن تعديله.');
+    if (user.uid === currentUid) {
+      setError('لا يمكنك تغيير دور حسابك الحالي المسجل به.');
       return;
     }
     const currentNormalized = normalizeRole(user.role);
@@ -265,9 +264,8 @@ export const UserManagementPanel: React.FC = () => {
     if (!roleModalTarget) return;
     const { user, selectedRole: newRole } = roleModalTarget;
 
-    // Guard: Prevent changing any admin account's role
-    if (normalizeRole(user.role) === 'admin') {
-      setError('دور المدير ثابت ومحمي في قاعدة البيانات ولا يمكن تعديله لأي حساب مدير.');
+    if (user.uid === currentUid) {
+      setError('لا يمكنك تغيير دور حسابك الحالي المسجل به.');
       return;
     }
 
@@ -298,10 +296,6 @@ export const UserManagementPanel: React.FC = () => {
     }
     if (user.uid === currentUid) {
       setError('لا يمكنك تعطيل حسابك الحالي المسجل به في النظام.');
-      return;
-    }
-    if (normalizeRole(user.role) === 'admin') {
-      setError('لا يمكن تعطيل حساب المدير. حسابات المديرين محمية دائماً ضد التعطيل.');
       return;
     }
 
@@ -635,7 +629,7 @@ export const UserManagementPanel: React.FC = () => {
                         <div>
                           <label className="text-[10px] text-slate-400 block">الدور:</label>
                           <select
-                            disabled={isUserAdmin}
+                            disabled={isCurrentUser}
                             value={editRole}
                             onChange={(e) => setEditRole(e.target.value as UserRole)}
                             className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#111A2E] p-1.5 text-xs focus:ring-1 focus:ring-[#00c2cb] outline-none font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
@@ -769,19 +763,19 @@ export const UserManagementPanel: React.FC = () => {
                       <PermissionGate permission="roles.manage">
                         <button
                           type="button"
-                          disabled={isBusyThis || isUserAdmin}
+                          disabled={isBusyThis || isCurrentUser}
                           onClick={() => openRoleChangeModal(user)}
                           className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-bold transition-all ${
-                            isUserAdmin
+                            isCurrentUser
                               ? 'border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-slate-400 dark:text-slate-500 cursor-not-allowed opacity-50'
                               : 'border-purple-500/30 bg-purple-500/5 hover:bg-purple-500/15 text-purple-600 dark:text-purple-400 cursor-pointer disabled:opacity-50'
                           }`}
-                          title={isUserAdmin ? 'دور المدير ثابت ولا يمكن تعديله' : 'تعديل الدور وتعيين الصلاحيات'}
+                          title={isCurrentUser ? 'لا يمكنك تعديل دور حسابك الحالي' : 'تعديل الدور وتعيين الصلاحيات'}
                         >
                           <span className="material-symbols-outlined text-xs">
-                            {isUserAdmin ? 'lock' : 'admin_panel_settings'}
+                            {isCurrentUser ? 'lock' : 'admin_panel_settings'}
                           </span>
-                          <span>{isUserAdmin ? 'دور ثابت' : 'تغيير الدور'}</span>
+                          <span>{isCurrentUser ? 'دور ثابت' : 'تغيير الدور'}</span>
                         </button>
                       </PermissionGate>
 
@@ -801,10 +795,10 @@ export const UserManagementPanel: React.FC = () => {
                       <PermissionGate permission="users.disable">
                         <button
                           type="button"
-                          disabled={isCurrentUser || isBusyThis || isUserAdmin}
+                          disabled={isCurrentUser || isBusyThis}
                           onClick={() => handleToggleActiveClick(user)}
                           className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors ${
-                            isCurrentUser || isUserAdmin
+                            isCurrentUser
                               ? 'border-slate-200 dark:border-white/10 text-slate-400 dark:text-slate-500 cursor-not-allowed opacity-40'
                               : isActive
                               ? 'border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 cursor-pointer'
@@ -813,8 +807,6 @@ export const UserManagementPanel: React.FC = () => {
                           title={
                             isCurrentUser
                               ? 'لا يمكنك تعطيل حسابك الحالي'
-                              : isUserAdmin
-                              ? 'لا يمكن تعطيل حساب المدير'
                               : isActive
                               ? 'تعطيل الحساب ومنعه من الدخول'
                               : 'إعادة تفعيل الحساب'

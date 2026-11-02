@@ -328,20 +328,60 @@ export async function updateManagedUser(
 }
 
 /**
- * Deletes a managed user from the clinic using the database RPC `admin_delete_clinic_user(p_clinic_id, p_user_id)`.
+ * Deletes a managed user from the clinic via `/api/users/delete` on Vercel (using SUPABASE_SERVICE_ROLE_KEY),
+ * with fallback to the database RPC `admin_delete_clinic_user(p_clinic_id, p_user_id)`.
  */
-export async function deleteManagedUser(uid: string, _username?: string): Promise<void> {
+export async function deleteManagedUser(uid: string, username?: string): Promise<void> {
   const supabase = requireSupabase();
   const { data: sessionData } = await supabase.auth.getSession();
   const currentUid = sessionData.session?.user?.id;
+  const accessToken = sessionData.session?.access_token;
 
-  if (!currentUid) {
+  if (!currentUid || !accessToken) {
     throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
   }
   if (currentUid === uid) {
     throw new Error('لا يمكنك حذف الحساب المسجل به حالياً.');
   }
 
+  // 1. Try server-side `/api/users/delete` endpoint (works on Vercel with SUPABASE_SERVICE_ROLE_KEY)
+  try {
+    const response = await fetch('/api/users/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ uid, username, clinicId }),
+    });
+
+    if (response.ok) {
+      return;
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    const serverMsg = String(payload.error || payload.message || '');
+    const isRouteOrKeyUnavailable =
+      response.status === 404 ||
+      serverMsg.includes('SUPABASE_SERVICE_ROLE_KEY') ||
+      serverMsg.includes('متغيرات بيئة Supabase غير مكتملة');
+
+    if (!isRouteOrKeyUnavailable && serverMsg) {
+      throw new Error(serverMsg);
+    }
+  } catch (err: any) {
+    const msg = err instanceof Error ? err.message : String(err || '');
+    if (
+      msg &&
+      !msg.includes('SUPABASE_SERVICE_ROLE_KEY') &&
+      !msg.includes('متغيرات بيئة Supabase غير مكتملة') &&
+      !msg.includes('Failed to fetch')
+    ) {
+      throw err;
+    }
+  }
+
+  // 2. Fallback to database RPC `admin_delete_clinic_user`
   const { error } = await supabase.rpc('admin_delete_clinic_user', {
     p_clinic_id: clinicId,
     p_user_id: uid,

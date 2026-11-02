@@ -2145,9 +2145,6 @@ function ClinicApp() {
       return;
     }
 
-    const confirmed = window.confirm('سيتم حذف الزيارة والمبلغ المحصّل منه. هل تريد المتابعة؟');
-    if (!confirmed) return;
-
     try {
       const { error } = await supabase.rpc('remove_queue_visit', {
         p_clinic_id: clinicId,

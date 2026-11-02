@@ -6,7 +6,7 @@ interface QueueScreenProps {
   queue: QueueItem[];
   onCallPatient: (ticket: string, name: string) => void;
   onNavigate: (screen: ScreenType) => void;
-  onRemoveFromQueue?: (ticket: string) => void;
+  onRemoveFromQueue?: (ticket: string) => void | Promise<void>;
   onOpenNewVisit?: () => void;
 }
 
@@ -19,6 +19,7 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
 }) => {
   const { t } = useLanguage();
   const [patientToRemove, setPatientToRemove] = useState<QueueItem | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
   const [notification, setNotification] = useState<{
     id: string;
     patientName: string;
@@ -30,9 +31,17 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
     onNavigate('clinical-exam');
   };
 
-  const confirmRemove = () => {
-    if (patientToRemove && onRemoveFromQueue) {
-      onRemoveFromQueue(patientToRemove.id);
+  const confirmRemove = async () => {
+    if (!patientToRemove) return;
+    if (!onRemoveFromQueue) {
+      setPatientToRemove(null);
+      return;
+    }
+    setIsRemoving(true);
+    try {
+      await onRemoveFromQueue(patientToRemove.id);
+    } finally {
+      setIsRemoving(false);
       setPatientToRemove(null);
     }
   };
@@ -128,14 +137,16 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
 
               {/* Action Buttons Block */}
               <div className="flex flex-wrap items-center gap-2.5 self-stretch md:self-center justify-start md:justify-end shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-white/5">
-                <button
-                  type="button"
-                  onClick={() => setPatientToRemove(item)}
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 dark:bg-[#18233C] dark:hover:bg-rose-950/40 dark:text-[#bbc9ca] dark:hover:text-rose-400 text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
-                >
-                  <span className="text-sm">✕</span>
-                  <span>{t('queue.removeFromQueue')}</span>
-                </button>
+                {onRemoveFromQueue && (
+                  <button
+                    type="button"
+                    onClick={() => setPatientToRemove(item)}
+                    className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 dark:bg-[#18233C] dark:hover:bg-rose-950/40 dark:text-[#bbc9ca] dark:hover:text-rose-400 text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    <span className="text-sm">✕</span>
+                    <span>{t('queue.removeFromQueue')}</span>
+                  </button>
+                )}
 
                 <div className="relative inline-block">
                   <select
@@ -213,17 +224,19 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
             <div className="flex items-center gap-2 pt-2">
               <button
                 type="button"
+                disabled={isRemoving}
                 onClick={() => setPatientToRemove(null)}
-                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-[#18233C] text-slate-700 dark:text-[#dde2f5] text-xs font-bold transition-all cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-[#18233C] text-slate-700 dark:text-[#dde2f5] text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
               >
                 {t('action.cancel')}
               </button>
               <button
                 type="button"
-                onClick={confirmRemove}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+                disabled={isRemoving}
+                onClick={() => void confirmRemove()}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
               >
-                {t('action.confirm')}
+                {isRemoving ? 'جارٍ الحذف...' : t('action.confirm')}
               </button>
             </div>
           </div>
