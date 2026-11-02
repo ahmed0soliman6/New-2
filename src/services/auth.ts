@@ -32,8 +32,7 @@ function toUpperUserRole(role?: string | null): UserRole {
 
 /**
  * Signs in a user using their username and password via Supabase Auth.
- * Looks up the username in the `usernames` table first, then signs in with the
- * internal email `${username_lower}@${INTERNAL_EMAIL_DOMAIN}`.
+ * Uses the deterministic internal email `${username_lower}@${INTERNAL_EMAIL_DOMAIN}`.
  * Self-registration from the browser is strictly disabled.
  */
 export async function loginWithUsername(username: string, password: string): Promise<AuthUser> {
@@ -41,19 +40,6 @@ export async function loginWithUsername(username: string, password: string): Pro
   const unameLower = normalizeUsername(username);
   if (!unameLower || !password) {
     throw new Error('يرجى إدخال اسم المستخدم وكلمة المرور.');
-  }
-
-  // Check usernames table first (if accessible via RLS or RPC)
-  const { data: usernameRow, error: usernameErr } = await supabase
-    .from('usernames')
-    .select('username_lower, user_id')
-    .eq('username_lower', unameLower)
-    .maybeSingle();
-
-  // If the table is readable and explicitly confirms the username doesn't exist
-  if (!usernameErr && usernameRow === null) {
-    // Proceed to signInWithPassword with the deterministic internal email so timing/error behavior stays consistent,
-    // or if RLS blocks direct unauthenticated select on `usernames`, signInWithPassword handles authentication.
   }
 
   const email = internalEmail(unameLower);
@@ -207,9 +193,10 @@ export async function changeUserPassword(params: {
   }
 }
 
+
 /**
- * Creates a managed user via the server-side `/api/users/create` endpoint.
- * Browser self-signup is completely prohibited.
+ * Creates a managed user strictly via `/api/users/create` (requires server-side SUPABASE_SERVICE_ROLE_KEY on Vercel).
+ * Never calls supabase.auth.signUp from the browser or writes directly to `usernames`.
  */
 export async function createManagedUser(params: {
   username: string;
@@ -230,31 +217,49 @@ export async function createManagedUser(params: {
 
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
-  if (!accessToken) {
+  const callerUid = sessionData.session?.user?.id;
+  if (!accessToken || !callerUid) {
     throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
   }
 
-  const response = await fetch('/api/users/create', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      username,
-      displayName: params.displayName.trim(),
-      password: params.password,
-      role: params.role,
-      allowedScreens: params.allowedScreens,
-      customPermissions: params.customPermissions,
-      clinicId,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch('/api/users/create', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        username,
+        displayName: params.displayName.trim(),
+        password: params.password,
+        role: params.role,
+        allowedScreens: params.allowedScreens,
+        customPermissions: params.customPermissions,
+        clinicId,
+      }),
+    });
+  } catch {
+    throw new Error('إنشاء الحسابات يعمل بعد نشر النظام على الخادم');
+  }
 
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.error || payload.message || 'تعذر إنشاء حساب المستخدم.');
+  if (response.ok) {
+    return;
   }
+
+  const serverMsg = String(payload.error || payload.message || '');
+  const isRouteOrKeyUnavailable =
+    response.status === 404 ||
+    serverMsg.includes('SUPABASE_SERVICE_ROLE_KEY') ||
+    serverMsg.includes('متغيرات بيئة Supabase غير مكتملة');
+
+  if (isRouteOrKeyUnavailable) {
+    throw new Error('إنشاء الحسابات يعمل بعد نشر النظام على الخادم');
+  }
+
+  throw new Error(serverMsg || 'تعذر إنشاء حساب المستخدم.');
 }
 
 export async function updateManagedUser(
@@ -322,63 +327,38 @@ export async function updateManagedUser(
   }
 }
 
-export async function deleteManagedUser(uid: string, username?: string): Promise<void> {
+/**
+ * Deletes a managed user from the clinic using the database RPC `admin_delete_clinic_user(p_clinic_id, p_user_id)`.
+ */
+export async function deleteManagedUser(uid: string, _username?: string): Promise<void> {
   const supabase = requireSupabase();
   const { data: sessionData } = await supabase.auth.getSession();
   const currentUid = sessionData.session?.user?.id;
-  const accessToken = sessionData.session?.access_token;
 
+  if (!currentUid) {
+    throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
+  }
   if (currentUid === uid) {
     throw new Error('لا يمكنك حذف الحساب المسجل به حالياً.');
   }
-  if (!accessToken) {
-    throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
-  }
 
-  const response = await fetch('/api/users/delete', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({ uid, username, clinicId }),
+  const { error } = await supabase.rpc('admin_delete_clinic_user', {
+    p_clinic_id: clinicId,
+    p_user_id: uid,
   });
 
-  let serverError = '';
-  try {
-    const rawText = await response.text();
-    try {
-      const parsed = JSON.parse(rawText);
-      serverError = parsed.error || parsed.message;
-    } catch {
-      serverError = rawText.length < 250 ? rawText : '';
+  if (error) {
+    const msg = error.message || '';
+    if (msg.includes('Cannot delete your own active account')) {
+      throw new Error('لا يمكنك حذف الحساب المسجل به حالياً.');
     }
-  } catch {}
-
-  if (!response.ok) {
-    const isConfigError =
-      response.status === 404 ||
-      serverError.includes('متغيرات بيئة') ||
-      serverError.includes('غير مكتملة') ||
-      serverError.includes('غير متوفرة');
-
-    if (isConfigError) {
-      await supabase.from('clinic_members').delete().eq('clinic_id', clinicId).eq('user_id', uid);
-      if (username) {
-        await supabase.from('usernames').delete().eq('username_lower', normalizeUsername(username));
-      }
-      throw new Error(
-        'تم حذف المستخدم من سجلات العيادة بنجاح. لحذفه تلقائياً من صفحة Authentication أيضاً، أضف مفتاح الخدمة في Vercel.'
-      );
+    if (msg.includes('User is not a member of this clinic')) {
+      throw new Error('المستخدم غير مسجل ضمن أعضاء هذه العيادة.');
     }
-
-    throw new Error(serverError || `تعذر حذف المستخدم (رمز ${response.status}).`);
-  }
-
-  // Ensure clinic_members & usernames records are cleaned up
-  await supabase.from('clinic_members').delete().eq('clinic_id', clinicId).eq('user_id', uid);
-  if (username) {
-    await supabase.from('usernames').delete().eq('username_lower', normalizeUsername(username));
+    if (msg.includes('Unauthorized')) {
+      throw new Error('غير مصرح: هذه العملية متاحة لمدير العيادة فقط.');
+    }
+    throw new Error(msg || 'تعذر حذف المستخدم.');
   }
 }
 
@@ -399,22 +379,35 @@ export async function adminResetUserPassword(
     throw new Error('انتهت صلاحية جلسة تسجيل الدخول. يرجى تسجيل الدخول مجدداً.');
   }
 
-  const response = await fetch('/api/users/reset-password', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      uid,
-      tempPassword,
-      clinicId,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch('/api/users/reset-password', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        uid,
+        tempPassword,
+        clinicId,
+      }),
+    });
+  } catch {
+    throw new Error('إعادة تعيين كلمة المرور تعمل بعد نشر النظام على الخادم');
+  }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.tempPassword) {
-    throw new Error(payload.error || payload.message || 'تعذر إعادة تعيين كلمة المرور المؤقتة.');
+    const serverMsg = String(payload.error || payload.message || '');
+    if (
+      response.status === 404 ||
+      serverMsg.includes('SUPABASE_SERVICE_ROLE_KEY') ||
+      serverMsg.includes('متغيرات بيئة Supabase غير مكتملة')
+    ) {
+      throw new Error('إعادة تعيين كلمة المرور تعمل بعد نشر النظام على الخادم');
+    }
+    throw new Error(serverMsg || 'تعذر إعادة تعيين كلمة المرور المؤقتة.');
   }
 
   return { tempPassword: String(payload.tempPassword) };

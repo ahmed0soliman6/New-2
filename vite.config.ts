@@ -7,11 +7,24 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const getEnv = (key: string) => process.env[key] || env[key] || '';
 
+  for (const [k, v] of Object.entries(env)) {
+    if (v && !process.env[k]) {
+      process.env[k] = v;
+    }
+  }
+
   const apiDevMiddleware = () => ({
     name: 'api-dev-middleware',
     configureServer(server: any) {
       server.middlewares.use(async (req: any, res: any, next: any) => {
-        if (req.url?.startsWith('/api/users/delete')) {
+        const url = req.url || '';
+        const routeMap: Record<string, string> = {
+          '/api/users/create': './api/users/create',
+          '/api/users/delete': './api/users/delete',
+          '/api/users/reset-password': './api/users/reset-password',
+        };
+        const matchedPath = Object.keys(routeMap).find((prefix) => url.startsWith(prefix));
+        if (matchedPath) {
           try {
             let rawBody = '';
             req.on('data', (chunk: any) => {
@@ -24,7 +37,7 @@ export default defineConfig(({ mode }) => {
                 req.body = {};
               }
               try {
-                const { default: handler } = await import('./api/users/delete');
+                const { default: handler } = await import(routeMap[matchedPath]);
                 await handler(req, res);
               } catch (handlerErr: any) {
                 res.statusCode = 500;

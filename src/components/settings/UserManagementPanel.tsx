@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { collection, onSnapshot, type DocumentData } from 'firebase/firestore';
-import { db, auth } from '../../services/firebase';
+import React, { useCallback, useEffect, useState } from 'react';
+import { supabase, clinicId } from '../../services/supabase';
 import { createManagedUser, updateManagedUser, deleteManagedUser } from '../../services/auth';
 import type { UserRole } from '../../types/database';
 import {
@@ -12,7 +11,7 @@ import {
   ROLE_LABELS,
   SystemScreenDef,
 } from '../../permissions';
-import { usePermissions } from '../../context/AuthContext';
+import { useAuth, usePermissions } from '../../context/AuthContext';
 import { PermissionGate } from '../auth/PermissionGate';
 import { ScreenPermissionsModal } from './ScreenPermissionsModal';
 import { ChangePasswordModal } from './ChangePasswordModal';
@@ -30,7 +29,7 @@ type ManagedUser = {
 };
 
 export const UserManagementPanel: React.FC = () => {
-  const { hasPermission, role: currentRole } = usePermissions();
+  const { hasPermission, role: currentRole, userProfile } = usePermissions();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -68,23 +67,82 @@ export const UserManagementPanel: React.FC = () => {
   } | null>(null);
   const [isSavingRole, setIsSavingRole] = useState(false);
 
-  useEffect(() => {
-    if (!db) return;
-    return onSnapshot(
-      collection(db, 'users'),
-      (snapshot) => {
-        setUsers(
-          snapshot.docs.map((item) => ({
-            uid: item.id,
-            ...(item.data() as DocumentData),
-          })) as ManagedUser[]
-        );
-      },
-      (reason) => setError(reason.message)
-    );
+  const loadUsers = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error: fetchErr } = await supabase
+      .from('clinic_members')
+      .select('user_id, role, is_active, permissions')
+      .eq('clinic_id', clinicId);
+
+    if (fetchErr) {
+      setError(fetchErr.message || 'تعذر تحميل قائمة المستخدمين من قاعدة البيانات.');
+      return;
+    }
+
+    const mapped: ManagedUser[] = (data || []).map((row: any) => {
+      const perms =
+        row.permissions && typeof row.permissions === 'object'
+          ? (row.permissions as Record<string, any>)
+          : {};
+      const emailStr = typeof perms.email === 'string' ? perms.email : '';
+      const uname =
+        typeof perms.username === 'string' && perms.username
+          ? perms.username
+          : emailStr.includes('@')
+          ? emailStr.split('@')[0]
+          : String(row.user_id || '').slice(0, 8);
+      const dName =
+        typeof perms.displayName === 'string' && perms.displayName
+          ? perms.displayName
+          : uname;
+      const rUpper = String(row.role || 'secretary').toUpperCase();
+      const mappedRole: UserRole =
+        rUpper === 'ADMIN' ? 'ADMIN' : rUpper === 'DOCTOR' ? 'DOCTOR' : 'SECRETARY';
+
+      return {
+        uid: row.user_id,
+        username: uname,
+        displayName: dName,
+        email: emailStr || `${uname}@auth.solimedical.local`,
+        role: mappedRole,
+        active: row.is_active !== false,
+        allowedScreens: Array.isArray(perms.allowedScreens) ? perms.allowedScreens : undefined,
+        customPermissions:
+          perms.customPermissions && typeof perms.customPermissions === 'object'
+            ? (perms.customPermissions as CustomPermissionsMap)
+            : undefined,
+      };
+    });
+
+    setUsers(mapped);
   }, []);
 
-  const currentUid = auth?.currentUser?.uid;
+  useEffect(() => {
+    if (!supabase) return;
+    void loadUsers();
+
+    const channel = supabase
+      .channel(`clinic-members-panel-${clinicId}-${Math.random().toString(36).slice(2, 8)}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'clinic_members',
+          filter: `clinic_id=eq.${clinicId}`,
+        },
+        () => {
+          void loadUsers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadUsers]);
+
+  const currentUid = userProfile?.uid;
 
   // 1. Create user
   const submit = async (event: React.FormEvent) => {
@@ -104,6 +162,7 @@ export const UserManagementPanel: React.FC = () => {
         role,
         allowedScreens: createAllowedScreens,
       });
+      await loadUsers();
       setUsername('');
       setDisplayName('');
       setPassword('');
@@ -167,6 +226,7 @@ export const UserManagementPanel: React.FC = () => {
         displayName: editDisplayName.trim(),
         role: editRole,
       });
+      await loadUsers();
       setEditingUid(null);
       setMessage('تم تحديث بيانات المستخدم والصلاحية بنجاح.');
     } catch (cause) {
@@ -217,8 +277,9 @@ export const UserManagementPanel: React.FC = () => {
     setMessage('');
     try {
       await updateManagedUser(user.uid, { role: newRole });
+      await loadUsers();
       setMessage(
-        `تم حفظ الدور الجديد للمستخدم "${user.displayName || user.username}" (${roleLabel(newRole)}) في Firestore بنجاح.`
+        `تم حفظ الدور الجديد للمستخدم "${user.displayName || user.username}" (${roleLabel(newRole)}) في قاعدة البيانات بنجاح.`
       );
       setRoleModalTarget(null);
     } catch (cause) {
@@ -260,6 +321,7 @@ export const UserManagementPanel: React.FC = () => {
     setMessage('');
     try {
       await updateManagedUser(user.uid, { active: newActiveState });
+      await loadUsers();
       setMessage(
         newActiveState
           ? `تم تفعيل حساب "${user.displayName || user.username}" بنجاح.`
@@ -292,6 +354,8 @@ export const UserManagementPanel: React.FC = () => {
     setMessage('');
     try {
       await deleteManagedUser(userToDelete.uid, userToDelete.username);
+      setUsers((prev) => prev.filter((u) => u.uid !== userToDelete.uid));
+      await loadUsers();
       setMessage(`تم حذف حساب المستخدم "${userToDelete.displayName || userToDelete.username}" نهائياً.`);
       setUserToDelete(null);
     } catch (cause) {
@@ -1070,6 +1134,7 @@ export const UserManagementPanel: React.FC = () => {
           user={screensModalUser}
           onClose={() => setScreensModalUser(null)}
           onSaved={(msg) => {
+            void loadUsers();
             setMessage(msg);
             setScreensModalUser(null);
           }}

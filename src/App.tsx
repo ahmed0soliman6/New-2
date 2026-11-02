@@ -117,21 +117,23 @@ const limit = (count: number): QueryConstraint => ({ type: 'limit', limit: count
 const doc = (_db: unknown, table: string, id: string) => ({ table, id });
 const collection = (_db: unknown, table: string) => ({ table });
 const query = (col: { table: string }, ...constraints: QueryConstraint[]) => ({ table: col.table, constraints });
-const setDoc = async (_ref: { table: string; id: string }, _data: unknown, _opts?: unknown): Promise<void> => {
-  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
-};
-const deleteDoc = async (_ref: { table: string; id: string }): Promise<void> => {
-  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
-};
-const getDoc = async (_ref: { table: string; id: string }): Promise<{ exists: () => boolean; data: () => Record<string, unknown> }> => {
-  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
-};
 const getDocs = async (_q: unknown): Promise<{ empty: boolean; docs: Array<{ id: string; ref: { table: string; id: string }; data: () => Record<string, unknown> }> }> => {
   throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
 };
 const writeBatch = (_db: unknown): { set: (_ref: unknown, _data: unknown) => void; commit: () => Promise<void> } => {
   throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
 };
+
+function translateDbError(err: unknown, fallbackMessage: string): string {
+  const raw = err instanceof Error ? err.message : String((err as any)?.message || err || '');
+  if (raw.includes('Unauthorized')) {
+    return 'ليس لديك صلاحية لتنفيذ هذه العملية.';
+  }
+  if (raw.includes('Completed visit cannot be removed')) {
+    return 'لا يمكن إزالة زيارة تم الكشف عليها.';
+  }
+  return raw ? `${fallbackMessage}: ${raw}` : fallbackMessage;
+}
 import { logoutAccount } from './services/auth';
 import { AuthScreen } from './components/AuthScreen';
 import { AuthProvider, useAuth, usePermissions } from './context/AuthContext';
@@ -334,8 +336,17 @@ const VALID_SCREENS: ScreenType[] = [
 ];
 
 function ClinicApp() {
-  const { canAccess, allowedScreens, userProfile } = usePermissions();
+  const { canAccess, canPerform, canDelete, allowedScreens, userProfile } = usePermissions();
   const { language, dir, isRTL, t } = useLanguage();
+
+  const [patientDeleteModalState, setPatientDeleteModalState] = useState<{
+    patientId: string;
+    patientName: string;
+    fileNumber?: number;
+    mode: 'file_only' | 'everything';
+    confirmNameInput: string;
+    isSubmitting: boolean;
+  } | null>(null);
 
   const [activeScreen, setActiveScreen] = useState<ScreenType>(() => {
     if (typeof window !== 'undefined' && (window.location.hash === '#booking' || window.location.search.includes('page=booking'))) {
@@ -1114,7 +1125,39 @@ function ClinicApp() {
     chronicConditions?: string[];
   } | null>(null);
 
-  const handleStartIntakeFromAppointment = (app: AppointmentListItem) => {
+  const handleStartIntakeFromAppointment = async (app: AppointmentListItem) => {
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لتحديث حالة الموعد.');
+      return;
+    }
+
+    if (app.id) {
+      try {
+        const timestamp = new Date().toISOString();
+        const { data: apptRow, error: fetchErr } = await supabase
+          .from('appointments')
+          .select('data')
+          .eq('clinic_id', clinicId)
+          .eq('id', app.id)
+          .maybeSingle();
+        if (fetchErr) throw fetchErr;
+
+        const prevData = (apptRow?.data && typeof apptRow.data === 'object' ? apptRow.data : {}) as Record<string, unknown>;
+        const { error: updateErr } = await supabase
+          .from('appointments')
+          .update({
+            data: { ...prevData, status: 'ARRIVED', updatedAt: timestamp },
+            updated_at: timestamp,
+          })
+          .eq('clinic_id', clinicId)
+          .eq('id', app.id);
+        if (updateErr) throw updateErr;
+      } catch (err) {
+        alert(translateDbError(err, 'تعذر تحديث حالة الموعد إلى حضر في قاعدة البيانات'));
+        return;
+      }
+    }
+
     const cleanPhone = (app.phone || '').trim().replace(/[^0-9]/g, '');
     const cleanName = (app.patientName || '').trim().toLowerCase();
 
@@ -1145,11 +1188,6 @@ function ClinicApp() {
       bloodType: matchedPatient?.bloodType || undefined,
       chronicConditions: matchedPatient?.chronicDiseases || undefined,
     });
-    if (db && app.id) {
-      setDoc(doc(db, 'appointments', app.id), { status: 'ARRIVED' }, { merge: true }).catch((err) => {
-        console.warn('Failed to update appointment status in Firestore:', err);
-      });
-    }
     handleNavigate('new-visit');
   };
 
@@ -2093,82 +2131,141 @@ function ClinicApp() {
 
   // Delete queue item / visit & associated invoices/payments
   const handleRemoveFromQueue = async (ticket: string) => {
+    if (!canDelete('waiting-queue')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return;
+    }
     const targetQueueNum = parseInt(ticket.replace(/\D/g, ''), 10);
     const targetVisit =
       visitsCanonical.find((v) => v.visitId === ticket) ||
       visitsCanonical.find((v) => v.queueNumber === targetQueueNum);
-    if (targetVisit && db) {
-      try {
-        // 1. Delete visit document
-        await deleteDoc(doc(db, 'visits', targetVisit.visitId));
+    if (!targetVisit) return;
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لحذف الزيارة من الطابور.');
+      return;
+    }
 
-        if (READ_OPT) {
-          const vid = targetVisit.visitId;
-          const pid = targetVisit.patientId;
+    const confirmed = window.confirm('سيتم حذف الزيارة والمبلغ المحصّل منه. هل تريد المتابعة؟');
+    if (!confirmed) return;
 
-          // 2/3: الفواتير والمدفوعات المرتبطة بالزيارة (بالاستعلام المباشر من الخادم، لا بالنافذة)
-          const [invSnap, paySnap] = await Promise.all([
-            getDocs(query(collection(db, 'invoices'), where('visitId', '==', vid))),
-            getDocs(query(collection(db, 'payments'), where('visitId', '==', vid))),
-          ]);
-          for (const d of invSnap.docs) await deleteDoc(d.ref).catch(() => {});
-          for (const d of paySnap.docs) await deleteDoc(d.ref).catch(() => {});
-
-          // 4: لا تحذف ملف المريض إلا بعد التأكد من الخادم، ومع أي شك لا تحذف
-          try {
-            const patientDoc = patientsCanonical.find((p) => p.patientId === pid);
-            if (!patientDoc?.hasClinicalFile) {
-              const [vSnap, aSnap] = await Promise.all([
-                getDocs(query(collection(db, 'visits'), where('patientId', '==', pid), limit(2))),
-                getDocs(query(collection(db, 'appointments'), where('patientId', '==', pid), limit(1))),
-              ]);
-              const otherVisits = vSnap.docs.filter((d) => d.id !== vid);
-              if (otherVisits.length === 0 && aSnap.empty) {
-                await deleteDoc(doc(db, 'patients', pid)).catch(() => {});
-              }
-            }
-          } catch (e) {
-            console.warn('تخطي حذف المريض بسبب فشل التحقق:', e); // الفشل = لا حذف
-          }
-          return;
-        }
-
-        // 2. Delete linked invoice(s) (المنطق القديم عند تعطيل READ_OPT)
-        const matchingInvoices = invoicesCanonical.filter(
-          (inv) => inv.visitId === targetVisit.visitId || (inv.patientId === targetVisit.patientId && inv.createdAt === targetVisit.createdAt)
-        );
-        for (const inv of matchingInvoices) {
-          await deleteDoc(doc(db, 'invoices', inv.invoiceId)).catch(() => {});
-        }
-
-        // 3. Delete linked payment(s)
-        const matchingPayments = paymentsCanonical.filter(
-          (p) => p.visitId === targetVisit.visitId || matchingInvoices.some((inv) => inv.invoiceId === p.invoiceId)
-        );
-        for (const pm of matchingPayments) {
-          await deleteDoc(doc(db, 'payments', pm.paymentId)).catch(() => {});
-        }
-
-        // 4. Clean up patient profile if no other visits or appointments exist
-        const otherVisits = visitsCanonical.filter((v) => v.patientId === targetVisit.patientId && v.visitId !== targetVisit.visitId);
-        const otherAppts = appointmentsCanonical.filter((a) => a.patientId === targetVisit.patientId);
-        if (otherVisits.length === 0 && otherAppts.length === 0) {
-          await deleteDoc(doc(db, 'patients', targetVisit.patientId)).catch(() => {});
-        }
-      } catch (err) {
-        console.error('Error removing visit and associated payments/invoices from Firestore:', err);
+    try {
+      const { error } = await supabase.rpc('remove_queue_visit', {
+        p_clinic_id: clinicId,
+        p_visit_id: targetVisit.visitId,
+      });
+      if (error) {
+        throw error;
       }
+
+      const vid = targetVisit.visitId;
+      const pid = targetVisit.patientId;
+      const removedInvoiceIds = new Set(
+        invoicesCanonical.filter((inv) => inv.visitId === vid).map((inv) => inv.invoiceId)
+      );
+      setVisitsCanonical((prev) => prev.filter((v) => v.visitId !== vid));
+      setInvoicesCanonical((prev) => prev.filter((inv) => inv.visitId !== vid));
+      setPaymentsCanonical((prev) =>
+        prev.filter((p) => p.visitId !== vid && (!p.invoiceId || !removedInvoiceIds.has(p.invoiceId)))
+      );
+
+      if (pid) {
+        const { data: remainingPat } = await supabase
+          .from('patients')
+          .select('id')
+          .eq('clinic_id', clinicId)
+          .eq('id', pid)
+          .maybeSingle();
+        if (!remainingPat) {
+          setPatientsCanonical((prev) => prev.filter((p) => p.patientId !== pid));
+        }
+      }
+    } catch (err) {
+      alert(translateDbError(err, 'تعذر إزالة الزيارة من قائمة الانتظار'));
+      return;
     }
   };
 
-  // Delete patient record
-  const handleDeletePatient = async (patientId: string) => {
-    if (db) {
-      try {
-        await deleteDoc(doc(db, 'patients', patientId));
-      } catch (err) {
-        console.warn('Error deleting patient from Firestore:', err);
+  const handleRequestDeletePatient = (patientId: string) => {
+    if (!canDelete('patient-records')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return;
+    }
+    const pat = patientsCanonical.find((p) => p.patientId === patientId);
+    const listPat = patients.find((p) => p.id === patientId);
+    setPatientDeleteModalState({
+      patientId,
+      patientName: pat?.fullName || listPat?.name || 'المريض',
+      fileNumber: pat?.fileNumber || listPat?.fileNumber,
+      mode: 'file_only',
+      confirmNameInput: '',
+      isSubmitting: false,
+    });
+  };
+
+  // Delete patient record via RPC ('file_only' | 'everything')
+  const handleDeletePatient = async (patientId: string, mode: 'file_only' | 'everything' = 'file_only'): Promise<boolean> => {
+    if (!canDelete('patient-records')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return false;
+    }
+    if (mode === 'everything' && !canDelete('billing-payments')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return false;
+    }
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لحذف ملف المريض.');
+      return false;
+    }
+
+    try {
+      const { error } = await supabase.rpc('delete_patient', {
+        p_clinic_id: clinicId,
+        p_patient_id: patientId,
+        p_mode: mode,
+      });
+      if (error) {
+        throw error;
       }
+
+      const patRecord = patientsCanonical.find((p) => p.patientId === patientId);
+      const preservedPatientName = patRecord?.fullName || patients.find((p) => p.id === patientId)?.name || '';
+
+      setPatientsCanonical((prev) => prev.filter((p) => p.patientId !== patientId));
+      setVisitsCanonical((prev) => prev.filter((v) => v.patientId !== patientId));
+      setAppointmentsCanonical((prev) => prev.filter((a) => a.patientId !== patientId));
+      setPrescriptionsCanonical((prev) => prev.filter((rx) => rx.patientId !== patientId));
+      setLabOrdersCanonical((prev) => prev.filter((lo) => lo.patientId !== patientId));
+      setRadiologyOrdersCanonical((prev) => prev.filter((ro) => ro.patientId !== patientId));
+      setFollowUpsCanonical((prev) => prev.filter((fu) => fu.patientId !== patientId));
+
+      if (mode === 'everything') {
+        setInvoicesCanonical((prev) => prev.filter((inv) => inv.patientId !== patientId));
+        setPaymentsCanonical((prev) => prev.filter((pay) => pay.patientId !== patientId));
+      } else {
+        setInvoicesCanonical((prev) =>
+          prev.map((inv) =>
+            inv.patientId === patientId
+              ? ({ ...inv, patientId: 'pat-deleted', patientName: (inv as any).patientName || preservedPatientName } as Invoice)
+              : inv
+          )
+        );
+        setPaymentsCanonical((prev) =>
+          prev.map((pay) =>
+            pay.patientId === patientId
+              ? ({ ...pay, patientId: 'pat-deleted', patientName: (pay as any).patientName || preservedPatientName } as Payment)
+              : pay
+          )
+        );
+      }
+
+      if (activeExamPatient?.id === patientId) {
+        setActiveExamPatient(null);
+      }
+      invalidatePatientHistory(patientId);
+      return true;
+    } catch (err) {
+      alert(translateDbError(err, 'تعذر حذف ملف المريض من قاعدة البيانات'));
+      return false;
     }
   };
 
@@ -2180,28 +2277,57 @@ function ClinicApp() {
     const timestamp = new Date().toISOString();
     const patientId = typeof patientIdOrUpdated === 'string' ? patientIdOrUpdated : patientIdOrUpdated.patientId;
     const fields = typeof patientIdOrUpdated === 'string' ? maybeFields || {} : patientIdOrUpdated;
+    if (!patientId) return;
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لتحديث بيانات المريض.');
+      return;
+    }
 
-    if (db && patientId) {
-      try {
-        await setDoc(
-          doc(db, 'patients', patientId),
-          {
-            ...fields,
-            patientId,
-            updatedAt: timestamp,
-          },
-          { merge: true }
-        );
-      } catch (err) {
-        console.warn('Error updating patient in Firestore:', err);
-      }
+    try {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('patients')
+        .select('data')
+        .eq('clinic_id', clinicId)
+        .eq('id', patientId)
+        .maybeSingle();
+      if (fetchErr) throw fetchErr;
+
+      const prevData = (existing?.data && typeof existing.data === 'object' ? existing.data : {}) as Record<string, unknown>;
+      const mergedData = {
+        ...prevData,
+        ...fields,
+        patientId,
+        updatedAt: timestamp,
+      };
+      const { error: upsertErr } = await supabase.from('patients').upsert(
+        {
+          clinic_id: clinicId,
+          id: patientId,
+          data: mergedData,
+          updated_at: timestamp,
+        },
+        { onConflict: 'clinic_id,id' }
+      );
+      if (upsertErr) throw upsertErr;
+    } catch (err) {
+      alert(translateDbError(err, 'تعذر تحديث بيانات المريض في قاعدة البيانات'));
+      return;
     }
   };
 
-  // Add invoice / transaction safely (UI Action -> Firestore Write -> onSnapshot -> UI)
+  // Add invoice / transaction safely (UI Action -> Supabase RPC -> Realtime -> UI)
   const handleAddTransaction = async (newTx: TransactionRecord) => {
     if (newTx.type === 'out') {
       // Clinic expenses are tracked via expense storage and events
+      return;
+    }
+
+    if (!canPerform('billing-payments', 'create')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return;
+    }
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لحفظ المعاملة المالية.');
       return;
     }
 
@@ -2213,11 +2339,12 @@ function ClinicApp() {
       // 1. Find or resolve patient using normalized Arabic name matching
       const matchedPatient = findMatchingPatient({ fullName: newTx.patientName });
       let targetPatientId = matchedPatient?.patientId;
+      let newPatientToCreate: Patient | null = null;
 
       if (!targetPatientId && newTx.patientName.trim()) {
         targetPatientId = `pat-${Date.now()}`;
         const maxNum = patientsCanonical.reduce((max, p) => (p.fileNumber && p.fileNumber > max ? p.fileNumber : max), 0);
-        const newPat: Patient = {
+        newPatientToCreate = {
           patientId: targetPatientId,
           fileNumber: maxNum + 1,
           fullName: newTx.patientName.trim(),
@@ -2225,9 +2352,6 @@ function ClinicApp() {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
-        if (db) {
-          setDoc(doc(db, 'patients', targetPatientId), newPat).catch((e) => console.warn('Patient save fallback:', e));
-        }
       }
 
       const invoiceId = newTx.id && newTx.id.startsWith('inv-') ? newTx.id : `inv-${Date.now()}`;
@@ -2288,61 +2412,85 @@ function ClinicApp() {
         dayKey: toDayKey(txDateIso),
       };
 
-      if (db) {
-        try {
-          const tasks: Promise<unknown>[] = [
-            setDoc(doc(db, 'invoices', invoiceId), newInvoice),
-          ];
-          if (newInvoice.status === 'PAID' || newPayment.amount > 0) {
-            tasks.push(setDoc(doc(db, 'payments', paymentId), newPayment));
-          }
-          await Promise.allSettled(tasks);
-        } catch (err) {
-          console.warn('Error saving transaction to Firestore:', err);
+      const shouldSavePayment = newInvoice.status === 'PAID' || newPayment.amount > 0;
+      try {
+        const { error: rpcErr } = await supabase.rpc('add_transaction', {
+          p_clinic_id: clinicId,
+          p_timestamp: txDateIso,
+          p_invoice_id: invoiceId,
+          p_invoice_data: newInvoice,
+          p_payment_id: shouldSavePayment ? paymentId : null,
+          p_payment_data: shouldSavePayment ? newPayment : null,
+          p_patient_id: newPatientToCreate ? newPatientToCreate.patientId : null,
+          p_patient_data: newPatientToCreate,
+        });
+        if (rpcErr) {
+          throw rpcErr;
         }
+      } catch (err) {
+        alert(translateDbError(err, 'تعذر حفظ المعاملة المالية في قاعدة البيانات'));
+        return;
       }
     } finally {
       inFlightActionsRef.current.delete(txKey);
     }
   };
 
-  // Delete invoice / transaction safely (UI Action -> Firestore Delete -> onSnapshot -> UI)
+  // Delete invoice / transaction safely (UI Action -> Supabase RPC -> Realtime -> UI)
   const handleDeleteTransaction = async (txId: string) => {
+    if (!canDelete('billing-payments')) {
+      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
+      return;
+    }
+    if (!supabase) {
+      alert('قاعدة البيانات غير متصلة حالياً لحذف المعاملة المالية.');
+      return;
+    }
     const inMemory = paymentsCanonical.find((p) => p.paymentId === txId || p.invoiceId === txId || p.visitId === txId);
     let targetPaymentId = inMemory?.paymentId;
     let targetInvoiceId = inMemory?.invoiceId;
 
-    if (!inMemory && db) {
+    if (!inMemory) {
       try {
-        const snap = await getDoc(doc(db, 'payments', txId)); // سجل قديم خارج النافذة
-        if (snap.exists()) {
+        const { data: row, error: lookupErr } = await supabase
+          .from('payments')
+          .select('data')
+          .eq('clinic_id', clinicId)
+          .eq('id', txId)
+          .maybeSingle();
+        if (lookupErr) throw lookupErr;
+        if (row?.data) {
           targetPaymentId = txId;
-          targetInvoiceId = (snap.data() as { invoiceId?: string }).invoiceId;
+          targetInvoiceId = (row.data as { invoiceId?: string }).invoiceId;
         }
       } catch (e) {
-        console.warn('Payment lookup before delete failed:', e);
+        alert(translateDbError(e, 'تعذر التحقق من سجل الدفعة قبل الحذف'));
+        return;
       }
     }
     targetPaymentId = targetPaymentId || txId;
     targetInvoiceId = targetInvoiceId || txId;
 
-    // Cloud Firestore deletion
-    if (db) {
-      try {
-        const deleteTasks: Promise<unknown>[] = [];
-        if (targetPaymentId) {
-          deleteTasks.push(deleteDoc(doc(db, 'payments', targetPaymentId)).catch((e) => console.warn('Payment delete fallback:', e)));
-        }
-        if (targetInvoiceId) {
-          deleteTasks.push(deleteDoc(doc(db, 'invoices', targetInvoiceId)).catch((e) => console.warn('Invoice delete fallback:', e)));
-        }
-        // Also clean up any standalone transaction entry if registered
-        deleteTasks.push(deleteDoc(doc(db, 'transactions', txId)).catch((e) => console.warn('Transaction delete fallback:', e)));
-
-        await Promise.allSettled(deleteTasks);
-      } catch (err) {
-        console.warn('Error deleting transaction from Firestore:', err);
+    try {
+      const { error } = await supabase.rpc('delete_transaction', {
+        p_clinic_id: clinicId,
+        p_payment_id: targetPaymentId,
+        p_invoice_id: targetInvoiceId,
+        p_tx_id: txId,
+      });
+      if (error) {
+        throw error;
       }
+
+      setPaymentsCanonical((prev) =>
+        prev.filter((p) => p.paymentId !== targetPaymentId && p.paymentId !== txId && p.invoiceId !== targetInvoiceId)
+      );
+      setInvoicesCanonical((prev) =>
+        prev.filter((inv) => inv.invoiceId !== targetInvoiceId && inv.invoiceId !== txId)
+      );
+    } catch (err) {
+      alert(translateDbError(err, 'تعذر حذف المعاملة المالية من قاعدة البيانات'));
+      return;
     }
   };
 
@@ -2978,7 +3126,7 @@ function ClinicApp() {
                   queue={queue}
                   onCallPatient={handleCallPatient}
                   onNavigate={handleNavigate}
-                  onRemoveFromQueue={handleRemoveFromQueue}
+                  onRemoveFromQueue={canDelete('waiting-queue') ? handleRemoveFromQueue : undefined}
                   onOpenNewVisit={() => handleNavigate('new-visit')}
                 />
               )}
@@ -3049,7 +3197,7 @@ function ClinicApp() {
                   selectedPatientId={activeExamPatient?.id}
                   onNavigate={handleNavigate}
                   onSelectPatientForExam={(p) => setActiveExamPatient(p)}
-                  onDeletePatient={handleDeletePatient}
+                  onDeletePatient={canDelete('patient-records') ? handleRequestDeletePatient : undefined}
                   onUpdatePatient={handleUpdatePatient}
                   visits={visitsCanonical}
                   invoices={invoicesCanonical}
@@ -3173,6 +3321,140 @@ function ClinicApp() {
             systemSettings={systemSettingsCanonical}
           />
         </Suspense>
+      )}
+
+      {/* نافذة حذف المريض: file_only مقابل everything */}
+      {patientDeleteModalState && canDelete('patient-records') && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+          <div className="bg-white dark:bg-[#111A2E] border border-rose-500/30 rounded-3xl p-6 max-w-lg w-full text-right space-y-4 shadow-2xl animate-in zoom-in-95">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/40 text-rose-500 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-2xl">delete_forever</span>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  حذف ملف المريض: {patientDeleteModalState.patientName}
+                </h3>
+                {patientDeleteModalState.fileNumber && (
+                  <p className="text-xs text-slate-500 dark:text-[#859394] font-mono">
+                    ملف رقم #{toEnglishDigits(patientDeleteModalState.fileNumber)}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              {canDelete('patient-records') && (
+                <label
+                  className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                    patientDeleteModalState.mode === 'file_only'
+                      ? 'border-teal-500 bg-teal-500/10'
+                      : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="patientDeleteMode"
+                    checked={patientDeleteModalState.mode === 'file_only'}
+                    onChange={() =>
+                      setPatientDeleteModalState((prev) =>
+                        prev ? { ...prev, mode: 'file_only', confirmNameInput: '' } : null
+                      )
+                    }
+                    className="mt-1 accent-teal-500"
+                  />
+                  <div className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-relaxed">
+                    حذف الملف الطبي فقط (تبقى المبالغ المحصّلة في الحسابات)
+                  </div>
+                </label>
+              )}
+
+              {canDelete('patient-records') && canDelete('billing-payments') && (
+                <label
+                  className={`flex items-start gap-3 p-3.5 rounded-2xl border cursor-pointer transition-all ${
+                    patientDeleteModalState.mode === 'everything'
+                      ? 'border-rose-500 bg-rose-500/10'
+                      : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="patientDeleteMode"
+                    checked={patientDeleteModalState.mode === 'everything'}
+                    onChange={() =>
+                      setPatientDeleteModalState((prev) =>
+                        prev ? { ...prev, mode: 'everything' } : null
+                      )
+                    }
+                    className="mt-1 accent-rose-500"
+                  />
+                  <div className="text-xs font-bold text-rose-600 dark:text-rose-400 leading-relaxed">
+                    حذف كل شيء بما فيه المبالغ المحصّلة
+                  </div>
+                </label>
+              )}
+            </div>
+
+            {patientDeleteModalState.mode === 'everything' &&
+              canDelete('patient-records') &&
+              canDelete('billing-payments') && (
+                <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-500/40 space-y-2.5">
+                  <p className="text-xs font-extrabold text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-base">warning</span>
+                    الحذف نهائي وسيغيّر تقارير الإيرادات
+                  </p>
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    لتأكيد الحذف الكامل، اكتب اسم المريض ({patientDeleteModalState.patientName}):
+                  </label>
+                  <input
+                    type="text"
+                    value={patientDeleteModalState.confirmNameInput}
+                    onChange={(e) =>
+                      setPatientDeleteModalState((prev) =>
+                        prev ? { ...prev, confirmNameInput: e.target.value } : null
+                      )
+                    }
+                    placeholder={patientDeleteModalState.patientName}
+                    className="w-full px-3 py-2 rounded-xl border border-rose-300 dark:border-rose-800 bg-white dark:bg-[#0B1120] text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+              )}
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={
+                  patientDeleteModalState.isSubmitting ||
+                  (patientDeleteModalState.mode === 'everything' &&
+                    patientDeleteModalState.confirmNameInput.trim() !==
+                      patientDeleteModalState.patientName.trim())
+                }
+                onClick={async () => {
+                  const current = patientDeleteModalState;
+                  if (!current) return;
+                  setPatientDeleteModalState((prev) => (prev ? { ...prev, isSubmitting: true } : null));
+                  const ok = await handleDeletePatient(current.patientId, current.mode);
+                  if (ok) {
+                    setPatientDeleteModalState(null);
+                  } else {
+                    setPatientDeleteModalState((prev) => (prev ? { ...prev, isSubmitting: false } : null));
+                  }
+                }}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-bold text-xs transition-all cursor-pointer"
+              >
+                {patientDeleteModalState.isSubmitting ? 'جاري الحذف...' : 'تأكيد الحذف'}
+              </button>
+              <button
+                type="button"
+                disabled={patientDeleteModalState.isSubmitting}
+                onClick={() => setPatientDeleteModalState(null)}
+                className="flex-1 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl font-bold text-xs transition-all cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

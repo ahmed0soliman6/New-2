@@ -78,7 +78,7 @@ export default async function handler(req: any, res: any) {
     const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
     const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
     const defaultClinicId =
-      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'default';
+      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'solimedical-new2';
 
     if (!supabaseUrl || !serviceRoleKey) {
       return sendResponse(res, 500, {

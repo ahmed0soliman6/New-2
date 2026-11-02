@@ -74,7 +74,7 @@ export default async function handler(req: any, res: any) {
       (process.env.VITE_INTERNAL_EMAIL_DOMAIN || process.env.INTERNAL_EMAIL_DOMAIN || '').trim() ||
       'auth.solimedical.local';
     const defaultClinicId =
-      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'default';
+      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'solimedical-new2';
 
     if (!supabaseUrl || !serviceRoleKey) {
       return sendResponse(res, 500, {
