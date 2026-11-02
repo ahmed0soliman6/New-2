@@ -106,9 +106,32 @@ const ClinicalReportsScreen = lazy(() =>
 const BookingLandingScreen = lazy(() =>
   import('./components/screens/BookingLandingScreen').then((m) => ({ default: m.BookingLandingScreen }))
 );
-import { db } from './services/firebase';
-import { supabase } from './services/supabase';
-import { doc, getDoc, deleteDoc, setDoc, collection, getDocs, writeBatch, query, limit, where, type QueryConstraint } from 'firebase/firestore';
+import { supabase, clinicId } from './services/supabase';
+
+const db: any = supabase;
+
+type QueryConstraint = { type: 'where' | 'limit'; field?: string; op?: string; value?: unknown; limit?: number };
+const where = (field: string, op: string, value: unknown): QueryConstraint => ({ type: 'where', field, op, value });
+const limit = (count: number): QueryConstraint => ({ type: 'limit', limit: count });
+
+const doc = (_db: unknown, table: string, id: string) => ({ table, id });
+const collection = (_db: unknown, table: string) => ({ table });
+const query = (col: { table: string }, ...constraints: QueryConstraint[]) => ({ table: col.table, constraints });
+const setDoc = async (_ref: { table: string; id: string }, _data: unknown, _opts?: unknown): Promise<void> => {
+  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
+};
+const deleteDoc = async (_ref: { table: string; id: string }): Promise<void> => {
+  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
+};
+const getDoc = async (_ref: { table: string; id: string }): Promise<{ exists: () => boolean; data: () => Record<string, unknown> }> => {
+  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
+};
+const getDocs = async (_q: unknown): Promise<{ empty: boolean; docs: Array<{ id: string; ref: { table: string; id: string }; data: () => Record<string, unknown> }> }> => {
+  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
+};
+const writeBatch = (_db: unknown): { set: (_ref: unknown, _data: unknown) => void; commit: () => Promise<void> } => {
+  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
+};
 import { logoutAccount } from './services/auth';
 import { AuthScreen } from './components/AuthScreen';
 import { AuthProvider, useAuth, usePermissions } from './context/AuthContext';
@@ -608,47 +631,52 @@ function ClinicApp() {
 
   // Auto-seed Firestore catalog references if empty on first-ever install (never seed mock patients/visits)
   useEffect(() => {
-    if (!db) return;
-    const seedTimer = setTimeout(async () => {
-      try {
-        const alreadyInitialized = safeStorage.getItem(StorageKeys.CLINIC_DB_INITIALIZED);
-        if (alreadyInitialized) {
-          return;
-        }
+    try {
+      if (!db) return;
+      const seedTimer = setTimeout(async () => {
+        try {
+          const alreadyInitialized = safeStorage.getItem(StorageKeys.CLINIC_DB_INITIALIZED);
+          if (alreadyInitialized) {
+            return;
+          }
 
-        const querySnapshot = await getDocs(query(collection(db, 'medications'), limit(1)));
-        if (querySnapshot.empty) {
-          console.log('Firestore catalogs empty on first setup. Seeding reference catalogs...');
-          const batch = writeBatch(db);
-          INITIAL_MEDICATIONS_FULL.forEach((med) => {
-            batch.set(doc(db, 'medications', med.medicationId), med);
-          });
-          INITIAL_LAB_FULL.forEach((lt) => {
-            batch.set(doc(db, 'labTests', lt.labTestId), lt);
-          });
-          INITIAL_RADIOLOGY_FULL.forEach((rt) => {
-            batch.set(doc(db, 'radiologyTypes', rt.radiologyId), rt);
-          });
-          INITIAL_DIAGNOSES_FULL.forEach((diag) => {
-            batch.set(doc(db, 'diagnoses', diag.diagnosisId), diag);
-          });
-          INITIAL_SYMPTOMS_FULL.forEach((sym) => {
-            batch.set(doc(db, 'symptoms', sym.symptomId), sym);
-          });
-          INITIAL_CHRONIC_FULL.forEach((cd) => {
-            batch.set(doc(db, 'chronicDiseases', cd.diseaseId), cd);
-          });
-          await batch.commit();
-          safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
-          console.log('Reference catalogs successfully seeded to Firestore!');
-        } else {
-          safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
+          const querySnapshot = await getDocs(query(collection(db, 'medications'), limit(1)));
+          if (querySnapshot.empty) {
+            console.log('Firestore catalogs empty on first setup. Seeding reference catalogs...');
+            const batch = writeBatch(db);
+            INITIAL_MEDICATIONS_FULL.forEach((med) => {
+              batch.set(doc(db, 'medications', med.medicationId), med);
+            });
+            INITIAL_LAB_FULL.forEach((lt) => {
+              batch.set(doc(db, 'labTests', lt.labTestId), lt);
+            });
+            INITIAL_RADIOLOGY_FULL.forEach((rt) => {
+              batch.set(doc(db, 'radiologyTypes', rt.radiologyId), rt);
+            });
+            INITIAL_DIAGNOSES_FULL.forEach((diag) => {
+              batch.set(doc(db, 'diagnoses', diag.diagnosisId), diag);
+            });
+            INITIAL_SYMPTOMS_FULL.forEach((sym) => {
+              batch.set(doc(db, 'symptoms', sym.symptomId), sym);
+            });
+            INITIAL_CHRONIC_FULL.forEach((cd) => {
+              batch.set(doc(db, 'chronicDiseases', cd.diseaseId), cd);
+            });
+            await batch.commit();
+            safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
+            console.log('Reference catalogs successfully seeded to Firestore!');
+          } else {
+            safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
+          }
+        } catch (err) {
+          console.warn('Error during Firestore catalog seeding:', err);
         }
-      } catch (err) {
-        console.warn('Error during Firestore catalog seeding:', err);
-      }
-    }, 1500);
-    return () => clearTimeout(seedTimer);
+      }, 1500);
+      return () => clearTimeout(seedTimer);
+    } catch (err) {
+      console.warn('Error setting up catalog seeding:', err);
+      return undefined;
+    }
   }, [db]);
 
   // Real-time Firestore-driven notifications refs & windowed listener readiness
@@ -670,7 +698,7 @@ function ClinicApp() {
   const [syncRetryCounter, setSyncRetryCounter] = useState(0);
 
   useEffect(() => {
-    if (!db) {
+    if (!supabase) {
       setSyncStatus(supabase && navigator.onLine !== false ? 'connected' : 'offline');
       const handleOnline = () => setSyncStatus(supabase ? 'connected' : 'offline');
       const handleOffline = () => setSyncStatus('offline');
@@ -697,10 +725,10 @@ function ClinicApp() {
     };
 
     const onError = (error: Error) => {
-      console.warn('[Firestore realtime notice]', error.message);
+      console.warn('[Supabase realtime notice]', error.message);
       if (!hasLoadedAny) {
         setSyncStatus('error');
-        setSyncErrorDetails(error.message || 'تعذر الاتصال بـ Firestore أو هناك قيود صلاحيات.');
+        setSyncErrorDetails(error.message || 'تعذر الاتصال بقاعدة البيانات أو هناك قيود صلاحيات.');
       }
     };
 
@@ -777,7 +805,7 @@ function ClinicApp() {
     // Stage secondary catalog and template subscriptions slightly after initial operational render
     let isSubscriptionMounted = true;
     const catalogTimer = setTimeout(() => {
-      if (!db || !isSubscriptionMounted) return;
+      if (!supabase || !isSubscriptionMounted) return;
       unsubscribers.push(
         subscribeToMedications(db, (items) => { onDataSuccess(); if (items) setMedicationsCanonical(items); }, onError),
         subscribeToLabTests(db, (items) => { onDataSuccess(); if (items) setLabTestsCanonical(items); }, onError),
@@ -2325,25 +2353,21 @@ function ClinicApp() {
       visitsCanonical.find((v) => v.queueNumber === targetQueueNum) ||
       visitsCanonical.find((v) => v.visitId === ticket) ||
       visitsCanonical.find((v) => patientsCanonical.find((p) => p.patientId === v.patientId)?.fullName === name);
-    const visitId = targetVisit ? targetVisit.visitId : ticket;
-
-    const alertConfig = loadAlertSettings();
-    if (alertConfig.audioEnabled && alertConfig.callPatientAudio) {
-      playSingleAlertSound('call');
-    }
-    if (alertConfig.visualEnabled && alertConfig.callPatientVisual) {
-      registerAlert({
-        id: `call-${visitId}`,
-        type: 'call',
-        title: 'نداء دخول المريض لغرفة الكشف',
-        message: `تذكرة (${ticket}) — المريض (${name}) يتفضل لغرفة الطبيب للكشف`,
-        ticket,
-        timestamp: formatAppTime(new Date()),
-      });
-      scheduleBannerDismiss(5000, `call-${visitId}`);
-    }
 
     if (!targetVisit) return;
+
+    const callerDoctorId = userProfile?.username || userProfile?.uid;
+    if (!callerDoctorId) {
+      alert('تعذر التحقق من حساب الطبيب المسجل حاليًا قبل بدء الكشف.');
+      return;
+    }
+
+    try {
+      await startVisitTransaction(db, targetVisit.visitId, callerDoctorId);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'تعذر بدء الكشف وتحديث حالة الزيارة في قاعدة البيانات');
+      return;
+    }
 
     const canonicalPat = patientsCanonical.find((p) => p.patientId === targetVisit.patientId);
     const basePatient = patients.find((p) => p.id === targetVisit.patientId);
@@ -2379,17 +2403,25 @@ function ClinicApp() {
     };
     setActiveExamPatient(matchedPatient);
 
-    const callerDoctorId = userProfile?.username || userProfile?.uid;
-    if (db && callerDoctorId) {
-      try {
-        await startVisitTransaction(db, targetVisit.visitId, callerDoctorId);
-      } catch (error) {
-        console.error('startVisit error:', error);
-      }
+    const visitId = targetVisit.visitId;
+    const alertConfig = loadAlertSettings();
+    if (alertConfig.audioEnabled && alertConfig.callPatientAudio) {
+      playSingleAlertSound('call');
+    }
+    if (alertConfig.visualEnabled && alertConfig.callPatientVisual) {
+      registerAlert({
+        id: `call-${visitId}`,
+        type: 'call',
+        title: 'نداء دخول المريض لغرفة الكشف',
+        message: `تذكرة (${ticket}) — المريض (${name}) يتفضل لغرفة الطبيب للكشف`,
+        ticket,
+        timestamp: formatAppTime(new Date()),
+      });
+      scheduleBannerDismiss(5000, `call-${visitId}`);
     }
   };
 
-  // Check in appointment: Firestore transaction atomically commits ARRIVED + Invoice + Payment + Visit
+  // Check in appointment: Supabase RPC transaction atomically commits ARRIVED + Invoice + Payment + Visit
   const handleConfirmCheckIn = async (app: AppointmentListItem, fee: number, method: string = 'نقدي') => {
     const appt = appointmentsCanonical.find((a) => a.appointmentId === app.id);
     if (!appt || appt.status !== 'SCHEDULED') {
@@ -2403,35 +2435,33 @@ function ClinicApp() {
     }
     const paymentMethodEnum = method.includes('فيزا') || method.includes('كارت') ? 'CARD' : method.includes('إنستا') ? 'TRANSFER' : 'CASH';
 
-    if (db) {
-      try {
-        const checkInResult = await checkInAppointmentTransaction({
-          db,
-          appointmentId: appt.appointmentId,
-          paymentAmount: fee,
-          paymentMethod: paymentMethodEnum,
-          receivedBy: userProfile?.username || 'receptionist',
-          receptionistData: { symptoms: app.visitType || 'كشف', chronicDiseases: patient.chronicDiseases || [], notes: '' },
-        });
+    try {
+      const checkInResult = await checkInAppointmentTransaction({
+        db,
+        appointmentId: appt.appointmentId,
+        paymentAmount: fee,
+        paymentMethod: paymentMethodEnum,
+        receivedBy: userProfile?.username || 'receptionist',
+        receptionistData: { symptoms: app.visitType || 'كشف', chronicDiseases: patient.chronicDiseases || [], notes: '' },
+      });
 
-        const alertConfig = loadAlertSettings();
-        if (alertConfig.audioEnabled && alertConfig.newVisitAudio) {
-          playSingleAlertSound('new_visit');
-        }
-        if (alertConfig.visualEnabled && alertConfig.newVisitVisual) {
-          registerAlert({
-            id: `new-${checkInResult.visit.visitId}`,
-            type: 'new_visit',
-            title: 'تسجيل حضور موعد مسبق بالانتظار',
-            message: `تم تأكيد حضور المريض (${patient.fullName}) وتحويله لصالة الانتظار.`,
-            ticket: String(nextFileNumber),
-            timestamp: formatAppTime(new Date()),
-          });
-          scheduleBannerDismiss(5000, `new-${checkInResult.visit.visitId}`);
-        }
-      } catch (error) {
-        alert(error instanceof Error ? error.message : 'فشل تسجيل حضور المريض في قاعدة البيانات');
+      const alertConfig = loadAlertSettings();
+      if (alertConfig.audioEnabled && alertConfig.newVisitAudio) {
+        playSingleAlertSound('new_visit');
       }
+      if (alertConfig.visualEnabled && alertConfig.newVisitVisual) {
+        registerAlert({
+          id: `new-${checkInResult.visit.visitId}`,
+          type: 'new_visit',
+          title: 'تسجيل حضور موعد مسبق بالانتظار',
+          message: `تم تأكيد حضور المريض (${patient.fullName}) وتحويله لصالة الانتظار.`,
+          ticket: String(checkInResult.visit.queueNumber || nextFileNumber),
+          timestamp: formatAppTime(new Date()),
+        });
+        scheduleBannerDismiss(5000, `new-${checkInResult.visit.visitId}`);
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'فشل تسجيل حضور المريض في قاعدة البيانات');
     }
   };
 
@@ -2501,60 +2531,72 @@ function ClinicApp() {
           ? 'TRANSFER'
           : 'CASH';
 
-      if (db) {
-        try {
-          const registeredVisit = await registerWalkInTransaction({
-            db,
-            patient,
-            paymentAmount: item.paidAmount,
-            paymentMethod: paymentMethodEnum,
-            receivedBy: userProfile?.username || 'receptionist',
-            clinicLocationId: 'loc-mohandessin',
-            appointmentId: item.appointmentId || intakeInitialData?.appointmentId || null,
-            receptionistData: { symptoms: item.complaint || '', chronicDiseases: patient.chronicDiseases || [], notes: '' },
-          });
+      try {
+        const registeredVisit = await registerWalkInTransaction({
+          db,
+          patient,
+          paymentAmount: item.paidAmount,
+          paymentMethod: paymentMethodEnum,
+          receivedBy: userProfile?.username || 'receptionist',
+          clinicLocationId: 'loc-mohandessin',
+          appointmentId: item.appointmentId || intakeInitialData?.appointmentId || null,
+          receptionistData: { symptoms: item.complaint || '', chronicDiseases: patient.chronicDiseases || [], notes: '' },
+        });
 
-          // If this intake was initiated from a scheduled appointment, mark the appointment as ARRIVED in Firestore
-          // so it disappears from the active scheduled appointments view across all user accounts
-          const apptIdToMark = item.appointmentId || intakeInitialData?.appointmentId;
-          if (apptIdToMark && db) {
-            try {
-              await setDoc(
-                doc(db, 'appointments', apptIdToMark),
-                { status: 'ARRIVED', updatedAt: timestamp },
-                { merge: true }
-              );
-            } catch (apptErr) {
-              console.warn('Could not update appointment status to ARRIVED:', apptErr);
+        // If this intake was initiated from a scheduled appointment, mark the appointment as ARRIVED in Supabase
+        // so it disappears from the active scheduled appointments view across all user accounts
+        const apptIdToMark = item.appointmentId || intakeInitialData?.appointmentId;
+        if (apptIdToMark) {
+          if (!supabase) {
+            throw new Error('قاعدة البيانات غير متصلة لتحديث حالة الموعد المرتبط.');
+          }
+          const { data: apptRow, error: apptFetchErr } = await supabase
+            .from('appointments')
+            .select('data')
+            .eq('clinic_id', clinicId)
+            .eq('id', apptIdToMark)
+            .maybeSingle();
+          if (apptFetchErr) {
+            throw new Error(`تعذر قراءة بيانات الموعد المرتبط: ${apptFetchErr.message}`);
+          }
+          if (apptRow?.data) {
+            const mergedAppt = { ...(apptRow.data as Record<string, unknown>), status: 'ARRIVED', updatedAt: timestamp };
+            const { error: apptUpdateErr } = await supabase
+              .from('appointments')
+              .update({ data: mergedAppt, updated_at: timestamp })
+              .eq('clinic_id', clinicId)
+              .eq('id', apptIdToMark);
+            if (apptUpdateErr) {
+              throw new Error(`تعذر تحديث حالة الموعد المرتبط: ${apptUpdateErr.message}`);
             }
           }
-          setIntakeInitialData(null);
-
-          const alertConfig = loadAlertSettings();
-          if (alertConfig.audioEnabled && alertConfig.newVisitAudio) {
-            playSingleAlertSound('new_visit');
-          }
-          if (alertConfig.visualEnabled && alertConfig.newVisitVisual) {
-            registerAlert({
-              id: `new-${registeredVisit.visitId}`,
-              type: 'new_visit',
-              title: 'تسجيل كشف وزيارة جديدة',
-              message: `تم تسجيل المريض (${item.patientName}) في قائمة الانتظار بنجاح.`,
-              ticket: String(item.ticketNumber || nextFileNumber),
-              timestamp: formatAppTime(new Date()),
-            });
-            scheduleBannerDismiss(5000, `new-${registeredVisit.visitId}`);
-          }
-        } catch (error) {
-          alert(error instanceof Error ? error.message : 'فشل إضافة المريض للانتظار في قاعدة البيانات');
         }
+        setIntakeInitialData(null);
+
+        const alertConfig = loadAlertSettings();
+        if (alertConfig.audioEnabled && alertConfig.newVisitAudio) {
+          playSingleAlertSound('new_visit');
+        }
+        if (alertConfig.visualEnabled && alertConfig.newVisitVisual) {
+          registerAlert({
+            id: `new-${registeredVisit.visitId}`,
+            type: 'new_visit',
+            title: 'تسجيل كشف وزيارة جديدة',
+            message: `تم تسجيل المريض (${item.patientName}) في قائمة الانتظار بنجاح.`,
+            ticket: String(registeredVisit.queueNumber || item.ticketNumber || nextFileNumber),
+            timestamp: formatAppTime(new Date()),
+          });
+          scheduleBannerDismiss(5000, `new-${registeredVisit.visitId}`);
+        }
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'فشل إضافة المريض للانتظار في قاعدة البيانات');
       }
     } finally {
       inFlightActionsRef.current.delete(lockKey);
     }
   };
 
-  // Add scheduled appointment: Patient first, then Appointment in one Firestore transaction
+  // Add scheduled appointment: Patient first, then Appointment in one Supabase RPC transaction
   const handleAddAppointment = async (app: AppointmentListItem) => {
     const apptId = app.appointmentId || app.id;
     if (apptId && appointmentsCanonical.some((a) => a.appointmentId === apptId)) {
@@ -2608,19 +2650,17 @@ function ClinicApp() {
         updatedAt: timestamp,
         createdBy: userProfile?.username || 'receptionist',
       };
-      if (db) {
-        try {
-          await createAppointmentTransaction({ db, patient: patientToSave, appointment: newApp });
-        } catch (error) {
-          alert(error instanceof Error ? error.message : 'تعذر حفظ الموعد في قاعدة البيانات');
-        }
+      try {
+        await createAppointmentTransaction({ db, patient: patientToSave, appointment: newApp });
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'تعذر حفظ الموعد في قاعدة البيانات');
       }
     } finally {
       inFlightActionsRef.current.delete(lockKey);
     }
   };
 
-  // Finish examination: ATOMIC COMPLETE VISIT WORKFLOW (UI Action -> Firestore Complete Visit -> onSnapshot -> UI)
+  // Finish examination: ATOMIC COMPLETE VISIT WORKFLOW (UI Action -> Supabase Complete Visit -> Realtime -> UI)
   const handleFinishExam = async (examData?: {
     prescriptionItems: PrescriptionItem[];
     labOrders: LabOrderItem[];
@@ -2653,84 +2693,88 @@ function ClinicApp() {
       visitsCanonical.find((v) => v.status === 'IN_PROGRESS') ||
       visitsCanonical.find((v) => v.status === 'WAITING');
 
+    if (!activeWaiting) {
+      alert('لا توجد زيارة نشطة لهذا المريض في طابور الانتظار لحفظ الكشف عليها.');
+      return;
+    }
+
     const rxItems = examData ? examData.prescriptionItems : activePrescription;
 
-    // Sync to Firestore if db is available
-    if (activeWaiting && db) {
-      const rxSnapshots: PrescriptionItemSnapshot[] = rxItems.map((item) => ({
-        name: item.drugName,
-        strength: item.scientificName || '',
-        form: item.dosageForm || '',
-        dose: item.dosage || '',
-        frequency: item.timing || item.dosage || '',
-        duration: item.duration || '',
-        instructions: item.notes?.trim() || (item as any).dosageInstructions?.trim() || '',
-      }));
+    const rxSnapshots: PrescriptionItemSnapshot[] = rxItems.map((item) => ({
+      name: item.drugName,
+      strength: item.scientificName || '',
+      form: item.dosageForm || '',
+      dose: item.dosage || '',
+      frequency: item.timing || item.dosage || '',
+      duration: item.duration || '',
+      instructions: item.notes?.trim() || (item as any).dosageInstructions?.trim() || '',
+    }));
 
-      const clinicalData = {
-        chiefComplaint:
-          examData?.chiefComplaint !== undefined
-            ? examData.chiefComplaint
-            : (activeWaiting.receptionistData?.symptoms || activeExamPatient?.chiefComplaint || ''),
-        history: examData?.history ?? '',
-        examination: examData?.examination ?? '',
-        diagnosis: diagnosisStrings,
-        treatment: rxItems.map((p) => p.drugName).join(' + '),
-      };
+    const clinicalData = {
+      chiefComplaint:
+        examData?.chiefComplaint !== undefined
+          ? examData.chiefComplaint
+          : (activeWaiting.receptionistData?.symptoms || activeExamPatient?.chiefComplaint || ''),
+      history: examData?.history ?? '',
+      examination: examData?.examination ?? '',
+      diagnosis: diagnosisStrings,
+      treatment: rxItems.map((p) => p.drugName).join(' + '),
+    };
 
-      const vitalSigns = examData?.vitals
-        ? vitalsToVisit(examData.vitals)
-        : (activeWaiting.vitalSigns || {});
+    const vitalSigns = examData?.vitals
+      ? vitalsToVisit(examData.vitals)
+      : (activeWaiting.vitalSigns || {});
 
-      try {
-        await completeVisitTransaction({
-          db,
-          visitId: activeWaiting.visitId,
-          doctorId: resolvedDoctorId,
-          clinicalData,
-          vitalSigns,
-          prescriptionItems: rxSnapshots,
-          prescriptionNotes: examData?.lifestyleAdvice ?? '',
-          labOrders: examData?.labOrders?.map((l) => {
-            const hasResult = !!(l.resultValue && l.resultValue.trim());
-            const isReport = l.status === 'REPORT';
-            const isResult = l.status === 'RESULT' || hasResult;
-            const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
-            return {
-              testId: l.labTestId || null,
-              testName: l.testName,
-              status: resolvedStatus,
-              result: l.resultValue || '',
-              notes: l.instructions || l.reportNotes || '',
-            };
-          }),
-          radiologyOrders: examData?.radiologyOrders?.map((r) => {
-            const hasReport = !!(r.reportDetails && r.reportDetails.trim());
-            const hasResult = !!(r.resultSummary && r.resultSummary.trim());
-            const isReport = r.status === 'REPORT' || hasReport;
-            const isResult = r.status === 'RESULT' || hasResult;
-            const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
-            return {
-              radiologyTypeId: r.radiologyId || null,
-              radiologyName: r.name,
-              status: resolvedStatus,
-              result: r.resultSummary || r.reportDetails || '',
-              report: r.reportDetails || '',
-              notes: r.notes || '',
-            };
-          }),
-          followUp: examData?.followupDate ? {
-            scheduledDate: examData.followupDate,
-            fee: 0,
-            isFree: true,
-            notes: examData.lifestyleAdvice || '',
-          } : undefined,
-        });
-      } catch (error) {
-        console.warn('Firestore sync notice:', error);
-      }
-      invalidatePatientHistory(activeWaiting?.patientId || activeExamPatient?.id);
+    try {
+      await completeVisitTransaction({
+        db,
+        visitId: activeWaiting.visitId,
+        doctorId: resolvedDoctorId,
+        clinicalData,
+        vitalSigns,
+        prescriptionItems: rxSnapshots,
+        prescriptionNotes: examData?.lifestyleAdvice ?? '',
+        labOrders: examData?.labOrders?.map((l) => {
+          const hasResult = !!(l.resultValue && l.resultValue.trim());
+          const isReport = l.status === 'REPORT';
+          const isResult = l.status === 'RESULT' || hasResult;
+          const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
+          return {
+            testId: l.labTestId || null,
+            testName: l.testName,
+            status: resolvedStatus,
+            result: l.resultValue || '',
+            notes: l.instructions || l.reportNotes || '',
+          };
+        }),
+        radiologyOrders: examData?.radiologyOrders?.map((r) => {
+          const hasReport = !!(r.reportDetails && r.reportDetails.trim());
+          const hasResult = !!(r.resultSummary && r.resultSummary.trim());
+          const isReport = r.status === 'REPORT' || hasReport;
+          const isResult = r.status === 'RESULT' || hasResult;
+          const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
+          return {
+            radiologyTypeId: r.radiologyId || null,
+            radiologyName: r.name,
+            status: resolvedStatus,
+            result: r.resultSummary || r.reportDetails || '',
+            report: r.reportDetails || '',
+            notes: r.notes || '',
+          };
+        }),
+        followUp: examData?.followupDate ? {
+          scheduledDate: examData.followupDate,
+          fee: 0,
+          isFree: true,
+          notes: examData.lifestyleAdvice || '',
+        } : undefined,
+      });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
+      return;
     }
+
+    invalidatePatientHistory(activeWaiting.patientId || activeExamPatient?.id);
 
     // Play chime & show alert notification
     const alertConfig = loadAlertSettings();
@@ -2738,13 +2782,13 @@ function ClinicApp() {
       playSingleAlertSound('finish');
     }
     if (alertConfig.visualEnabled && alertConfig.finishExamVisual) {
-      const visitId = activeWaiting?.visitId || activeExamPatient?.id || 'exam';
+      const visitId = activeWaiting.visitId || activeExamPatient?.id || 'exam';
       registerAlert({
         id: `finish-${visitId}`,
         type: 'finish',
         title: 'إشعار السكرتارية: انتهاء الكشف الطبي',
         message: `تم الانتهاء من كشف المريض (${activeExamPatient?.name || 'المريض'}) واعتماد الروشتة. العيادة جاهزة لاستقبال المريض التالي.`,
-        ticket: String(activeWaiting?.queueNumber || ''),
+        ticket: String(activeWaiting.queueNumber || ''),
         timestamp: formatAppTime(new Date()),
       });
       scheduleBannerDismiss(6000, `finish-${visitId}`);
