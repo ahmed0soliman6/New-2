@@ -2810,11 +2810,11 @@ function ClinicApp() {
     chiefComplaint?: string;
     examination?: string;
     history?: string;
-  }) => {
+  }): Promise<boolean> => {
     const resolvedDoctorId = userProfile?.username || userProfile?.uid;
     if (!resolvedDoctorId) {
       alert('تعذر التحقق من حساب الطبيب المسجل حاليًا. يرجى إعادة تسجيل الدخول قبل إنهاء الكشف.');
-      return;
+      return false;
     }
 
     const diagnosisStrings = (examData?.diagnoses || [])
@@ -2823,114 +2823,174 @@ function ClinicApp() {
 
     if (diagnosisStrings.length === 0) {
       alert('يرجى إدخال أو اختيار تشخيص طبي واحد على الأقل قبل إنهاء الكشف وحفظ الزيارة.');
-      return;
+      return false;
     }
 
+    const todayStr = new Date().toISOString().split('T')[0];
     const activeWaiting = activeExamPatient?.id
       ? visitsCanonical.find(
           (v) => v.patientId === activeExamPatient.id && (v.status === 'IN_PROGRESS' || v.status === 'WAITING')
+        ) ||
+        visitsCanonical.find(
+          (v) => v.patientId === activeExamPatient.id && v.status === 'COMPLETED' && v.dayKey === todayStr
         )
       : undefined;
 
     if (!activeWaiting) {
       alert('لا توجد زيارة نشطة لهذا المريض في طابور الانتظار لحفظ الكشف عليها. يرجى تسجيل زيارة للمريض أولاً.');
-      return;
+      return false;
     }
 
-    const rxItems = examData ? examData.prescriptionItems : activePrescription;
-
-    const rxSnapshots: PrescriptionItemSnapshot[] = rxItems.map((item) => ({
-      name: item.drugName,
-      strength: item.scientificName || '',
-      form: item.dosageForm || '',
-      dose: item.dosage || '',
-      frequency: item.timing || item.dosage || '',
-      duration: item.duration || '',
-      instructions: item.notes?.trim() || (item as any).dosageInstructions?.trim() || '',
-    }));
-
-    const clinicalData = {
-      chiefComplaint:
-        examData?.chiefComplaint !== undefined
-          ? examData.chiefComplaint
-          : (activeWaiting.receptionistData?.symptoms || activeExamPatient?.chiefComplaint || ''),
-      history: examData?.history ?? '',
-      examination: examData?.examination ?? '',
-      diagnosis: diagnosisStrings,
-      treatment: rxItems.map((p) => p.drugName).join(' + '),
-    };
-
-    const vitalSigns = examData?.vitals
-      ? vitalsToVisit(examData.vitals)
-      : (activeWaiting.vitalSigns || {});
+    const lockKey = `finish-exam:${activeWaiting.visitId}`;
+    if (inFlightActionsRef.current.has(lockKey)) {
+      return false;
+    }
+    inFlightActionsRef.current.add(lockKey);
 
     try {
-      await completeVisitTransaction({
-        db,
-        visitId: activeWaiting.visitId,
-        doctorId: resolvedDoctorId,
-        clinicalData,
-        vitalSigns,
-        prescriptionItems: rxSnapshots,
-        prescriptionNotes: examData?.lifestyleAdvice ?? '',
-        labOrders: examData?.labOrders?.map((l) => {
-          const hasResult = !!(l.resultValue && l.resultValue.trim());
-          const isReport = l.status === 'REPORT';
-          const isResult = l.status === 'RESULT' || hasResult;
-          const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
-          return {
-            testId: l.labTestId || null,
-            testName: l.testName,
-            status: resolvedStatus,
-            result: l.resultValue || '',
-            notes: l.instructions || l.reportNotes || '',
-          };
-        }),
-        radiologyOrders: examData?.radiologyOrders?.map((r) => {
-          const hasReport = !!(r.reportDetails && r.reportDetails.trim());
-          const hasResult = !!(r.resultSummary && r.resultSummary.trim());
-          const isReport = r.status === 'REPORT' || hasReport;
-          const isResult = r.status === 'RESULT' || hasResult;
-          const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
-          return {
-            radiologyTypeId: r.radiologyId || null,
-            radiologyName: r.name,
-            status: resolvedStatus,
-            result: r.resultSummary || r.reportDetails || '',
-            report: r.reportDetails || '',
-            notes: r.notes || '',
-          };
-        }),
-        followUp: examData?.followupDate ? {
-          scheduledDate: examData.followupDate,
-          fee: 0,
-          isFree: true,
-          notes: examData.lifestyleAdvice || '',
-        } : undefined,
-      });
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
-      return;
-    }
+      const isAlreadyCompleted = activeWaiting.status === 'COMPLETED';
+      const rxItems = examData ? examData.prescriptionItems : activePrescription;
 
-    invalidatePatientHistory(activeWaiting.patientId || activeExamPatient?.id);
+      const rxSnapshots: PrescriptionItemSnapshot[] = rxItems.map((item) => ({
+        name: item.drugName,
+        strength: item.scientificName || '',
+        form: item.dosageForm || '',
+        dose: item.dosage || '',
+        frequency: item.timing || item.dosage || '',
+        duration: item.duration || '',
+        instructions: item.notes?.trim() || (item as any).dosageInstructions?.trim() || '',
+      }));
 
-    // Play chime & show alert notification
-    const alertConfig = loadAlertSettings();
-    if (alertConfig.audioEnabled && alertConfig.finishExamAudio) {
-      playSingleAlertSound('finish');
-    }
-    if (alertConfig.visualEnabled && alertConfig.finishExamVisual) {
-      const visitId = activeWaiting.visitId || activeExamPatient?.id || 'exam';
-      registerAlert({
-        id: `finish-${visitId}`,
-        type: 'finish',
-        title: 'إشعار السكرتارية: انتهاء الكشف الطبي',
-        message: `تم الانتهاء من كشف المريض (${activeExamPatient?.name || 'المريض'}) واعتماد الروشتة. العيادة جاهزة لاستقبال المريض التالي.`,
-        ticket: String(activeWaiting.queueNumber || ''),
-        timestamp: formatAppTime(new Date()),
+      const clinicalData = {
+        chiefComplaint:
+          examData?.chiefComplaint !== undefined
+            ? examData.chiefComplaint
+            : (activeWaiting.receptionistData?.symptoms || activeExamPatient?.chiefComplaint || ''),
+        history: examData?.history ?? '',
+        examination: examData?.examination ?? '',
+        diagnosis: diagnosisStrings,
+        treatment: rxItems.map((p) => p.drugName).join(' + '),
+      };
+
+      const vitalSigns = examData?.vitals
+        ? vitalsToVisit(examData.vitals)
+        : (activeWaiting.vitalSigns || {});
+
+      let savedResult: Awaited<ReturnType<typeof completeVisitTransaction>>;
+      try {
+        savedResult = await completeVisitTransaction({
+          db,
+          visitId: activeWaiting.visitId,
+          doctorId: resolvedDoctorId,
+          clinicalData,
+          vitalSigns,
+          prescriptionItems: rxSnapshots,
+          prescriptionNotes: examData?.lifestyleAdvice ?? '',
+          labOrders: examData?.labOrders?.map((l) => {
+            const hasResult = !!(l.resultValue && l.resultValue.trim());
+            const isReport = l.status === 'REPORT';
+            const isResult = l.status === 'RESULT' || hasResult;
+            const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
+            return {
+              testId: l.labTestId || null,
+              testName: l.testName,
+              status: resolvedStatus,
+              result: l.resultValue || '',
+              notes: l.instructions || l.reportNotes || '',
+            };
+          }),
+          radiologyOrders: examData?.radiologyOrders?.map((r) => {
+            const hasReport = !!(r.reportDetails && r.reportDetails.trim());
+            const hasResult = !!(r.resultSummary && r.resultSummary.trim());
+            const isReport = r.status === 'REPORT' || hasReport;
+            const isResult = r.status === 'RESULT' || hasResult;
+            const resolvedStatus: OrderStatus = isReport ? 'REPORT' : isResult ? 'RESULT' : 'ORDERED';
+            return {
+              radiologyTypeId: r.radiologyId || null,
+              radiologyName: r.name,
+              status: resolvedStatus,
+              result: r.resultSummary || r.reportDetails || '',
+              report: r.reportDetails || '',
+              notes: r.notes || '',
+            };
+          }),
+          followUp: examData?.followupDate ? {
+            scheduledDate: examData.followupDate,
+            fee: 0,
+            isFree: true,
+            notes: examData.lifestyleAdvice || '',
+          } : undefined,
+        });
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
+        return false;
+      }
+
+      const targetVisitId = savedResult.visitId || activeWaiting.visitId;
+      const savedAt = savedResult.timestamp;
+
+      // Immediately synchronize canonical state in memory to prevent duplicate records or stale queue status
+      setVisitsCanonical((prev) =>
+        prev.map((v) =>
+          v.visitId === targetVisitId
+            ? {
+                ...v,
+                status: 'COMPLETED',
+                doctorId: resolvedDoctorId,
+                clinicalData,
+                vitalSigns,
+                completedAt: savedAt,
+                updatedAt: savedAt,
+              }
+            : v
+        )
+      );
+
+      setPrescriptionsCanonical((prev) => {
+        const withoutVisit = prev.filter((rx) => rx.visitId !== targetVisitId);
+        return savedResult.prescriptionPayload ? [savedResult.prescriptionPayload, ...withoutVisit] : withoutVisit;
       });
-      scheduleBannerDismiss(6000, `finish-${visitId}`);
+
+      setLabOrdersCanonical((prev) => {
+        const withoutVisit = prev.filter((ord) => ord.visitId !== targetVisitId);
+        return [...savedResult.labOrdersPayload, ...withoutVisit];
+      });
+
+      setRadiologyOrdersCanonical((prev) => {
+        const withoutVisit = prev.filter((ord) => ord.visitId !== targetVisitId);
+        return [...savedResult.radiologyOrdersPayload, ...withoutVisit];
+      });
+
+      setFollowUpsCanonical((prev) => {
+        const withoutVisit = prev.filter((fol) => fol.sourceVisitId !== targetVisitId);
+        return savedResult.followUpPayload ? [savedResult.followUpPayload, ...withoutVisit] : withoutVisit;
+      });
+
+      invalidatePatientHistory(activeWaiting.patientId || activeExamPatient?.id);
+
+      // Play chime & show alert notification only on initial completion
+      if (!isAlreadyCompleted) {
+        const alertConfig = loadAlertSettings();
+        if (alertConfig.audioEnabled && alertConfig.finishExamAudio) {
+          playSingleAlertSound('finish');
+        }
+        if (alertConfig.visualEnabled && alertConfig.finishExamVisual) {
+          const visitId = activeWaiting.visitId || activeExamPatient?.id || 'exam';
+          registerAlert({
+            id: `finish-${visitId}`,
+            type: 'finish',
+            title: 'إشعار السكرتارية: انتهاء الكشف الطبي',
+            message: `تم الانتهاء من كشف المريض (${activeExamPatient?.name || 'المريض'}) واعتماد الروشتة. العيادة جاهزة لاستقبال المريض التالي.`,
+            ticket: String(activeWaiting.queueNumber || ''),
+            timestamp: formatAppTime(new Date()),
+          });
+          scheduleBannerDismiss(6000, `finish-${visitId}`);
+        }
+      }
+
+      return true;
+    } finally {
+      inFlightActionsRef.current.delete(lockKey);
     }
   };
 

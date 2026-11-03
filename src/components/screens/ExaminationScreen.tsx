@@ -84,7 +84,7 @@ interface ExaminationScreenProps {
     chiefComplaint?: string;
     examination?: string;
     history?: string;
-  }) => void;
+  }) => Promise<boolean | void> | boolean | void;
 
   // Catalogs and handlers
   radiologyCatalog: RadiologyCatalogItem[];
@@ -749,8 +749,10 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
   const { assertPermission, canAccess, role, userProfile } = usePermissions();
   const isAllowed = canAccess('clinical-exam');
   const [isExamFinished, setIsExamFinished] = useState(false);
+  const [isSavingExam, setIsSavingExam] = useState(false);
 
-  const handleFinish = () => {
+  const handleFinish = async () => {
+    if (isSavingExam) return;
     if (!isAllowed) {
       alert('غير مصرح لك بإنهاء الكشف الطبي أو حفظ الزيارة.');
       return;
@@ -764,18 +766,8 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
     }
     try {
       assertPermission('clinical.complete', 'إنهاء الكشف وحفظ الزيارة');
-      setIsExamFinished(true);
-      recordExamToClinicalMemory({
-        prescriptionItems: activePrescription,
-        labOrders,
-        radiologyOrders,
-        diagnoses: patientDiagnoses,
-        lifestyleAdvice,
-      });
-      if (patient?.id) {
-        invalidatePatientHistory(patient.id);
-      }
-      onFinishExam({
+      setIsSavingExam(true);
+      const savedOk = await onFinishExam({
         prescriptionItems: activePrescription,
         labOrders,
         radiologyOrders,
@@ -787,6 +779,20 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
         examination: physicalExam.trim(),
         history: '',
       });
+      if (savedOk === false) {
+        return;
+      }
+      setIsExamFinished(true);
+      recordExamToClinicalMemory({
+        prescriptionItems: activePrescription,
+        labOrders,
+        radiologyOrders,
+        diagnoses: patientDiagnoses,
+        lifestyleAdvice,
+      });
+      if (patient?.id) {
+        invalidatePatientHistory(patient.id);
+      }
       setShowSuccessModal(true);
       setTimeout(() => {
         setShowSuccessModal(false);
@@ -797,6 +803,8 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
       }, 1600);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ليس لديك صلاحية لإنهاء الكشف.');
+    } finally {
+      setIsSavingExam(false);
     }
   };
 
@@ -1955,23 +1963,37 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
           <div className="flex items-center gap-2 w-full sm:w-auto">
             {/* Finish or Next Patient Button */}
             {isExamFinished ? (
-              <button
-                type="button"
-                onClick={() => onNavigate('waiting-queue')}
-                className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95"
-              >
-                <span className="material-symbols-outlined text-lg">arrow_forward</span>
-                <span>المريض التالي (الانتظار)</span>
-              </button>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <PermissionGate permission="clinical.complete">
+                  <button
+                    type="button"
+                    disabled={isSavingExam}
+                    onClick={() => { void handleFinish(); }}
+                    className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-slate-100 dark:bg-[#18233C] hover:bg-slate-200 dark:hover:bg-[#242a38] text-slate-800 dark:text-[#dde2f5] text-xs sm:text-sm font-bold border border-slate-200 dark:border-white/10 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
+                  >
+                    <span className="material-symbols-outlined text-lg">save</span>
+                    <span>{isSavingExam ? 'جاري الحفظ...' : 'حفظ التعديلات'}</span>
+                  </button>
+                </PermissionGate>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('waiting-queue')}
+                  className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95"
+                >
+                  <span className="material-symbols-outlined text-lg">arrow_forward</span>
+                  <span>المريض التالي (الانتظار)</span>
+                </button>
+              </div>
             ) : (
               <PermissionGate permission="clinical.complete">
                 <button
                   type="button"
-                  onClick={handleFinish}
-                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95"
+                  disabled={isSavingExam}
+                  onClick={() => { void handleFinish(); }}
+                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
                 >
                   <span className="material-symbols-outlined text-lg">task_alt</span>
-                  <span>إنهاء الكشف وحفظ الزيارة</span>
+                  <span>{isSavingExam ? 'جاري الحفظ...' : 'إنهاء الكشف وحفظ الزيارة'}</span>
                 </button>
               </PermissionGate>
             )}

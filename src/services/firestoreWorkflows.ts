@@ -248,7 +248,7 @@ export async function completeVisitTransaction(params: {
     report?: string;
   }>;
   followUp?: { scheduledDate: string; fee: number; isFree: boolean; notes: string } | null;
-}): Promise<void> {
+}) {
   const client = requireDb();
   const timestamp = now();
   const day = todayKey();
@@ -269,15 +269,16 @@ export async function completeVisitTransaction(params: {
 
   const visitData = visitRow.data as Visit;
   const clinicLocationId = visitData.clinicLocationId || null;
+  const resolvedVisitId = visitData.visitId || params.visitId;
 
   const prescriptionPayload =
     params.prescriptionItems && params.prescriptionItems.length > 0
       ? (() => {
-          const rxId = id('rx');
+          const rxId = `rx-${resolvedVisitId}`;
           return removeUndefined({
             prescriptionId: rxId,
             patientId: visitData.patientId,
-            visitId: visitData.visitId || params.visitId,
+            visitId: resolvedVisitId,
             doctorId: params.doctorId,
             clinicLocationId,
             items: params.prescriptionItems,
@@ -291,13 +292,13 @@ export async function completeVisitTransaction(params: {
 
   const labOrdersPayload =
     params.labOrders && params.labOrders.length > 0
-      ? params.labOrders.map((lab) => {
-          const labOrderId = id('lab-ord');
+      ? params.labOrders.map((lab, idx) => {
+          const labOrderId = `lab-ord-${resolvedVisitId}-${idx + 1}`;
           const resolvedStatus = lab.status || (lab.result ? 'RESULT' : 'ORDERED');
           return removeUndefined({
             labOrderId,
             patientId: visitData.patientId,
-            visitId: visitData.visitId || params.visitId,
+            visitId: resolvedVisitId,
             testId: lab.testId || null,
             testName: lab.testName,
             status: resolvedStatus,
@@ -312,13 +313,13 @@ export async function completeVisitTransaction(params: {
 
   const radiologyOrdersPayload =
     params.radiologyOrders && params.radiologyOrders.length > 0
-      ? params.radiologyOrders.map((rad) => {
-          const radOrderId = id('rad-ord');
+      ? params.radiologyOrders.map((rad, idx) => {
+          const radOrderId = `rad-ord-${resolvedVisitId}-${idx + 1}`;
           const resolvedStatus = rad.status || (rad.report ? 'REPORT' : rad.result ? 'RESULT' : 'ORDERED');
           return removeUndefined({
             radiologyOrderId: radOrderId,
             patientId: visitData.patientId,
-            visitId: visitData.visitId || params.visitId,
+            visitId: resolvedVisitId,
             radiologyTypeId: rad.radiologyTypeId || null,
             radiologyName: rad.radiologyName,
             status: resolvedStatus,
@@ -334,15 +335,15 @@ export async function completeVisitTransaction(params: {
 
   const followUpPayload = params.followUp
     ? (() => {
-        const followUpId = id('fol');
+        const followUpId = `fol-${resolvedVisitId}`;
         return removeUndefined({
           followUpId,
           patientId: visitData.patientId,
-          sourceVisitId: visitData.visitId || params.visitId,
+          sourceVisitId: resolvedVisitId,
           clinicLocationId,
           scheduledDate: params.followUp.scheduledDate,
           scheduledTime: null,
-          status: 'UPCOMING',
+          status: 'UPCOMING' as const,
           fee: params.followUp.fee,
           isFree: params.followUp.isFree,
           notes: params.followUp.notes || '',
@@ -352,6 +353,14 @@ export async function completeVisitTransaction(params: {
         });
       })()
     : null;
+
+  // Clean up any previous clinical records linked to this visit before upserting updated records
+  await Promise.all([
+    client.from('prescriptions').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+    client.from('lab_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+    client.from('radiology_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+    client.from('follow_ups').delete().eq('clinic_id', clinicId).eq('data->>sourceVisitId', resolvedVisitId),
+  ]);
 
   const { error } = await client.rpc('complete_visit', {
     p_clinic_id: clinicId,
@@ -369,7 +378,17 @@ export async function completeVisitTransaction(params: {
   if (error) {
     throw toArabicError(error, 'تعذر حفظ بيانات الكشف والروشتة في قاعدة البيانات');
   }
+
   notifyTableMutated(['visits', 'patients', 'prescriptions', 'lab_orders', 'radiology_orders', 'follow_ups'], false);
+
+  return {
+    visitId: resolvedVisitId,
+    timestamp,
+    prescriptionPayload,
+    labOrdersPayload,
+    radiologyOrdersPayload,
+    followUpPayload,
+  };
 }
 
 export async function createAppointmentTransaction(params: {

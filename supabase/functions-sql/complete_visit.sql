@@ -97,7 +97,11 @@ begin
        and id = v_patient_id;
   end if;
 
-  -- 6. Insert prescription if provided
+  -- 6. Replace prescription for this visit
+  delete from public.prescriptions
+   where clinic_id = p_clinic_id
+     and data->>'visitId' = p_visit_id;
+
   if p_prescription is not null and (p_prescription->>'prescriptionId') is not null then
     insert into public.prescriptions (clinic_id, id, data)
     values (
@@ -110,7 +114,11 @@ begin
           updated_at = now();
   end if;
 
-  -- 7. Insert lab orders if provided
+  -- 7. Replace lab orders for this visit
+  delete from public.lab_orders
+   where clinic_id = p_clinic_id
+     and data->>'visitId' = p_visit_id;
+
   if p_lab_orders is not null and jsonb_typeof(p_lab_orders) = 'array' then
     for v_item in select * from jsonb_array_elements(p_lab_orders)
     loop
@@ -128,7 +136,11 @@ begin
     end loop;
   end if;
 
-  -- 8. Insert radiology orders if provided
+  -- 8. Replace radiology orders for this visit
+  delete from public.radiology_orders
+   where clinic_id = p_clinic_id
+     and data->>'visitId' = p_visit_id;
+
   if p_radiology_orders is not null and jsonb_typeof(p_radiology_orders) = 'array' then
     for v_item in select * from jsonb_array_elements(p_radiology_orders)
     loop
@@ -146,7 +158,11 @@ begin
     end loop;
   end if;
 
-  -- 9. Insert follow-up if provided
+  -- 9. Replace follow-up for this visit
+  delete from public.follow_ups
+   where clinic_id = p_clinic_id
+     and data->>'sourceVisitId' = p_visit_id;
+
   if p_follow_up is not null and (p_follow_up->>'followUpId') is not null then
     insert into public.follow_ups (clinic_id, id, data)
     values (
