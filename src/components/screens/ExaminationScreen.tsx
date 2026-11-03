@@ -1951,12 +1951,14 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
       {/* Floating Bottom Action Bar */}
       <div className={`fixed bottom-0 ${isRTL ? 'right-0 lg:right-72 left-0' : 'left-0 lg:left-72 right-0'} z-40 bg-white/95 dark:bg-[#080e1b]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/10 p-3 sm:p-4 shadow-2xl transition-all`}>
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-3 text-right w-full sm:w-auto">
+          <div className="flex items-center gap-3 text-start w-full sm:w-auto">
             <span className="text-xs font-bold text-slate-800 dark:text-[#dde2f5] shrink-0">
-              {isExamFinished ? '✅ الكشف مكتمل ومعتمد:' : 'جلسة الكشف الحالية:'}
+              {isExamFinished
+                ? (language === 'en' ? '✅ Exam Completed & Approved:' : '✅ الكشف مكتمل ومعتمد:')
+                : (language === 'en' ? 'Current Exam Session:' : 'جلسة الكشف الحالية:')}
             </span>
             <span className="text-xs text-slate-500 dark:text-[#859394] truncate">
-              {patient?.name || 'كشف حر'} • {patientDiagnoses.find((d) => d.isPrimary)?.nameAr || 'في انتظار اختيار التشخيص'}
+              {patient?.name || (language === 'en' ? 'Walk-in Exam' : 'كشف حر')} • {patientDiagnoses.find((d) => d.isPrimary)?.nameAr || (language === 'en' ? 'Awaiting diagnosis selection' : 'في انتظار اختيار التشخيص')}
             </span>
           </div>
 
@@ -1972,7 +1974,7 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
                     className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-slate-100 dark:bg-[#18233C] hover:bg-slate-200 dark:hover:bg-[#242a38] text-slate-800 dark:text-[#dde2f5] text-xs sm:text-sm font-bold border border-slate-200 dark:border-white/10 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
                   >
                     <span className="material-symbols-outlined text-lg">save</span>
-                    <span>{isSavingExam ? 'جاري الحفظ...' : 'حفظ التعديلات'}</span>
+                    <span>{isSavingExam ? (language === 'en' ? 'Saving...' : 'جاري الحفظ...') : (language === 'en' ? 'Save Changes' : 'حفظ التعديلات')}</span>
                   </button>
                 </PermissionGate>
                 <button
@@ -1981,7 +1983,7 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
                   className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95"
                 >
                   <span className="material-symbols-outlined text-lg">arrow_forward</span>
-                  <span>المريض التالي (الانتظار)</span>
+                  <span>{language === 'en' ? 'Next Patient (Queue)' : 'المريض التالي (الانتظار)'}</span>
                 </button>
               </div>
             ) : (
@@ -1993,7 +1995,7 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
                   className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-6 py-3 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 text-xs sm:text-sm font-bold shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
                 >
                   <span className="material-symbols-outlined text-lg">task_alt</span>
-                  <span>{isSavingExam ? 'جاري الحفظ...' : 'إنهاء الكشف وحفظ الزيارة'}</span>
+                  <span>{isSavingExam ? (language === 'en' ? 'Saving...' : 'جاري الحفظ...') : (language === 'en' ? 'Complete Exam & Save Visit' : 'إنهاء الكشف وحفظ الزيارة')}</span>
                 </button>
               </PermissionGate>
             )}

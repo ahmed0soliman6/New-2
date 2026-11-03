@@ -382,13 +382,13 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                 handleQuickAdd();
               }
             }}
-            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 pr-11 pl-28 rounded-xl border border-slate-200 dark:border-white/10 focus:border-[#00c2cb] focus:outline-none focus:ring-2 focus:ring-[#00c2cb]/20 font-bold transition-all"
+            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 ltr:pl-11 ltr:pr-32 rtl:pr-11 rtl:pl-32 rounded-xl border border-slate-200 dark:border-white/10 focus:border-[#00c2cb] focus:outline-none focus:ring-2 focus:ring-[#00c2cb]/20 font-bold transition-all text-start"
           />
-          <span className="material-symbols-outlined absolute right-3.5 top-3.5 text-teal-600 dark:text-[#00c2cb] text-xl">
+          <span className="material-symbols-outlined absolute ltr:left-3.5 rtl:right-3.5 top-3.5 text-teal-600 dark:text-[#00c2cb] text-xl pointer-events-none">
             medication
           </span>
 
-          <div className="absolute left-2 top-2 flex items-center gap-1">
+          <div className="absolute ltr:right-2 rtl:left-2 top-2 flex items-center gap-1">
             {searchQuery && (
               <button
                 type="button"
@@ -479,7 +479,7 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                       <div
                         key={item.id}
                         onClick={() => handleAddFromCatalog(item)}
-                        className="p-3 rounded-xl text-right text-xs bg-slate-50 dark:bg-[#080e1b] hover:border-[#00c2cb] border border-slate-200 dark:border-white/5 text-slate-800 dark:text-[#dde2f5] flex flex-col justify-between gap-2 cursor-pointer group transition-all"
+                        className="p-3 rounded-xl text-start text-xs bg-slate-50 dark:bg-[#080e1b] hover:border-[#00c2cb] border border-slate-200 dark:border-white/5 text-slate-800 dark:text-[#dde2f5] flex flex-col justify-between gap-2 cursor-pointer group transition-all"
                       >
                         <div className="space-y-1">
                           <div className="flex items-start justify-between gap-1.5">
@@ -504,7 +504,7 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                             </span>
                             {item.arabicGeneric && (
                               <span className="text-[10px] text-slate-500 dark:text-[#859394] block">
-                                المادة الفعالة: {item.arabicGeneric}
+                                {language === 'en' ? 'Active Ingredient: ' : 'المادة الفعالة: '}{item.arabicGeneric}
                               </span>
                             )}
                           </div>
@@ -525,10 +525,10 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                             }`}
                           >
                             {isFromClinicCatalog
-                              ? 'من دليلي ✓'
+                              ? (language === 'en' ? 'My Catalog ✓' : 'من دليلي ✓')
                               : item.source === 'online-archive'
-                              ? 'الفهرس الدوائي العالمي 🌐'
-                              : 'أرشيف الدواء المصري 🇪🇬'}
+                              ? (language === 'en' ? 'Global Drug Index 🌐' : 'الفهرس الدوائي العالمي 🌐')
+                              : (language === 'en' ? 'Egyptian Drug Archive 🇪🇬' : 'أرشيف الدواء المصري 🇪🇬')}
                           </span>
 
                           {!isFromClinicCatalog && (
@@ -536,9 +536,9 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                               type="button"
                               onClick={(e) => handleSaveArchiveDrugToCatalog(e, item)}
                               className="text-[10px] font-bold text-[#008f97] dark:text-[#00c2cb] hover:underline px-1.5 py-0.5 rounded bg-teal-500/10 hover:bg-teal-500/20 cursor-pointer"
-                              title="إضافة هذا الدواء من أرشيف الدواء المصري إلى دليل العيادة الدائم"
+                              title={language === 'en' ? 'Save this drug to permanent clinic catalog' : 'إضافة هذا الدواء من أرشيف الدواء المصري إلى دليل العيادة الدائم'}
                             >
-                              + حفظ بدليلي
+                              {language === 'en' ? '+ Save to My Catalog' : '+ حفظ بدليلي'}
                             </button>
                           )}
                         </div>
@@ -550,7 +550,9 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                 {/* Bottom helper bar to add custom medication if desired */}
                 <div className="pt-2 border-t border-slate-100 dark:border-white/5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
                   <span className="text-slate-400 dark:text-[#859394]">
-                    لم تجد التركيز المطلوب؟ يمكنك إضافته مباشرة:
+                    {language === 'en'
+                      ? "Didn't find required concentration? You can add it directly:"
+                      : 'لم تجد التركيز المطلوب؟ يمكنك إضافته مباشرة:'}
                   </span>
                   <button
                     type="button"
@@ -560,7 +562,9 @@ export const MedicationsCard: React.FC<MedicationsCardProps> = ({
                     }}
                     className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-[#18233C] hover:bg-[#00c2cb] hover:text-slate-950 text-slate-700 dark:text-[#dde2f5] font-bold text-[11px] transition-colors cursor-pointer"
                   >
-                    + توصيف وإضافة "{searchQuery.trim()}" كدواء مخصص
+                    {language === 'en'
+                      ? `+ Describe & Add "${searchQuery.trim()}" as Custom Drug`
+                      : `+ توصيف وإضافة "${searchQuery.trim()}" كدواء مخصص`}
                   </button>
                 </div>
               </>

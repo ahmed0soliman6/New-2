@@ -220,8 +220,22 @@ Wishing you great health and wellness ✨`
           onCallPatient={onCallPatient}
         />
 
-        {/* Left Side / End Side: Notifications Hub */}
+        {/* Left Side / End Side: Notifications Hub & Language Switcher */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Translation & Language Switcher Button (زر الترجمة واللغة) */}
+          <button
+            type="button"
+            onClick={toggleLanguage}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-teal-50 dark:bg-[#161b29] dark:hover:bg-[#18233C] text-slate-700 hover:text-teal-700 dark:text-[#dde2f5] dark:hover:text-[#45dee7] border border-slate-200 dark:border-white/10 transition-all cursor-pointer font-bold text-xs shadow-2xs active:scale-95"
+            title={language === 'en' ? 'التحويل للغة العربية (Switch to Arabic)' : 'Switch to English (التحويل للإنجليزية)'}
+            aria-label="Toggle language translation"
+          >
+            <span className="material-symbols-outlined text-base text-[#00c2cb]">translate</span>
+            <span className="font-sans text-[11px] font-bold tracking-tight">
+              {language === 'ar' ? 'English' : 'عربي'}
+            </span>
+          </button>
+
           {/* Notifications Dropdown Button */}
           <div ref={notificationRef} className="relative shrink-0">
             <button

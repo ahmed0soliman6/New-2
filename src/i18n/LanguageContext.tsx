@@ -110,14 +110,7 @@ export const LanguageProvider: React.FC<{ children: ReactNode }> = ({ children }
     const translateElementAttributes = (el: Element) => {
       if (
         el.closest('#printable-prescription-pad') ||
-        el.closest('[data-no-translate="true"]') ||
-        el.closest('.no-translate') ||
         el.closest('.patient-name') ||
-        el.closest('.clinical-data') ||
-        el.closest('.patient-data') ||
-        el.closest('.rx-item') ||
-        el.closest('.rx-instructions') ||
-        el.closest('.diagnosis-text') ||
         el.closest('.patient-phone') ||
         el.closest('.patient-address') ||
         el.closest('.patient-notes')
@@ -219,22 +212,29 @@ export const LanguageProvider: React.FC<{ children: ReactNode }> = ({ children }
         return;
       }
 
-      // Skip elements marked explicitly as no-translate or inside clinical/prescription data
+      // Skip elements inside patient personal data or printable prescription pad
       if (
         parent.closest('#printable-prescription-pad') ||
-        parent.closest('[data-no-translate="true"]') ||
-        parent.closest('.no-translate') ||
         parent.closest('.patient-name') ||
-        parent.closest('.clinical-data') ||
-        parent.closest('.patient-data') ||
-        parent.closest('.rx-item') ||
-        parent.closest('.rx-instructions') ||
-        parent.closest('.diagnosis-text') ||
         parent.closest('.patient-phone') ||
         parent.closest('.patient-address') ||
         parent.closest('.patient-notes')
       ) {
         return;
+      }
+
+      // If text node is in a button, label, header, or table header, allow translating it!
+      const isInteractiveOrHeading = Boolean(
+        parent.closest('button, select, option, label, h1, h2, h3, h4, h5, h6, th, [role="button"], .translate-ok')
+      );
+      if (!isInteractiveOrHeading) {
+        if (
+          parent.closest('[data-no-translate="true"]') ||
+          parent.closest('.no-translate') ||
+          parent.closest('.rx-instructions')
+        ) {
+          return;
+        }
       }
 
       if (node.nodeType === Node.TEXT_NODE && node.nodeValue) {

@@ -333,13 +333,13 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                 handleQuickAdd();
               }
             }}
-            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 pr-11 pl-28 rounded-xl border border-slate-200 dark:border-white/10 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-bold transition-all"
+            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 ltr:pl-11 ltr:pr-32 rtl:pr-11 rtl:pl-32 rounded-xl border border-slate-200 dark:border-white/10 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-bold transition-all text-start"
           />
-          <span className="material-symbols-outlined absolute right-3.5 top-3.5 text-amber-500 text-xl">
+          <span className="material-symbols-outlined absolute ltr:left-3.5 rtl:right-3.5 top-3.5 text-amber-500 text-xl pointer-events-none">
             clinical_notes
           </span>
 
-          <div className="absolute left-2 top-2 flex items-center gap-1">
+          <div className="absolute ltr:right-2 rtl:left-2 top-2 flex items-center gap-1">
             {searchQuery && (
               <button
                 type="button"
@@ -424,7 +424,7 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                       <div
                         key={item.id}
                         onClick={() => !isAdded && handleAddFromCatalog(item)}
-                        className={`p-3 rounded-xl text-right text-xs transition-all flex flex-col justify-between gap-2 border ${
+                        className={`p-3 rounded-xl text-start text-xs transition-all flex flex-col justify-between gap-2 border ${
                           isAdded
                             ? 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-400 cursor-not-allowed'
                             : 'bg-slate-50 dark:bg-[#080e1b] hover:border-amber-400 border-slate-200 dark:border-white/5 text-slate-800 dark:text-[#dde2f5] cursor-pointer'
@@ -442,7 +442,9 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                                   : 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/20'
                               }`}
                             >
-                              {isFromClinicCatalog ? 'من دليلي ✓' : 'أرشيف ICD-10 🇪🇬'}
+                              {isFromClinicCatalog
+                                ? (language === 'en' ? 'In My Catalog ✓' : 'من دليلي ✓')
+                                : (language === 'en' ? 'ICD-10 Archive 🇪🇬' : 'أرشيف ICD-10 🇪🇬')}
                             </span>
                           </div>
 
@@ -472,11 +474,13 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
 
                         <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-200/50 dark:border-white/5">
                           {isAdded ? (
-                            <span className="text-[10px] text-emerald-600 font-bold">مضاف بالكشف ✓</span>
+                            <span className="text-[10px] text-emerald-600 font-bold">
+                              {language === 'en' ? 'Added to Exam ✓' : 'مضاف بالكشف ✓'}
+                            </span>
                           ) : (
                             <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
                               <span className="material-symbols-outlined text-sm">add_circle</span>
-                              <span>إضافة التشخيص</span>
+                              <span>{language === 'en' ? 'Add to Diagnoses' : 'إضافة التشخيص'}</span>
                             </span>
                           )}
 
@@ -486,7 +490,7 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                               onClick={(e) => handleSaveArchiveDiagToCatalog(e, item)}
                               className="px-2 py-0.5 rounded-md bg-slate-200/80 hover:bg-amber-500 hover:text-slate-950 dark:bg-white/10 dark:hover:bg-amber-400 dark:hover:text-slate-950 text-[10px] font-bold transition-colors cursor-pointer"
                             >
-                              + حفظ بدليلي
+                              {language === 'en' ? '+ Save to My Catalog' : '+ حفظ بدليلي'}
                             </button>
                           )}
                         </div>
@@ -496,7 +500,11 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                 </div>
 
                 <div className="pt-2 border-t border-slate-100 dark:border-white/5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <span className="text-slate-400">هل تبحث عن تشخيص سريري آخر غير ظاهر؟</span>
+                  <span className="text-slate-400">
+                    {language === 'en'
+                      ? 'Looking for another clinical diagnosis not listed?'
+                      : 'هل تبحث عن تشخيص سريري آخر غير ظاهر؟'}
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -505,7 +513,9 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                     }}
                     className="text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer"
                   >
-                    + إضافة "{searchQuery.trim()}" كتشخيص جديد في دليلي
+                    {language === 'en'
+                      ? `+ Add "${searchQuery.trim()}" as New Diagnosis in My Catalog`
+                      : `+ إضافة "${searchQuery.trim()}" كتشخيص جديد في دليلي`}
                   </button>
                 </div>
               </>

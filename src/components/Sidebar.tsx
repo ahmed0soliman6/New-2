@@ -107,10 +107,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               type="button"
               onClick={toggleLanguage}
-              className="w-8 h-8 rounded-lg bg-[#18233C] hover:bg-[#242a38] text-[#45dee7] hover:text-white border border-[#00c2cb]/20 flex items-center justify-center transition-all cursor-pointer font-bold text-[11px] font-sans active:scale-95"
+              className="px-2 py-1 rounded-lg bg-[#18233C] hover:bg-[#242a38] text-[#45dee7] hover:text-white border border-[#00c2cb]/20 flex items-center gap-1 transition-all cursor-pointer font-bold text-[11px] font-sans active:scale-95"
               title={language === 'en' ? 'التحويل للعربية (Switch to Arabic)' : 'التحويل للإنجليزية (Switch to English)'}
             >
-              {language === 'ar' ? 'AR' : 'EN'}
+              <span className="material-symbols-outlined text-sm text-[#00c2cb]">translate</span>
+              <span>{language === 'ar' ? 'EN' : 'عربي'}</span>
             </button>
 
             {/* Theme Toggle Sun/Moon Icon */}

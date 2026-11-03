@@ -428,7 +428,7 @@ export const UserManagementPanel: React.FC = () => {
               اسم المستخدم (Username)
               <input
                 required
-                pattern="[A-Za-z0-9._-]{3,32}"
+                pattern="[-A-Za-z0-9._]{3,32}"
                 placeholder="مثال: dr_ahmed"
                 value={username}
                 onChange={(e) => setUsername(e.target.value.toLowerCase())}

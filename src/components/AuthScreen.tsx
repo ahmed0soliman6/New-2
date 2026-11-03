@@ -101,7 +101,7 @@ export const AuthScreen: React.FC = () => {
               </div>
               <input
                 required
-                pattern="[A-Za-z0-9._-]{3,32}"
+                pattern="[-A-Za-z0-9._]{3,32}"
                 value={username}
                 onChange={(e) => setUsername(e.target.value.toLowerCase())}
                 placeholder="ادخل اسم المستخدم..."

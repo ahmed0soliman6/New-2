@@ -303,13 +303,13 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                 handleQuickAdd();
               }
             }}
-            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 pr-11 pl-28 rounded-xl border border-slate-200 dark:border-white/10 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20 font-bold transition-all"
+            className="w-full bg-white dark:bg-[#111A2E] text-slate-900 dark:text-[#dde2f5] text-sm p-3.5 ltr:pl-11 ltr:pr-32 rtl:pr-11 rtl:pl-32 rounded-xl border border-slate-200 dark:border-white/10 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20 font-bold transition-all text-start"
           />
-          <span className="material-symbols-outlined absolute right-3.5 top-3.5 text-sky-600 dark:text-sky-400 text-xl">
+          <span className="material-symbols-outlined absolute ltr:left-3.5 rtl:right-3.5 top-3.5 text-sky-600 dark:text-sky-400 text-xl pointer-events-none">
             radiology
           </span>
 
-          <div className="absolute left-2 top-2 flex items-center gap-1">
+          <div className="absolute ltr:right-2 rtl:left-2 top-2 flex items-center gap-1">
             {searchQuery && (
               <button
                 type="button"
@@ -319,7 +319,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                 }}
                 className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-[#18233C] text-slate-500 dark:text-[#859394] hover:text-rose-500 text-xs font-bold cursor-pointer"
               >
-                مسح ✕
+                {language === 'en' ? 'Clear ✕' : 'مسح ✕'}
               </button>
             )}
             <button
@@ -339,23 +339,35 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-[#859394] border-b border-slate-100 dark:border-white/5 pb-1.5">
               <span className="flex items-center gap-1">
                 <span className="material-symbols-outlined text-xs text-sky-600 dark:text-sky-400">saved_search</span>
-                <span>نتائج البحث في دليلي وأرشيف التصوير الطبي لـ "{searchQuery}":</span>
+                <span>
+                  {language === 'en'
+                    ? `Results in My Catalog & Imaging Archive for "${searchQuery}":`
+                    : `نتائج البحث في دليلي وأرشيف التصوير الطبي لـ "${searchQuery}":`}
+                </span>
               </span>
               <span className="font-mono text-sky-600 dark:text-sky-400 font-bold">
-                {isSearchingOnline ? 'جاري البحث...' : `${onlineResults.length} فحص مطابق`}
+                {isSearchingOnline
+                  ? (language === 'en' ? 'Searching imaging archive...' : 'جاري البحث...')
+                  : (language === 'en' ? `${onlineResults.length} matching scans` : `${onlineResults.length} فحص مطابق`)}
               </span>
             </div>
 
             {onlineResults.length === 0 && !isSearchingOnline ? (
               <div className="py-4 text-center text-xs text-slate-500 space-y-2">
-                <p>لم يتم العثور على فحص أشعة مطابق لـ "{searchQuery}" في دليلك أو الأرشيف.</p>
+                <p>
+                  {language === 'en'
+                    ? `No radiology scan found matching "${searchQuery}" in catalog or archive.`
+                    : `لم يتم العثور على فحص أشعة مطابق لـ "${searchQuery}" في دليلك أو الأرشيف.`}
+                </p>
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
                     onClick={handleQuickAdd}
                     className="px-3.5 py-2 rounded-xl bg-sky-500 text-slate-950 font-bold text-xs cursor-pointer shadow-xs hover:bg-sky-400"
                   >
-                    + إضافة "{searchQuery.trim()}" كطلب فحص مباشر
+                    {language === 'en'
+                      ? `+ Add "${searchQuery.trim()}" directly as scan order`
+                      : `+ إضافة "${searchQuery.trim()}" كطلب فحص مباشر`}
                   </button>
                   <button
                     type="button"
@@ -383,7 +395,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                     return (
                       <div
                         key={item.id}
-                        className={`p-3 rounded-xl text-right text-xs transition-all flex flex-col justify-between gap-2 border ${
+                        className={`p-3 rounded-xl text-start text-xs transition-all flex flex-col justify-between gap-2 border ${
                           isAdded
                             ? 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-400'
                             : 'bg-slate-50 dark:bg-[#080e1b] border-slate-200 dark:border-white/5 hover:border-sky-400 text-slate-800 dark:text-[#dde2f5]'
@@ -403,7 +415,9 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                                   : 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/20'
                               }`}
                             >
-                              {isFromClinicCatalog ? 'من دليلي ✓' : 'أرشيف الأشعة 🇪🇬'}
+                              {isFromClinicCatalog
+                                ? (language === 'en' ? 'In My Catalog ✓' : 'من دليلي ✓')
+                                : (language === 'en' ? 'Imaging Archive 🇪🇬' : 'أرشيف الأشعة 🇪🇬')}
                             </span>
                           </div>
 
@@ -437,7 +451,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
 
                         {isAdded ? (
                           <div className="text-[11px] text-emerald-600 font-bold self-end pt-1">
-                            مطلوب بالكشف ✓
+                            {language === 'en' ? 'Requested in Exam ✓' : 'مطلوب بالكشف ✓'}
                           </div>
                         ) : (
                           <div className="space-y-1.5 pt-1 border-t border-slate-200/50 dark:border-white/5">
@@ -448,7 +462,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                                 className="flex-1 py-1.5 px-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
                               >
                                 <span className="material-symbols-outlined text-xs">add</span>
-                                <span>طلب الفحص</span>
+                                <span>{language === 'en' ? 'Order Scan' : 'طلب الفحص'}</span>
                               </button>
                               <button
                                 type="button"
@@ -456,7 +470,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                                 className="flex-1 py-1.5 px-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] flex items-center justify-center gap-1 transition-all cursor-pointer"
                               >
                                 <span className="material-symbols-outlined text-xs">description</span>
-                                <span>كتابة التقرير</span>
+                                <span>{language === 'en' ? 'Write Report' : 'كتابة التقرير'}</span>
                               </button>
                             </div>
                             {!isFromClinicCatalog && (
@@ -465,7 +479,7 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
                                 onClick={(e) => handleSaveArchiveRadToCatalog(e, item)}
                                 className="w-full py-1 px-2 rounded-lg bg-slate-200/70 hover:bg-sky-500/20 dark:bg-white/5 dark:hover:bg-sky-500/20 text-slate-700 dark:text-sky-300 text-[10px] font-bold transition-colors cursor-pointer"
                               >
-                                + حفظ في دليلي
+                                {language === 'en' ? '+ Save to My Catalog' : '+ حفظ بدليلي'}
                               </button>
                             )}
                           </div>
