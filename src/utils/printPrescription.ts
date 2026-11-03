@@ -10,6 +10,32 @@ import QRCode from 'qrcode';
 import { toEnglishDigits } from './numberUtils';
 import { formatQrDestination } from '../components/QrCodeImage';
 
+export function escapeHtml(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function sanitizeImageUrl(url: string | null | undefined): string {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (
+    trimmed.startsWith('data:image/') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('./')
+  ) {
+    return escapeHtml(trimmed);
+  }
+  return '';
+}
+
 export interface PrintPrescriptionData {
   config: {
     doctorName?: string;
@@ -250,17 +276,17 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
     followupFontSize = '10px';
   }
 
-  // Build items HTML
+  // Build items HTML (strictly escaped against XSS & layout breakage on < or >)
   const itemsHtml = items.length > 0
     ? items.map((it, idx) => `
         <div style="padding: ${itemPadding}; margin-bottom: ${itemMarginBottom}; border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; text-align: left; direction: ltr;">
           <div style="font-size: ${drugFontSize}; font-weight: 700; color: #0f172a; margin-bottom: 2px;">
-            ${idx + 1}. ${it.drugName || ''} ${it.strength || ''} ${it.dosageForm || ''} ${it.scientificName ? `<span style="font-size: calc(${drugFontSize} - 1.5px); font-weight: normal; color: #475569;">(${it.scientificName})</span>` : ''}
+            ${idx + 1}. ${escapeHtml(it.drugName || '')} ${escapeHtml(it.strength || '')} ${escapeHtml(it.dosageForm || '')} ${it.scientificName ? `<span style="font-size: calc(${drugFontSize} - 1.5px); font-weight: normal; color: #475569;">(${escapeHtml(it.scientificName)})</span>` : ''}
           </div>
           <div style="font-size: ${instructionFontSize}; color: #0f766e; font-weight: 600;">
-            ${it.dosageInstructions || it.dosage || ''} ${it.timing ? `&bull; ${it.timing}` : ''} ${it.duration ? `&bull; لمدة ${it.duration}` : ''}
+            ${escapeHtml(it.dosageInstructions || it.dosage || '')} ${it.timing ? `&bull; ${escapeHtml(it.timing)}` : ''} ${it.duration ? `&bull; لمدة ${escapeHtml(it.duration)}` : ''}
           </div>
-          ${it.notes ? `<div style="font-size: ${noteFontSize}; color: #64748b; font-style: italic; margin-top: 2px;">توجيهات: ${it.notes}</div>` : ''}
+          ${it.notes ? `<div style="font-size: ${noteFontSize}; color: #64748b; font-style: italic; margin-top: 2px;">توجيهات: ${escapeHtml(it.notes)}</div>` : ''}
         </div>
       `).join('')
     : `<div style="text-align: center; padding: 25px 0; color: #94a3b8; font-size: 12px;">لا توجد أدوية مضافة للروشتة حالياً.</div>`;
@@ -269,7 +295,7 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
   const diagnosesHtml = diagnoses.length > 0
     ? `
       <div style="padding: ${diagPadding}; border: 1px solid #e2e8f0; border-radius: 6px; background-color: #f8fafc; font-size: ${diagFontSize}; text-align: left; direction: ltr; color: #1e293b;">
-        <strong style="color: #008f97;">Diagnosis:</strong> ${diagnoses.map(d => d.nameEn || d.nameAr || d.code).join(', ')}
+        <strong style="color: #008f97;">Diagnosis:</strong> ${diagnoses.map(d => escapeHtml(d.nameEn || d.nameAr || d.code || '')).join(', ')}
       </div>
     `
     : '';
@@ -278,7 +304,7 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
   const adviceHtml = lifestyleAdvice
     ? `
       <div style="padding: ${advicePadding}; border: 1px solid #ccfbf1; border-radius: 6px; background-color: #f0fdfa; font-size: ${adviceFontSize}; text-align: right; color: #134e4a;">
-        <strong style="color: #0f766e;">تعليمات طبية:</strong> ${lifestyleAdvice}
+        <strong style="color: #0f766e;">تعليمات طبية:</strong> ${escapeHtml(lifestyleAdvice)}
       </div>
     `
     : '';
@@ -287,7 +313,7 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
   const followupHtml = followupDate
     ? `
       <div style="padding: ${followupPadding}; border: 1px solid #fef3c7; border-radius: 6px; background-color: #fffbeb; font-size: ${followupFontSize}; text-align: right; color: #78350f; font-weight: 600;">
-        موعد الاستشارة القادمة: ${followupDate}
+        موعد الاستشارة القادمة: ${escapeHtml(followupDate)}
       </div>
     `
     : '';
@@ -296,13 +322,15 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
   const branchesHtml = (config.branches || [])
     .map(b => `
       <div style="margin-bottom: 3px; font-size: ${footerSize}; line-height: 1.4; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px;">
-        <strong style="color: #0f172a; white-space: nowrap;">${b.name}:</strong>
-        ${b.address ? `<span style="color: #334155;">${b.address}</span>` : ''}
-        ${b.phone ? `<span style="font-family: monospace; font-weight: 700; color: #0d9488; direction: ltr; white-space: nowrap; margin: 0 2px;">${toEnglishDigits(b.phone)}</span>` : ''}
-        ${b.workingHours ? `<span style="color: #475569; display: inline-flex; align-items: center; gap: 3px;">• <strong style="color: #0f766e;">مواعيد العمل:</strong> ${toEnglishDigits(b.workingHours)}</span>` : ''}
+        <strong style="color: #0f172a; white-space: nowrap;">${escapeHtml(b.name)}:</strong>
+        ${b.address ? `<span style="color: #334155;">${escapeHtml(b.address)}</span>` : ''}
+        ${b.phone ? `<span style="font-family: monospace; font-weight: 700; color: #0d9488; direction: ltr; white-space: nowrap; margin: 0 2px;">${escapeHtml(toEnglishDigits(b.phone))}</span>` : ''}
+        ${b.workingHours ? `<span style="color: #475569; display: inline-flex; align-items: center; gap: 3px;">• <strong style="color: #0f766e;">مواعيد العمل:</strong> ${escapeHtml(toEnglishDigits(b.workingHours))}</span>` : ''}
       </div>
     `)
     .join('');
+
+  const safeLogoUrl = sanitizeImageUrl(config.logoUrl);
 
   // Complete HTML document optimized for standard A5 printing
   const htmlContent = `
@@ -310,7 +338,7 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
     <html lang="ar" dir="rtl">
     <head>
       <meta charset="UTF-8">
-      <title>روشتة_${patient?.name || 'مريض'}</title>
+      <title>روشتة_${escapeHtml(patient?.name || 'مريض')}</title>
       <style>
         @page {
           size: A5 portrait;
@@ -473,22 +501,22 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
             <div class="header">
               <div class="header-content">
                 <div class="doctor-ar">
-                  <div class="doctor-name">${config.doctorName || 'طبيب العيادة'}</div>
-                  <div class="doctor-title">${config.specialtyAr || 'التخصص الطبي العام'}</div>
-                  <div class="doctor-credentials">${config.degreesAr || 'الدرجات العلمية والشهادات المهنية والزمالات المسجلة'}</div>
+                  <div class="doctor-name">${escapeHtml(config.doctorName || 'طبيب العيادة')}</div>
+                  <div class="doctor-title">${escapeHtml(config.specialtyAr || 'التخصص الطبي العام')}</div>
+                  <div class="doctor-credentials">${escapeHtml(config.degreesAr || 'الدرجات العلمية والشهادات المهنية والزمالات المسجلة')}</div>
                 </div>
 
                 ${config.showLogo ? `
                   <div class="logo-box">
-                    ${config.logoUrl ? `<img src="${config.logoUrl}" class="logo-img" width="44" height="44" style="width: 44px !important; height: 44px !important; max-width: 44px !important; max-height: 44px !important; object-fit: contain;" alt="Logo" />` : '<div class="logo-fallback">Rx</div>'}
+                    ${safeLogoUrl ? `<img src="${safeLogoUrl}" class="logo-img" width="44" height="44" style="width: 44px !important; height: 44px !important; max-width: 44px !important; max-height: 44px !important; object-fit: contain;" alt="Logo" />` : '<div class="logo-fallback">Rx</div>'}
                     <div style="font-size: 7px; font-weight: bold; color: #94a3b8; margin-top: 2px; text-transform: uppercase;">SOLI CLINIC</div>
                   </div>
                 ` : ''}
 
                 <div class="doctor-en">
-                  <div class="doctor-name">${config.doctorNameEn || 'Dr. Hazem El-Kady'}</div>
-                  <div class="doctor-title">${config.specialtyEn || 'Consultant of Cardiology'}</div>
-                  <div class="doctor-credentials">${config.degreesEn || 'M.D., MRCP (London)'}</div>
+                  <div class="doctor-name">${escapeHtml(config.doctorNameEn || 'Dr. Hazem El-Kady')}</div>
+                  <div class="doctor-title">${escapeHtml(config.specialtyEn || 'Consultant of Cardiology')}</div>
+                  <div class="doctor-credentials">${escapeHtml(config.degreesEn || 'M.D., MRCP (London)')}</div>
                 </div>
               </div>
             </div>
@@ -496,10 +524,10 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
 
           <!-- Patient Meta Strip -->
           <div class="patient-bar">
-            <div><strong>المريض:</strong> ${patient?.name || 'مريض غير مسجل'}</div>
-            ${patient?.fileNumber ? `<div><strong>رقم الملف:</strong> #${toEnglishDigits(patient.fileNumber)}</div>` : ''}
-            <div><strong>السن:</strong> ${patient?.age ? `${toEnglishDigits(patient.age)} سنة` : '-'}</div>
-            <div><strong>التاريخ:</strong> <span style="font-family: monospace;">${toEnglishDigits(patient?.date || new Date().toLocaleDateString('ar-EG'))}</span></div>
+            <div><strong>المريض:</strong> ${escapeHtml(patient?.name || 'مريض غير مسجل')}</div>
+            ${patient?.fileNumber ? `<div><strong>رقم الملف:</strong> #${escapeHtml(toEnglishDigits(patient.fileNumber))}</div>` : ''}
+            <div><strong>السن:</strong> ${patient?.age ? `${escapeHtml(toEnglishDigits(patient.age))} سنة` : '-'}</div>
+            <div><strong>التاريخ:</strong> <span style="font-family: monospace;">${escapeHtml(toEnglishDigits(patient?.date || new Date().toLocaleDateString('ar-EG')))}</span></div>
           </div>
         </div>
 
@@ -532,7 +560,7 @@ export async function generatePrescriptionHtml(data: PrintPrescriptionData): Pro
               <div style="flex: 1; text-align: right;">
                 ${branchesHtml}
                 <div style="color: #64748b; margin-top: 2px;">
-                  للحجز والاستفسار: <strong style="color: #0f172a; font-family: monospace;">${config.phone || '01092847162'}</strong>
+                  للحجز والاستفسار: <strong style="color: #0f172a; font-family: monospace;">${escapeHtml(config.phone || '01092847162')}</strong>
                 </div>
               </div>
 
@@ -612,26 +640,32 @@ export async function printPrescriptionDocument(data: PrintPrescriptionData) {
 export function printVisitReportDocument(data: PrintVisitReportData) {
   const { config = {}, patient, visit, medications = [], labOrders = [], radiologyOrders = [], followUp } = data;
 
-  const doctorName = config.doctorName || 'طبيب العيادة';
-  const doctorNameEn = config.doctorNameEn || 'Clinic Doctor';
-  const specialtyAr = config.specialtyAr || 'التخصص الطبي العام للعيادة';
-  const specialtyEn = config.specialtyEn || 'Clinic Medical Specialty';
-  const degreesAr = config.degreesAr || 'الدرجات العلمية والشهادات المهنية المسجلة للعيادة';
-  const degreesEn = config.degreesEn || 'Registered Medical Degrees & Professional Credentials';
-  const phone = config.phone || '01092847162';
+  const doctorName = escapeHtml(config.doctorName || 'طبيب العيادة');
+  const doctorNameEn = escapeHtml(config.doctorNameEn || 'Clinic Doctor');
+  const specialtyAr = escapeHtml(config.specialtyAr || 'التخصص الطبي العام للعيادة');
+  const specialtyEn = escapeHtml(config.specialtyEn || 'Clinic Medical Specialty');
+  const degreesAr = escapeHtml(config.degreesAr || 'الدرجات العلمية والشهادات المهنية المسجلة للعيادة');
+  const degreesEn = escapeHtml(config.degreesEn || 'Registered Medical Degrees & Professional Credentials');
+  const phone = escapeHtml(config.phone || '01092847162');
 
   const visitDateObj = visit.createdAt ? new Date(visit.createdAt) : new Date();
-  const formattedVisitDate = toEnglishDigits(
-    visitDateObj.toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' })
+  const formattedVisitDate = escapeHtml(
+    toEnglishDigits(
+      visitDateObj.toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' })
+    )
   );
-  const formattedVisitTime = toEnglishDigits(
-    visitDateObj.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+  const formattedVisitTime = escapeHtml(
+    toEnglishDigits(
+      visitDateObj.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+    )
   );
 
-  const complaint = visit.clinicalData?.chiefComplaint || visit.receptionistData?.symptoms || 'كشف ومتابعة طبية عامة';
-  const diagnoses = visit.clinicalData?.diagnosis || [];
-  const treatment = visit.clinicalData?.treatment || '';
-  const notes = visit.clinicalData?.notes || '';
+  const complaint = escapeHtml(
+    visit.clinicalData?.chiefComplaint || visit.receptionistData?.symptoms || 'كشف ومتابعة طبية عامة'
+  );
+  const diagnoses = (visit.clinicalData?.diagnosis || []).map((d) => escapeHtml(d));
+  const treatment = escapeHtml(visit.clinicalData?.treatment || '');
+  const notes = escapeHtml(visit.clinicalData?.notes || '');
 
   const vitals = visit.vitalSigns as any;
   const recordedVitalsList: string[] = [];
@@ -647,7 +681,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">ضغط الدم</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(bp)}</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(bp))}</strong>
         </div>
       `);
     }
@@ -655,7 +689,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">النبض</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(pulse)} نبضة</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(pulse))} نبضة</strong>
         </div>
       `);
     }
@@ -663,7 +697,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">الحرارة</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(temp)} °C</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(temp))} °C</strong>
         </div>
       `);
     }
@@ -671,7 +705,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">سكر عشوائي</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(rbs)} mg/dL</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(rbs))} mg/dL</strong>
         </div>
       `);
     }
@@ -679,7 +713,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">الأكسجين</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(spo2)}%</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(spo2))}%</strong>
         </div>
       `);
     }
@@ -687,7 +721,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       recordedVitalsList.push(`
         <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; text-align: center;">
           <span style="font-size: 9px; color: #64748b; display: block; font-weight: bold;">الوزن</span>
-          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${toEnglishDigits(weight)} كجم</strong>
+          <strong style="font-size: 11px; color: #0f172a; font-family: monospace;">${escapeHtml(toEnglishDigits(weight))} كجم</strong>
         </div>
       `);
     }
@@ -729,12 +763,12 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
             (m, idx) => `
           <div style="padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;">
             <div style="font-size: 12px; font-weight: 700; color: #0f172a;">
-              ${idx + 1}. ${m.name} ${m.strength ? `(${m.strength})` : ''}
+              ${idx + 1}. ${escapeHtml(m.name)} ${m.strength ? `(${escapeHtml(m.strength)})` : ''}
             </div>
             <div style="font-size: 11px; color: #0f766e; font-weight: 600;">
-              ${m.dose || 'قرص'} ${m.duration ? `• لمدة ${m.duration}` : ''}
+              ${escapeHtml(m.dose || 'قرص')} ${m.duration ? `• لمدة ${escapeHtml(m.duration)}` : ''}
             </div>
-            ${m.instructions ? `<div style="font-size: 10px; color: #64748b; font-style: italic;">${m.instructions}</div>` : ''}
+            ${m.instructions ? `<div style="font-size: 10px; color: #64748b; font-style: italic;">${escapeHtml(m.instructions)}</div>` : ''}
           </div>
         `
           )
@@ -756,7 +790,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       ? `
     <div style="margin-bottom: 10px; padding: 8px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; font-size: 11.5px; color: #92400e;">
       <strong>🧪 التحاليل المخبرية المطلوبة: </strong>
-      <span>${labOrders.map((l) => l.testName).join('، ')}</span>
+      <span>${labOrders.map((l) => escapeHtml(l.testName)).join('، ')}</span>
     </div>
   `
       : '';
@@ -766,7 +800,7 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
       ? `
     <div style="margin-bottom: 10px; padding: 8px 12px; background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 8px; font-size: 11.5px; color: #6b21a8;">
       <strong>🩻 الفحوصات والأشعة المطلوبة: </strong>
-      <span>${radiologyOrders.map((r) => r.radiologyName).join('، ')}</span>
+      <span>${radiologyOrders.map((r) => escapeHtml(r.radiologyName)).join('، ')}</span>
     </div>
   `
       : '';
@@ -774,8 +808,8 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
   const followUpHtml = followUp?.scheduledDate
     ? `
     <div style="margin-bottom: 10px; padding: 8px 12px; background: #f0fdfa; border: 1px solid #a7f3d0; border-radius: 8px; font-size: 12px; color: #065f46; font-weight: bold;">
-      🗓 موعد الاستشارة والمتابعة القادمة: <span style="font-family: monospace;">${toEnglishDigits(followUp.scheduledDate)}</span>
-      ${followUp.notes ? ` <span style="font-size: 11px; font-weight: normal; color: #047857;">(${followUp.notes})</span>` : ''}
+      🗓 موعد الاستشارة والمتابعة القادمة: <span style="font-family: monospace;">${escapeHtml(toEnglishDigits(followUp.scheduledDate))}</span>
+      ${followUp.notes ? ` <span style="font-size: 11px; font-weight: normal; color: #047857;">(${escapeHtml(followUp.notes)})</span>` : ''}
     </div>
   `
     : '';
@@ -789,12 +823,14 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
   `
     : '';
 
+  const safePatientFullName = escapeHtml(patient.fullName);
+
   const reportHtml = `
     <!DOCTYPE html>
     <html dir="rtl" lang="ar">
     <head>
       <meta charset="UTF-8" />
-      <title>تقرير زيارة طبية - ${patient.fullName}</title>
+      <title>تقرير زيارة طبية - ${safePatientFullName}</title>
       <style>
         @page {
           size: A4 portrait;
@@ -901,9 +937,9 @@ export function printVisitReportDocument(data: PrintVisitReportData) {
 
         <!-- Patient Info Bar -->
         <div class="patient-bar">
-          <div><strong>اسم المريض:</strong> ${patient.fullName}</div>
-          <div><strong>رقم الملف:</strong> #${toEnglishDigits(patient.fileNumber || 1)}</div>
-          <div><strong>السن:</strong> ${patient.age ? `${toEnglishDigits(patient.age)} سنة` : '-'}</div>
+          <div><strong>اسم المريض:</strong> ${safePatientFullName}</div>
+          <div><strong>رقم الملف:</strong> #${escapeHtml(toEnglishDigits(patient.fileNumber || 1))}</div>
+          <div><strong>السن:</strong> ${patient.age ? `${escapeHtml(toEnglishDigits(patient.age))} سنة` : '-'}</div>
           <div><strong>نوع الزيارة:</strong> <span class="visit-type-badge">${visit.visitType === 'NEW' ? 'كشف جديد' : 'استشارة / متابعة'}</span></div>
         </div>
 

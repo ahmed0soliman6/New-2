@@ -76,15 +76,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       setCurrentUser(authUser);
 
-      // Optimistic hydration from localStorage if available
+      // Optimistic hydration from localStorage if available (never grant unverified admin privileges before server verification)
       const cacheKey = `soli_cached_profile_${sbUser.id}`;
       try {
         const cachedRaw = localStorage.getItem(cacheKey);
         if (cachedRaw) {
           const cachedProfile = JSON.parse(cachedRaw) as UserProfile;
           if (cachedProfile && cachedProfile.uid === sbUser.id && cachedProfile.active !== false) {
-            setUserProfile(cachedProfile);
-            setLoading(false);
+            const safeRole = normalizeRole(cachedProfile.role);
+            setUserProfile({
+              ...cachedProfile,
+              role: safeRole,
+            });
           }
         }
       } catch {}

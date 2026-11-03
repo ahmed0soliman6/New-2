@@ -19,7 +19,13 @@ export function currentPeriod(): PeriodSel {
 export function periodToRange(sel: PeriodSel): KeyRange {
   if (sel.year === 'all') return {};
   if (sel.month === 'all') return { from: `${sel.year}-01-01`, to: `${sel.year}-12-31` };
-  return { from: `${sel.year}-${sel.month}-01`, to: `${sel.year}-${sel.month}-31` };
+  const yearNum = Number(sel.year);
+  const monthNum = Number(sel.month);
+  const lastDay =
+    Number.isFinite(yearNum) && Number.isFinite(monthNum) && monthNum >= 1 && monthNum <= 12
+      ? String(new Date(yearNum, monthNum, 0).getDate()).padStart(2, '0')
+      : '31';
+  return { from: `${sel.year}-${sel.month}-01`, to: `${sel.year}-${sel.month}-${lastDay}` };
 }
 
 function resolveItemDateKey(name: 'payments' | 'expenses', item: Record<string, unknown>): string {
@@ -61,7 +67,7 @@ export interface PageResult<T> {
 export async function fetchTotal(
   name: 'payments' | 'expenses',
   r: KeyRange
-): Promise<{ total: number; count: number }> {
+): Promise<{ total: number; count: number; cashTotal: number; electronicTotal: number }> {
   const client = requireSupabase();
   const tableName = resolveTableName(name);
   const { data, error } = await client
@@ -79,8 +85,26 @@ export async function fetchTotal(
 
   meterRead('مالية', Math.max(1, filtered.length));
 
-  const total = filtered.reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
-  return { total, count: filtered.length };
+  let total = 0;
+  let cashTotal = 0;
+  let electronicTotal = 0;
+
+  for (const item of filtered) {
+    const amt = Number(item.amount) || 0;
+    total += amt;
+    if (name === 'payments') {
+      const method = String(item.method || item.paymentMethod || 'CASH').toUpperCase();
+      if (method === 'CARD' || method === 'TRANSFER' || method.includes('فيزا') || method.includes('كارت') || method.includes('إنستا')) {
+        electronicTotal += amt;
+      } else {
+        cashTotal += amt;
+      }
+    } else {
+      cashTotal += amt;
+    }
+  }
+
+  return { total, count: filtered.length, cashTotal, electronicTotal };
 }
 
 /** صفحة واحدة من الدفعات + فواتير هذه الصفحة فقط */

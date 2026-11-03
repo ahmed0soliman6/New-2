@@ -5,6 +5,7 @@ import { findBranch } from './clinicBranches';
 import { getPrescriptionDoctorInfo } from './prescriptionDoctor';
 import type { PatientListItem } from '../types';
 import { formatAppDate, toEnglishDigits } from './numberUtils';
+import { escapeHtml } from './printPrescription';
 import type {
   FollowUp,
   Invoice,
@@ -40,20 +41,28 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
     prescriptions = [],
     labOrders = [],
     radiologyOrders = [],
-    followUps = [],
   } = data;
 
-  const patientName = patientCanonical?.fullName || patient.name || 'مريض';
-  const phone = patientCanonical?.phone || patient.phone || 'غير مسجل';
+  const rawPatientName = patientCanonical?.fullName || patient.name || 'مريض';
+  const patientName = escapeHtml(rawPatientName);
+  const phone = escapeHtml(patientCanonical?.phone || patient.phone || 'غير مسجل');
   const genderStr = (patientCanonical?.gender || patient.gender) === 'female' ? 'أنثى' : 'ذكر';
-  const age = patient.age || 30;
-  const bloodType = patientCanonical?.bloodType || patient.bloodType || 'غير محدد';
-  const address = patientCanonical?.address || patient.address || patientCanonical?.governorate || patient.governorate || 'غير مسجل';
-  const emergencyName = patientCanonical?.emergencyContact?.name || patient.emergencyContact?.name || 'غير مسجل';
-  const emergencyPhone = patientCanonical?.emergencyContact?.phone || patient.emergencyContact?.phone || 'غير مسجل';
-  const allergies = patientCanonical?.allergies || patient.allergies || [];
-  const chronicDiseases = patientCanonical?.chronicDiseases || patient.chronicConditions || [];
-  const notes = patientCanonical?.notes || '';
+  const age = escapeHtml(patient.age || 30);
+  const bloodType = escapeHtml(patientCanonical?.bloodType || patient.bloodType || 'غير محدد');
+  const address = escapeHtml(
+    patientCanonical?.address || patient.address || patientCanonical?.governorate || patient.governorate || 'غير مسجل'
+  );
+  const emergencyName = escapeHtml(
+    patientCanonical?.emergencyContact?.name || patient.emergencyContact?.name || 'غير مسجل'
+  );
+  const emergencyPhone = escapeHtml(
+    patientCanonical?.emergencyContact?.phone || patient.emergencyContact?.phone || 'غير مسجل'
+  );
+  const allergies = (patientCanonical?.allergies || patient.allergies || []).map((a) => escapeHtml(a));
+  const chronicDiseases = (patientCanonical?.chronicDiseases || patient.chronicConditions || []).map((c) =>
+    escapeHtml(c)
+  );
+  const notes = escapeHtml(patientCanonical?.notes || '');
 
   // Filter patient related records
   const pVisits = visits.filter((v) => v.patientId === patient.id);
@@ -70,21 +79,23 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
     'position: fixed; left: -9999px; top: 0; width: 800px; background-color: #ffffff; color: #0f172a; font-family: "Segoe UI", Tahoma, Arial, sans-serif; direction: rtl; text-align: right; padding: 24px; box-sizing: border-box; z-index: -9999;'
   );
 
-  const printDate = formatAppDate(new Date());
+  const printDate = escapeHtml(formatAppDate(new Date()));
 
   const doctorInfo = getPrescriptionDoctorInfo();
   const branch = findBranch();
-  const branchPhone = branch.phone || branch.mobile || doctorInfo.phone || '01092847162';
-  const doctorDisplayName = doctorInfo.doctorName || CLINIC_INFO.doctorName;
+  const branchPhone = escapeHtml(branch.phone || branch.mobile || doctorInfo.phone || '01092847162');
+  const doctorDisplayName = escapeHtml(doctorInfo.doctorName || CLINIC_INFO.doctorName);
+  const doctorSpecialty = escapeHtml(doctorInfo.specialtyAr || CLINIC_INFO.doctorTitle);
+  const doctorDegrees = escapeHtml(doctorInfo.degreesAr || CLINIC_INFO.doctorCredentials);
 
-  let htmlContent = `
+  const htmlContent = `
     <div style="border: 2px solid #008f97; border-radius: 12px; padding: 20px; background: #ffffff; margin-bottom: 20px;">
       <!-- Clinic Header -->
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 14px; margin-bottom: 16px;">
         <div>
           <h1 style="margin: 0; font-size: 20px; color: #008f97; font-weight: bold;">عيادة ${doctorDisplayName}</h1>
-          <div style="font-size: 13px; color: #334155; font-weight: bold; margin-top: 3px;">${doctorInfo.specialtyAr || CLINIC_INFO.doctorTitle}</div>
-          <div style="font-size: 11px; color: #64748b;">${doctorInfo.degreesAr || CLINIC_INFO.doctorCredentials}</div>
+          <div style="font-size: 13px; color: #334155; font-weight: bold; margin-top: 3px;">${doctorSpecialty}</div>
+          <div style="font-size: 11px; color: #64748b;">${doctorDegrees}</div>
         </div>
         <div style="text-align: left; font-size: 11px; color: #475569;">
           <div style="background: #e6fffa; color: #008f97; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 13px; margin-bottom: 4px; border: 1px solid #b2f5ea;">
@@ -99,13 +110,13 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
       <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; font-size: 12px;">
           <div><span style="color: #64748b;">اسم المريض:</span> <strong style="font-size: 14px; color: #0f172a;">${patientName}</strong></div>
-          <div><span style="color: #64748b;">رقم الملف:</span> <strong style="color: #008f97; font-family: monospace;">#${toEnglishDigits(patient.fileNumber || 1)}</strong></div>
+          <div><span style="color: #64748b;">رقم الملف:</span> <strong style="color: #008f97; font-family: monospace;">#${escapeHtml(toEnglishDigits(patient.fileNumber || 1))}</strong></div>
           <div><span style="color: #64748b;">رقم الهاتف:</span> <strong>${toEnglishDigits(phone)}</strong></div>
           <div><span style="color: #64748b;">السن / النوع:</span> <strong>${toEnglishDigits(age)} سنة • ${genderStr}</strong></div>
           <div><span style="color: #64748b;">فصيلة الدم:</span> <strong style="color: #e11d48;">${bloodType}</strong></div>
           <div><span style="color: #64748b;">العنوان:</span> <strong>${address}</strong></div>
           <div><span style="color: #64748b;">طوارئ:</span> <strong>${emergencyName} (${toEnglishDigits(emergencyPhone)})</strong></div>
-          <div><span style="color: #64748b;">تاريخ التسجيل:</span> <strong>${toEnglishDigits(patient.registrationDate || '2024-02-10')}</strong></div>
+          <div><span style="color: #64748b;">تاريخ التسجيل:</span> <strong>${escapeHtml(toEnglishDigits(patient.registrationDate || '2024-02-10'))}</strong></div>
           <div><span style="color: #64748b;">إجمالي الزيارات:</span> <strong>${toEnglishDigits(pVisits.length)} زيارة</strong></div>
         </div>
       </div>
@@ -138,18 +149,18 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
             ${pPrescriptions.map((pr) => `
               <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; background: #fafafa; font-size: 11.5px;">
                 <div style="display: flex; justify-content: space-between; font-weight: bold; color: #008f97; margin-bottom: 6px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 4px;">
-                  <span>روشتة طبية - ${formatAppDate(pr.createdAt)}</span>
+                  <span>روشتة طبية - ${escapeHtml(formatAppDate(pr.createdAt))}</span>
                   <span>${toEnglishDigits(pr.items.length)} أصناف دوائية</span>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                   ${pr.items.map((it, idx) => `
                     <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 4px 8px;">
-                      <strong>${toEnglishDigits(idx + 1)}. ${it.name} ${it.strength || ''}</strong>
-                      <div style="color: #0f766e; font-size: 10.5px;">${toEnglishDigits(it.dose || '')} ${it.instructions ? `• ${toEnglishDigits(it.instructions)}` : ''} ${it.duration ? `• ${toEnglishDigits(it.duration)}` : ''}</div>
+                      <strong>${toEnglishDigits(idx + 1)}. ${escapeHtml(it.name)} ${escapeHtml(it.strength || '')}</strong>
+                      <div style="color: #0f766e; font-size: 10.5px;">${escapeHtml(toEnglishDigits(it.dose || ''))} ${it.instructions ? `• ${escapeHtml(toEnglishDigits(it.instructions))}` : ''} ${it.duration ? `• ${escapeHtml(toEnglishDigits(it.duration))}` : ''}</div>
                     </div>
                   `).join('')}
                 </div>
-                ${pr.notes ? `<div style="margin-top: 4px; font-size: 10.5px; color: #64748b; font-style: italic;">تعليمات: ${pr.notes}</div>` : ''}
+                ${pr.notes ? `<div style="margin-top: 4px; font-size: 10.5px; color: #64748b; font-style: italic;">تعليمات: ${escapeHtml(pr.notes)}</div>` : ''}
               </div>
             `).join('')}
           </div>
@@ -166,8 +177,8 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
             ${pVisits.map((v) => `
               <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 12px; background: #ffffff; font-size: 11.5px;">
                 <div style="display: flex; justify-content: space-between; font-weight: bold; color: #1e293b; margin-bottom: 4px;">
-                  <span>${formatAppDate(v.createdAt)} — ${v.visitType === 'NEW' ? 'كشف جديد' : 'متابعة / استشارة'}</span>
-                  <span style="color: #008f97;">${v.clinicalData?.chiefComplaint || v.receptionistData?.symptoms || 'كشف باطنة'}</span>
+                  <span>${escapeHtml(formatAppDate(v.createdAt))} — ${v.visitType === 'NEW' ? 'كشف جديد' : 'متابعة / استشارة'}</span>
+                  <span style="color: #008f97;">${escapeHtml(v.clinicalData?.chiefComplaint || v.receptionistData?.symptoms || 'كشف باطنة')}</span>
                 </div>
                 ${(() => {
                   if (!v.vitalSigns) return '';
@@ -180,12 +191,12 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
                   const spo2 = vs.oxygenSaturation || vs.spo2;
                   const weight = vs.weight;
 
-                  if (bp && String(bp).trim()) parts.push(`ضغط: ${toEnglishDigits(bp)}`);
-                  if (pulse && String(pulse).trim()) parts.push(`نبض: ${toEnglishDigits(pulse)}`);
-                  if (temp && String(temp).trim()) parts.push(`حرارة: ${toEnglishDigits(temp)}°C`);
-                  if (rbs && String(rbs).trim()) parts.push(`سكر عشوائي: ${toEnglishDigits(rbs)} mg/dL`);
-                  if (spo2 && String(spo2).trim()) parts.push(`أكسجين: ${toEnglishDigits(spo2)}%`);
-                  if (weight && String(weight).trim()) parts.push(`وزن: ${toEnglishDigits(weight)} كجم`);
+                  if (bp && String(bp).trim()) parts.push(`ضغط: ${escapeHtml(toEnglishDigits(bp))}`);
+                  if (pulse && String(pulse).trim()) parts.push(`نبض: ${escapeHtml(toEnglishDigits(pulse))}`);
+                  if (temp && String(temp).trim()) parts.push(`حرارة: ${escapeHtml(toEnglishDigits(temp))}°C`);
+                  if (rbs && String(rbs).trim()) parts.push(`سكر عشوائي: ${escapeHtml(toEnglishDigits(rbs))} mg/dL`);
+                  if (spo2 && String(spo2).trim()) parts.push(`أكسجين: ${escapeHtml(toEnglishDigits(spo2))}%`);
+                  if (weight && String(weight).trim()) parts.push(`وزن: ${escapeHtml(toEnglishDigits(weight))} كجم`);
                   if (parts.length === 0) return '';
                   return `<div style="font-size: 10.5px; color: #475569; background: #f8fafc; padding: 4px 8px; border-radius: 4px; margin-bottom: 4px;">
                     العلامات الحيوية: ${parts.join(' | ')}
@@ -193,12 +204,12 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
                 })()}
                 ${v.clinicalData?.diagnosis && v.clinicalData.diagnosis.length > 0 ? `
                   <div style="color: #0f172a; margin-top: 2px;">
-                    <strong>التشخيص:</strong> ${v.clinicalData.diagnosis.join('، ')}
+                    <strong>التشخيص:</strong> ${v.clinicalData.diagnosis.map((d) => escapeHtml(d)).join('، ')}
                   </div>
                 ` : ''}
                 ${v.clinicalData?.treatment ? `
                   <div style="color: #334155; margin-top: 2px; font-size: 11px;">
-                    <strong>الخطة العلاجية:</strong> ${v.clinicalData.treatment}
+                    <strong>الخطة العلاجية:</strong> ${escapeHtml(v.clinicalData.treatment)}
                   </div>
                 ` : ''}
               </div>
@@ -218,9 +229,9 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
             <div style="display: flex; flex-direction: column; gap: 6px; font-size: 11px;">
               ${pLabOrders.map((l) => `
                 <div style="border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px 8px; background: #fafafa;">
-                  <div style="font-weight: bold; color: #0f172a;">${l.testName}</div>
-                  <div style="font-size: 10px; color: #64748b;">${formatAppDate(l.orderedAt)}</div>
-                  ${l.result ? `<div style="color: #15803d; font-weight: bold; margin-top: 2px;">النتيجة: ${toEnglishDigits(l.result)}</div>` : '<div style="color: #b45309;">بانتظار النتيجة</div>'}
+                  <div style="font-weight: bold; color: #0f172a;">${escapeHtml(l.testName)}</div>
+                  <div style="font-size: 10px; color: #64748b;">${escapeHtml(formatAppDate(l.orderedAt))}</div>
+                  ${l.result ? `<div style="color: #15803d; font-weight: bold; margin-top: 2px;">النتيجة: ${escapeHtml(toEnglishDigits(l.result))}</div>` : '<div style="color: #b45309;">بانتظار النتيجة</div>'}
                 </div>
               `).join('')}
             </div>
@@ -236,9 +247,9 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
             <div style="display: flex; flex-direction: column; gap: 6px; font-size: 11px;">
               ${pRadiologyOrders.map((r) => `
                 <div style="border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px 8px; background: #fafafa;">
-                  <div style="font-weight: bold; color: #0f172a;">${r.radiologyName}</div>
-                  <div style="font-size: 10px; color: #64748b;">${formatAppDate(r.orderedAt)}</div>
-                  ${r.report || r.result ? `<div style="color: #6b21a8; font-size: 10.5px; margin-top: 2px;">التقرير: ${toEnglishDigits(r.report || r.result)}</div>` : '<div style="color: #b45309;">بانتظار التقرير</div>'}
+                  <div style="font-weight: bold; color: #0f172a;">${escapeHtml(r.radiologyName)}</div>
+                  <div style="font-size: 10px; color: #64748b;">${escapeHtml(formatAppDate(r.orderedAt))}</div>
+                  ${r.report || r.result ? `<div style="color: #6b21a8; font-size: 10.5px; margin-top: 2px;">التقرير: ${escapeHtml(toEnglishDigits(r.report || r.result))}</div>` : '<div style="color: #b45309;">بانتظار التقرير</div>'}
                 </div>
               `).join('')}
             </div>
@@ -253,7 +264,7 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
             <strong>إجمالي المعاملات المالية المسجلة:</strong> ${toEnglishDigits(pInvoices.length)} فاتورة
           </div>
           <div style="color: #008f97; font-weight: bold; font-size: 13px;">
-            إجمالي المدفوعات: ${toEnglishDigits(patient.totalPaid || 0)} ج.م
+            إجمالي المدفوعات: ${escapeHtml(toEnglishDigits(patient.totalPaid || 0))} ج.م
           </div>
         </div>
       </div>
@@ -261,7 +272,7 @@ export async function exportPatientMedicalDossierPdf(data: MedicalRecordPdfData)
       <!-- Clinic Footer Signature -->
       <div style="margin-top: 30px; display: flex; justify-content: space-between; align-items: flex-end; border-top: 1px solid #cbd5e1; padding-top: 12px; font-size: 11px; color: #475569;">
         <div>
-          <div>${branch.name}${branch.address ? ` • ${branch.address}` : ''}</div>
+          <div>${escapeHtml(branch.name)}${branch.address ? ` • ${escapeHtml(branch.address)}` : ''}</div>
           <div>للحجز والاستفسار: ${branchPhone}</div>
         </div>
         <div style="text-align: left;">

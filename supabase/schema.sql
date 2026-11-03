@@ -38,6 +38,14 @@ returns boolean language sql stable security definer set search_path = public as
   );
 $$;
 
+create or replace function public.is_clinic_doctor_or_admin(cid text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.clinic_members m
+    where m.clinic_id = cid and m.user_id = auth.uid() and m.is_active and m.role in ('admin', 'doctor')
+  );
+$$;
+
 -- ===== Generic clinic-scoped document tables =====
 do $$
 declare
@@ -72,14 +80,27 @@ begin
   end loop;
 end $$;
 
--- ===== Clinic settings are admin-writable only =====
--- settings: members read, admins write (override the generic policy above)
+-- ===== Clinic settings & backups are admin-writable only; prescriptions are doctor/admin-writable =====
 drop policy if exists "member_all" on public.settings;
 create policy "settings_read" on public.settings for select to authenticated
   using (public.is_clinic_member(clinic_id));
 create policy "settings_write" on public.settings for all to authenticated
   using (public.is_clinic_admin(clinic_id))
   with check (public.is_clinic_admin(clinic_id));
+
+drop policy if exists "member_all" on public.backups;
+create policy "backups_read" on public.backups for select to authenticated
+  using (public.is_clinic_admin(clinic_id));
+create policy "backups_write" on public.backups for all to authenticated
+  using (public.is_clinic_admin(clinic_id))
+  with check (public.is_clinic_admin(clinic_id));
+
+drop policy if exists "member_all" on public.prescriptions;
+create policy "prescriptions_read" on public.prescriptions for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "prescriptions_write" on public.prescriptions for all to authenticated
+  using (public.is_clinic_doctor_or_admin(clinic_id))
+  with check (public.is_clinic_doctor_or_admin(clinic_id));
 
 -- ===== Clinics & members =====
 alter table public.clinics enable row level security;

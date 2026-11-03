@@ -322,13 +322,24 @@ export async function clearAllDatabaseCollections(_db?: unknown): Promise<void> 
     'transactions',
   ];
 
+  const failedTables: string[] = [];
+
   for (const colName of collectionsToClear) {
     const tableName = resolveTableName(colName);
     try {
-      await supabase.from(tableName).delete().eq('clinic_id', clinicId);
+      const { error } = await supabase.from(tableName).delete().eq('clinic_id', clinicId);
+      if (error) {
+        console.warn(`Error clearing table ${tableName}:`, error);
+        failedTables.push(tableName);
+      }
     } catch (e) {
       console.warn(`Error clearing table ${tableName}:`, e);
+      failedTables.push(tableName);
     }
+  }
+
+  if (failedTables.length > 0) {
+    throw new Error(`تعذر مسح بعض الجداول من قاعدة البيانات (${failedTables.join(', ')}). يرجى التحقق من الصلاحيات أو الاتصال.`);
   }
 
   // Clear local offline IndexedDB cache for all cleared collections

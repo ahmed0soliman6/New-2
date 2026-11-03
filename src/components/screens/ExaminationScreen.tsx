@@ -343,7 +343,7 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
     }
   };
 
-  // Keep in sync if patient prop changes
+  // Keep in sync if patient prop changes and reset clinical state when patient ID changes
   useEffect(() => {
     setComplaint(patient?.chiefComplaint || '');
     setPatientChronicConditions(patient?.chronicConditions || []);
@@ -354,6 +354,31 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
     setEditablePatientAddress(patient?.address || '');
     setEditablePatientBloodType(patient?.bloodType || 'غير محدد');
   }, [patient?.id, patient?.chiefComplaint, patient?.chronicConditions, patient?.name, patient?.phone, patient?.age, patient?.gender, patient?.address, patient?.bloodType]);
+
+  // Strictly reset clinical examination fields whenever switching to a different patient
+  useEffect(() => {
+    setPhysicalExam('');
+    setRadiologyOrders([]);
+    setLabOrders([]);
+    setPatientDiagnoses([]);
+    setFollowupDate('');
+    setLifestyleAdvice('');
+    setExamVitals({});
+    setIsEditingIntakeCard(false);
+    setIsEditingPatientInfo(false);
+  }, [patient?.id]);
+
+  // Always scroll to top when opening a patient examination or switching patient
+  useEffect(() => {
+    const scrollToTop = () => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    scrollToTop();
+    const rafId = requestAnimationFrame(scrollToTop);
+    return () => cancelAnimationFrame(rafId);
+  }, [patient?.id]);
 
   // Derive previous visit details for the current patient
   const {
@@ -387,7 +412,7 @@ export const ExaminationScreen: React.FC<ExaminationScreenProps> = ({
           (v.status !== 'IN_PROGRESS' && v.status !== 'WAITING')
         );
       })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      .sort((a, b) => (new Date(b.createdAt || 0).getTime() || 0) - (new Date(a.createdAt || 0).getTime() || 0));
 
     // Find the latest past visit that ACTUALLY has a registered prescription
     let latestVisitWithRx: Visit | null = null;

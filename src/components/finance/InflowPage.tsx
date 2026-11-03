@@ -21,6 +21,7 @@ interface InflowPageProps {
   refreshKey: number;
   onPrint: (tx: TransactionRecord) => void;
   onDelete?: (tx: TransactionRecord) => void;
+  onSettleInvoice?: (tx: TransactionRecord) => void;
   onCreateInvoice: () => void;
 }
 
@@ -29,6 +30,7 @@ export const InflowPage: React.FC<InflowPageProps> = ({
   refreshKey,
   onPrint,
   onDelete,
+  onSettleInvoice,
   onCreateInvoice,
 }) => {
   const [period, setPeriod] = useState<PeriodSel>(currentPeriod);
@@ -139,7 +141,7 @@ export const InflowPage: React.FC<InflowPageProps> = ({
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-lg text-amber-500">warning</span>
             <span>
-              يتطلب هذا الاستعلام فهرساً مركباً في Firestore (يتم إنشاؤه عبر نشر firestore.indexes.json أو عبر الرابط الموضح في سجلات Console).
+              تعذر تنفيذ استعلام الفواتير والمدفوعات في قاعدة بيانات Supabase. يرجى التحقق من الاتصال أو إعادة المحاولة.
             </span>
           </div>
           <button
@@ -293,7 +295,7 @@ export const InflowPage: React.FC<InflowPageProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  receivedItems.map((tx) => renderRow(tx, onPrint, onDelete))
+                  receivedItems.map((tx) => renderRow(tx, onPrint, onDelete, onSettleInvoice))
                 )
               ) : unpaidLoading ? (
                 <tr>
@@ -317,7 +319,7 @@ export const InflowPage: React.FC<InflowPageProps> = ({
                   </td>
                 </tr>
               ) : (
-                unpaidRecords.map((tx) => renderRow(tx, onPrint, onDelete))
+                unpaidRecords.map((tx) => renderRow(tx, onPrint, onDelete, onSettleInvoice))
               )}
             </tbody>
           </table>
@@ -343,7 +345,8 @@ export const InflowPage: React.FC<InflowPageProps> = ({
 function renderRow(
   tx: TransactionRecord,
   onPrint: (tx: TransactionRecord) => void,
-  onDelete?: (tx: TransactionRecord) => void
+  onDelete?: (tx: TransactionRecord) => void,
+  onSettleInvoice?: (tx: TransactionRecord) => void
 ) {
   const amountDisplay = tx.amount || tx.paidAmount || tx.totalAmount || 0;
   const isPaid = tx.status !== 'غير مدفوعة';
@@ -379,6 +382,17 @@ function renderRow(
       </td>
       <td className="p-3 text-center">
         <div className="flex items-center justify-center gap-1.5">
+          {!isPaid && onSettleInvoice && (
+            <button
+              type="button"
+              onClick={() => onSettleInvoice(tx)}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+              title="تحصيل وسداد الفاتورة"
+            >
+              <span className="material-symbols-outlined text-sm">payments</span>
+              <span>تحصيل</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onPrint(tx)}

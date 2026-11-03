@@ -84,7 +84,7 @@ export const PatientDetailFullScreen: React.FC<PatientDetailFullScreenProps> = (
   followUps = [],
 }) => {
   const { canAccess } = usePermissions();
-  const { language, isRTL, t } = useLanguage();
+  const { language } = useLanguage();
 
   // On-demand clinical history for this patient when READ_OPT is true
   const hist = usePatientHistory(patient.id, READ_OPT);
@@ -241,26 +241,26 @@ export const PatientDetailFullScreen: React.FC<PatientDetailFullScreenProps> = (
     setCustomChronicInput('');
   };
 
-  // Filter patient data (Using on-demand eff* arrays)
+  // Filter patient data (Using on-demand eff* arrays) with null-safe date sorting
   const pVisits = effVisits
     .filter((v) => v.patientId === patient.id)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort((a, b) => (new Date(b.createdAt || 0).getTime() || 0) - (new Date(a.createdAt || 0).getTime() || 0));
 
   const pInvoices = effInvoices
     .filter((i) => i.patientId === patient.id)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort((a, b) => (new Date(b.createdAt || 0).getTime() || 0) - (new Date(a.createdAt || 0).getTime() || 0));
 
   const pPrescriptions = effPrescriptions
     .filter((pr) => pr.patientId === patient.id)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort((a, b) => (new Date(b.createdAt || 0).getTime() || 0) - (new Date(a.createdAt || 0).getTime() || 0));
 
   const pLabOrders = effLabOrders
     .filter((l) => l.patientId === patient.id)
-    .sort((a, b) => new Date(b.orderedAt).getTime() - new Date(a.orderedAt).getTime());
+    .sort((a, b) => (new Date(b.orderedAt || 0).getTime() || 0) - (new Date(a.orderedAt || 0).getTime() || 0));
 
   const pRadiologyOrders = effRadOrders
     .filter((r) => r.patientId === patient.id)
-    .sort((a, b) => new Date(b.orderedAt).getTime() - new Date(a.orderedAt).getTime());
+    .sort((a, b) => (new Date(b.orderedAt || 0).getTime() || 0) - (new Date(a.orderedAt || 0).getTime() || 0));
 
   const cleanPhone = (phone || '').replace(/[^0-9]/g, '');
   const formattedPhone = cleanPhone.startsWith('0') ? `2${cleanPhone}` : cleanPhone || '201092847162';

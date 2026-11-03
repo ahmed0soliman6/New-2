@@ -98,7 +98,7 @@ export const ExpensesPage: React.FC<ExpensesPageProps> = ({ refreshKey, onDelete
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-lg text-amber-500">warning</span>
             <span>
-              يتطلب استعلام المصروفات فهرساً مركباً في Firestore (يتم إنشاؤه عبر نشر firestore.indexes.json أو عبر الرابط الموضح في Console).
+              تعذر تنفيذ استعلام المصروفات في قاعدة بيانات Supabase. يرجى التحقق من الاتصال أو إعادة المحاولة.
             </span>
           </div>
           <button

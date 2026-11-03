@@ -80,7 +80,7 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
-              if (id.includes('firebase')) return 'vendor-firebase';
+              if (id.includes('@supabase')) return 'vendor-supabase';
               if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('qrcode')) return 'vendor-pdf';
               if (id.includes('react') || id.includes('lucide-react') || id.includes('motion')) return 'vendor-react';
             }

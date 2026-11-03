@@ -10,10 +10,16 @@ interface CreateUserRequest {
   clinicId?: string;
 }
 
+const MAX_BODY_BYTES = 64 * 1024;
+const ALLOWED_ROLES = new Set(['admin', 'doctor', 'secretary']);
+
 async function parseBody(req: any): Promise<any> {
   if (req.body) {
     if (typeof req.body === 'object') return req.body;
     if (typeof req.body === 'string') {
+      if (Buffer.byteLength(req.body, 'utf8') > MAX_BODY_BYTES) {
+        throw new Error('PAYLOAD_TOO_LARGE');
+      }
       try {
         return JSON.parse(req.body);
       } catch {
@@ -21,9 +27,17 @@ async function parseBody(req: any): Promise<any> {
       }
     }
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let data = '';
+    let receivedBytes = 0;
     req.on('data', (chunk: any) => {
+      const chunkLen = typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf8') : (chunk?.length || 0);
+      receivedBytes += chunkLen;
+      if (receivedBytes > MAX_BODY_BYTES) {
+        if (typeof req.destroy === 'function') req.destroy();
+        reject(new Error('PAYLOAD_TOO_LARGE'));
+        return;
+      }
       data += chunk;
     });
     req.on('end', () => {
@@ -144,6 +158,12 @@ export default async function handler(req: any, res: any) {
     const internalEmail = `${usernameLower}@${internalDomain}`;
     const normalizedRole = roleRaw.toLowerCase();
 
+    if (!ALLOWED_ROLES.has(normalizedRole)) {
+      return sendResponse(res, 400, {
+        error: 'نوع الصلاحية (Role) غير صالح. القيم المسموحة: admin, doctor, secretary.',
+      });
+    }
+
     // 5. Create user in Supabase Auth with email_confirm: true (no email sent)
     const { data: createdAuth, error: createErr } = await supabaseAdmin.auth.admin.createUser({
       email: internalEmail,
@@ -152,7 +172,7 @@ export default async function handler(req: any, res: any) {
       user_metadata: {
         username: usernameLower,
         displayName,
-        role: roleRaw,
+        role: normalizedRole.toUpperCase(),
         clinicId: targetClinicId,
       },
     });
@@ -213,6 +233,9 @@ export default async function handler(req: any, res: any) {
       username: usernameLower,
     });
   } catch (err: any) {
+    if (err instanceof Error && err.message === 'PAYLOAD_TOO_LARGE') {
+      return sendResponse(res, 413, { error: 'حجم الطلب يتجاوز الحد الأقصى المسموح به (64KB).' });
+    }
     return sendResponse(res, 500, {
       error: err instanceof Error ? err.message : 'حدث خطأ غير متوقع أثناء إنشاء الحساب.',
     });

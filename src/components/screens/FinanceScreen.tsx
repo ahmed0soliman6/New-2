@@ -41,7 +41,7 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
   patientsCanonical = [],
 }) => {
   const { assertPermission, userProfile } = usePermissions();
-  const { language } = useLanguage();
+  useLanguage();
 
   // Main Tab: Inflow ('in') vs Outflow ('out')
   const [financeTab, setFinanceTab] = useState<'in' | 'out'>('in');
@@ -117,6 +117,9 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
   const [toast, setToast] = useState<string | null>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<TransactionRecord | null>(null);
   const [txToDelete, setTxToDelete] = useState<TransactionRecord | null>(null);
+  const [txToSettle, setTxToSettle] = useState<TransactionRecord | null>(null);
+  const [settleMethod, setSettleMethod] = useState<'نقدي' | 'فيزا / كارت' | 'إنستاباي'>('نقدي');
+  const [isSettlingInvoice, setIsSettlingInvoice] = useState(false);
   const [expenseToDelete, setExpenseToDelete] = useState<ClinicExpenseRecord | null>(null);
 
   // New Invoice Modal States
@@ -136,6 +139,10 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
   );
   const [quickExpenseNotes, setQuickExpenseNotes] = useState<string>('');
 
+  // Submission locks to prevent duplicate records on rapid clicks
+  const [isSavingInvoice, setIsSavingInvoice] = useState(false);
+  const [isSavingExpense, setIsSavingExpense] = useState(false);
+
   // Auto-fill price when medical service is selected
   const handleServiceChange = (serviceName: string) => {
     setInvService(serviceName);
@@ -148,16 +155,33 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
   // Submit New Invoice
   const handleSaveInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingInvoice) return;
+
     const trimmedPatientName = invPatientName.trim();
     if (!trimmedPatientName) {
       alert('يرجى كتابة اسم المريض');
       return;
     }
+    if (!Number.isFinite(invAmount) || invAmount <= 0) {
+      alert('يرجى إدخال قيمة صحيحة للخدمة أكبر من الصفر');
+      return;
+    }
+    if (!Number.isFinite(invDiscount) || invDiscount < 0 || invDiscount > invAmount) {
+      alert('قيمة الخصم غير صحيحة؛ يجب أن تكون بين 0 وقيمة الخدمة');
+      return;
+    }
+
+    setIsSavingInvoice(true);
     try {
       assertPermission('billing.create', 'إنشاء فاتورة جديدة');
-      const finalPaid = invStatus === 'مدفوعة' ? Math.max(0, invAmount - invDiscount) : 0;
+      const netAmount = Math.max(0, invAmount - invDiscount);
+      const finalPaid = invStatus === 'مدفوعة' ? netAmount : 0;
+      const uniqueSuffix =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID().slice(0, 8)
+          : `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       const newTx: TransactionRecord = {
-        id: `inv-${Date.now()}`,
+        id: `inv-${uniqueSuffix}`,
         receiptNo: `INV-${Math.floor(Math.random() * 9000) + 1000}`,
         patientName: trimmedPatientName,
         serviceName: invService,
@@ -165,7 +189,7 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
         totalAmount: invAmount,
         discountAmount: invDiscount,
         paidAmount: finalPaid,
-        amount: finalPaid > 0 ? finalPaid : invAmount,
+        amount: netAmount,
         type: 'in',
         method: invPaymentMethod,
         paymentMethod: invPaymentMethod,
@@ -187,28 +211,37 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
       setTimeout(() => setToast(null), 3500);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ليس لديك صلاحية لإنشاء الفواتير.');
+    } finally {
+      setIsSavingInvoice(false);
     }
   };
 
   // Submit Quick Expense
   const handleAddQuickExpense = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingExpense) return;
+
     const cleanAmountStr = toEnglishDigits(quickExpenseAmount);
     const amountNum = Number(cleanAmountStr);
     if (!selectedExpenseCategory) {
       alert('يرجى اختيار بند المصروف');
       return;
     }
-    if (!amountNum || amountNum <= 0) {
-      alert('يرجى إدخال مبلغ صحيح للمصروف');
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      alert('يرجى إدخال مبلغ صحيح للمصروف أكبر من الصفر');
       return;
     }
 
+    setIsSavingExpense(true);
     try {
       assertPermission('billing.expenses', 'تسجيل مصروف للعيادة');
       const now = new Date();
+      const uniqueSuffix =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID().slice(0, 8)
+          : `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       const newExp: ClinicExpenseRecord = {
-        id: `exp-${Date.now()}`,
+        id: `exp-${uniqueSuffix}`,
         category: selectedExpenseCategory,
         amount: amountNum,
         date: quickExpenseDate,
@@ -249,10 +282,12 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
       setTimeout(() => setToast(null), 3500);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ليس لديك صلاحية لتسجيل المصروفات.');
+    } finally {
+      setIsSavingExpense(false);
     }
   };
 
-  // Handle Close Shift: Asynchronously queries today's net cash from server
+  // Handle Close Shift: Asynchronously queries today's net cash in drawer vs electronic payments from server
   const handleCloseShift = async () => {
     try {
       assertPermission('billing.closeShift', 'تقفيل الوردية وتسليم النقدية');
@@ -261,12 +296,17 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
         fetchTotal('payments', { from: t, to: t }),
         fetchTotal('expenses', { from: t, to: t }),
       ]);
-      const net = inc.total - exp.total;
-      const formatted = `${toEnglishDigits(
-        net.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      )} ج.م`;
-      setToast(`تم إغلاق وردية الاستقبال بنجاح! صافي النقدية بالخزينة: ${formatted}`);
-      setTimeout(() => setToast(null), 4500);
+      const netCash = inc.cashTotal - exp.total;
+      const fmt = (n: number) =>
+        `${toEnglishDigits(
+          n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        )} ج.م`;
+      const electronicNote =
+        inc.electronicTotal > 0 ? ` | تحصيل إلكتروني: ${fmt(inc.electronicTotal)}` : '';
+      setToast(
+        `تم إغلاق وردية الاستقبال بنجاح! صافي النقدية بالدرج: ${fmt(netCash)}${electronicNote} (المصروفات: ${fmt(exp.total)})`
+      );
+      setTimeout(() => setToast(null), 5500);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ليس لديك صلاحية لتقفيل الوردية.');
     }
@@ -347,6 +387,10 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
           refreshKey={refreshKey}
           onPrint={setSelectedReceipt}
           onDelete={onDeleteTransaction ? setTxToDelete : undefined}
+          onSettleInvoice={(tx) => {
+            setSettleMethod((tx.paymentMethod as any) || 'نقدي');
+            setTxToSettle(tx);
+          }}
           onCreateInvoice={() => setShowInvoiceModal(true)}
         />
       ) : (
@@ -434,10 +478,11 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
                 <div className="flex justify-end pt-1">
                   <button
                     type="submit"
-                    className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-98"
+                    disabled={isSavingExpense}
+                    className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-xs shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-98"
                   >
                     <span className="material-symbols-outlined text-base">add_circle</span>
-                    <span>تسجيل المصروف</span>
+                    <span>{isSavingExpense ? 'جارٍ الحفظ...' : 'تسجيل المصروف'}</span>
                   </button>
                 </div>
               </form>
@@ -587,9 +632,10 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-bold text-xs shadow-md transition-all cursor-pointer"
+                  disabled={isSavingInvoice}
+                  className="px-5 py-2 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-bold text-xs shadow-md transition-all cursor-pointer"
                 >
-                  حفظ الفاتورة
+                  {isSavingInvoice ? 'جارٍ الحفظ...' : 'حفظ الفاتورة'}
                 </button>
               </div>
             </form>
@@ -729,6 +775,91 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
       )}
 
       {/* ========================================================================= */}
+      {/* CONFIRMATION MODAL: SETTLE UNPAID INVOICE */}
+      {/* ========================================================================= */}
+      {txToSettle && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#111A2E] border border-emerald-500/30 rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl animate-in zoom-in-95">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-[#10B981] mx-auto flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl">payments</span>
+            </div>
+            <div className="space-y-1 text-center">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                تحصيل وسداد الفاتورة المعلقة
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-[#859394] leading-relaxed">
+                تأكيد تحصيل مبلغ{' '}
+                <strong className="text-emerald-600 dark:text-[#10B981] font-mono">
+                  {toEnglishDigits(txToSettle.totalAmount || txToSettle.amount || 0)} ج.م
+                </strong>{' '}
+                للمريض <strong className="text-slate-800 dark:text-white">({txToSettle.patientName})</strong>
+              </p>
+            </div>
+            <div className="space-y-1.5 text-right">
+              <label className="text-xs font-bold text-slate-700 dark:text-[#859394] block">
+                طريقة السداد والتحصيل
+              </label>
+              <select
+                value={settleMethod}
+                onChange={(e) => setSettleMethod(e.target.value as any)}
+                className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-white text-xs p-2.5 rounded-xl border border-slate-200 dark:border-white/10 focus:outline-none cursor-pointer"
+              >
+                <option value="نقدي">نقدي (كاش بالدرج)</option>
+                <option value="فيزا / كارت">فيزا / كارت POS</option>
+                <option value="إنستاباي">إنستاباي InstaPay</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isSettlingInvoice}
+                onClick={() => setTxToSettle(null)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-[#18233C] text-slate-700 dark:text-[#dde2f5] text-xs font-bold transition-all cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isSettlingInvoice}
+                onClick={async () => {
+                  if (!txToSettle || isSettlingInvoice) return;
+                  setIsSettlingInvoice(true);
+                  try {
+                    assertPermission('billing.create', 'تحصيل وسداد فاتورة معلقة');
+                    const now = new Date();
+                    const fullAmount = txToSettle.totalAmount || txToSettle.amount || 0;
+                    const settledTx: TransactionRecord = {
+                      ...txToSettle,
+                      paidAmount: fullAmount,
+                      amount: fullAmount,
+                      status: 'مدفوعة',
+                      paymentMethod: settleMethod,
+                      method: settleMethod,
+                      date: now.toISOString().split('T')[0],
+                      time: formatAppTime(now),
+                      rawTimestamp: now.toISOString(),
+                    };
+                    await onAddTransaction(settledTx);
+                    setTxToSettle(null);
+                    setRefreshKey((k) => k + 1);
+                    setToast(`تم تحصيل الفاتورة بمبلغ ${toEnglishDigits(fullAmount)} ج.م للمريض (${txToSettle.patientName}) بنجاح ✓`);
+                    setTimeout(() => setToast(null), 3500);
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : 'تعذر تحصيل الفاتورة في قاعدة البيانات.');
+                  } finally {
+                    setIsSettlingInvoice(false);
+                  }
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
+              >
+                {isSettlingInvoice ? 'جارٍ التحصيل...' : 'تأكيد السداد'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* CONFIRMATION MODAL: DELETE CLINIC EXPENSE */}
       {/* ========================================================================= */}
       {expenseToDelete && (
@@ -762,11 +893,20 @@ export const FinanceScreen: React.FC<FinanceScreenProps> = ({
                 onClick={async () => {
                   const targetExp = expenseToDelete;
                   setExpenseToDelete(null);
-                  await removeCatalogItem(null, 'expenses', targetExp.id).catch(() => {});
-                  removeClinicExpense(targetExp.id);
-                  setToast(`تم حذف مصروف ${targetExp.category} بنجاح`);
-                  setTimeout(() => setToast(null), 3000);
-                  setRefreshKey((k) => k + 1);
+                  try {
+                    assertPermission('billing.expenses', 'حذف مصروف من العيادة');
+                    await removeCatalogItem(null, 'expenses', targetExp.id);
+                    removeClinicExpense(targetExp.id);
+                    setToast(`تم حذف مصروف ${targetExp.category} بنجاح`);
+                    setTimeout(() => setToast(null), 3000);
+                    setRefreshKey((k) => k + 1);
+                  } catch (err) {
+                    alert(
+                      err instanceof Error
+                        ? err.message
+                        : 'تعذر حذف المصروف من قاعدة البيانات. يرجى التحقق من الصلاحيات أو الاتصال.'
+                    );
+                  }
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md transition-all cursor-pointer"
               >

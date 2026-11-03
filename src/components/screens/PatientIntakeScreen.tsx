@@ -4,7 +4,7 @@ import { useLanguage } from '../../i18n/LanguageContext';
 import { formatAppTime } from '../../utils/numberUtils';
 
 interface PatientIntakeScreenProps {
-  onAddPatientToQueue: (item: QueueItem) => void;
+  onAddPatientToQueue: (item: QueueItem) => void | boolean | Promise<boolean | void>;
   patients: PatientListItem[];
   presetChronicConditions: { id: string; name: string; category: string; color: string }[];
   onAddChronicCondition: (condition: { id: string; name: string; category: string; color: string }) => void;
@@ -103,12 +103,30 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
     });
   }, [name, phone, patients]);
 
+  const appliedInitialKeyRef = React.useRef<string | null>(null);
+
+  // Auto-dismiss any toast notification after 3 seconds so it never blocks form input
+  React.useEffect(() => {
+    if (!toastMessage) return;
+    const timer = setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [toastMessage]);
+
   // Effect to automatically pre-populate from initialData (e.g. from Appointment Check-in)
   React.useEffect(() => {
-    if (!initialData) return;
+    if (!initialData) {
+      appliedInitialKeyRef.current = null;
+      return;
+    }
     const initialName = (initialData.patientName || '').trim();
     const initialPhone = (initialData.phone || '').trim();
     if (!initialName && !initialPhone) return;
+
+    const initialKey = `${initialData.appointmentId || ''}|${initialData.patientId || ''}|${initialName}|${initialPhone}`;
+    if (appliedInitialKeyRef.current === initialKey) return;
+    appliedInitialKeyRef.current = initialKey;
 
     // Search if patient already exists in clinic database (strictly by priority)
     const cleanDigits = (s: string) => s.replace(/[^0-9]/g, '');
@@ -138,7 +156,7 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
         setChronicSelected(foundPatient.chronicConditions);
       }
       setAutoFilledPatientId(foundPatient.id);
-      setToastMessage(`تم العثور على ملف المريض المسجل مسبقاً (${foundPatient.name}) واسترجاع كافة بياناته تلقائياً`);
+      setToastMessage(`تم استرجاع بيانات المريض (${foundPatient.name}) تلقائياً ✨`);
     } else {
       setName(initialName);
       setPhone(initialPhone);
@@ -150,7 +168,7 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
         setChronicSelected(initialData.chronicConditions);
       }
       setAutoFilledPatientId(initialData.patientId || null);
-      setToastMessage(`تم تحويل الموعد (${initialName}). يرجى استكمال باقي بيانات المريض مثل السن والعنوان والأمراض`);
+      setToastMessage(`تم تحويل موعد (${initialName}) بنجاح — يرجى استكمال باقي البيانات ✨`);
     }
 
     // Set visit type if matches
@@ -247,8 +265,12 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
     setFormErrors({});
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     const errors: { name?: string; gender?: string; visitType?: string } = {};
 
     if (!name.trim()) {
@@ -308,26 +330,45 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
       bloodType: bloodType,
     };
 
-    onAddPatientToQueue(newQueueItem);
-    setToastMessage(`تم تسجيل الزيارة بنجاح ودخول صالة الانتظار! تذكرة (${ticketNumber}) - ملف رقم (${autoFileNumber})`);
-    if (onClearInitialData) onClearInitialData();
-    resetFormFields();
-
-    // Smoothly redirect to waiting queue screen so secretary immediately sees the patient in "مرضى فى الانتظار"
-    setTimeout(() => {
-      if (onNavigate) {
-        onNavigate('waiting-queue');
+    setIsSubmitting(true);
+    try {
+      const result = await onAddPatientToQueue(newQueueItem);
+      if (result === false) {
+        return;
       }
-    }, 900);
+
+      setToastMessage(`تم تسجيل الزيارة بنجاح ودخول صالة الانتظار! تذكرة (${ticketNumber}) - ملف رقم (${autoFileNumber})`);
+      if (onClearInitialData) onClearInitialData();
+      resetFormFields();
+
+      // Smoothly redirect to waiting queue screen so secretary immediately sees the patient in "مرضى فى الانتظار"
+      setTimeout(() => {
+        if (onNavigate) {
+          onNavigate('waiting-queue');
+        }
+      }, 900);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="flex flex-col w-full pb-16 space-y-6 text-slate-800 dark:text-[#dde2f5] min-w-0 max-w-full overflow-x-hidden">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-white dark:bg-[#18233C] border border-[#00c2cb] text-slate-900 dark:text-[#45dee7] px-6 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in">
-          <span className="material-symbols-outlined text-2xl text-[#00c2cb]">check_circle</span>
-          <span className="text-sm font-bold">{toastMessage}</span>
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-[92vw] max-w-md bg-white/95 dark:bg-[#18233C]/95 backdrop-blur-md border border-[#00c2cb]/60 text-slate-900 dark:text-[#45dee7] px-4 py-2.5 rounded-2xl shadow-xl flex items-center justify-between gap-2.5 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="material-symbols-outlined text-lg text-[#00c2cb] shrink-0">check_circle</span>
+            <span className="text-xs sm:text-sm font-bold leading-snug truncate">{toastMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="w-6 h-6 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+            aria-label="إغلاق التنبيه"
+          >
+            <span className="material-symbols-outlined text-base">close</span>
+          </button>
         </div>
       )}
 
@@ -902,10 +943,11 @@ export const PatientIntakeScreen: React.FC<PatientIntakeScreenProps> = ({
             {/* Submit Action Button */}
             <button
               type="submit"
-              className="w-full py-3.5 rounded-2xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-extrabold text-sm shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2 mt-2"
+              disabled={isSubmitting}
+              className="w-full py-3.5 rounded-2xl bg-[#00c2cb] hover:bg-[#45dee7] disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-extrabold text-sm shadow-md shadow-[#00c2cb]/20 transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2 mt-2"
             >
               <span className="material-symbols-outlined text-xl">confirmation_number</span>
-              <span>تسجيل الزيارة وطباعة التذكرة</span>
+              <span>{isSubmitting ? 'جارٍ تسجيل الزيارة...' : 'تسجيل الزيارة وطباعة التذكرة'}</span>
             </button>
           </div>
         </div>

@@ -112,17 +112,6 @@ const db: any = supabase;
 
 type QueryConstraint = { type: 'where' | 'limit'; field?: string; op?: string; value?: unknown; limit?: number };
 const where = (field: string, op: string, value: unknown): QueryConstraint => ({ type: 'where', field, op, value });
-const limit = (count: number): QueryConstraint => ({ type: 'limit', limit: count });
-
-const doc = (_db: unknown, table: string, id: string) => ({ table, id });
-const collection = (_db: unknown, table: string) => ({ table });
-const query = (col: { table: string }, ...constraints: QueryConstraint[]) => ({ table: col.table, constraints });
-const getDocs = async (_q: unknown): Promise<{ empty: boolean; docs: Array<{ id: string; ref: { table: string; id: string }; data: () => Record<string, unknown> }> }> => {
-  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
-};
-const writeBatch = (_db: unknown): { set: (_ref: unknown, _data: unknown) => void; commit: () => Promise<void> } => {
-  throw new Error('هذه العملية لم تُحوَّل إلى Supabase بعد');
-};
 
 function translateDbError(err: unknown, fallbackMessage: string): string {
   const raw = err instanceof Error ? err.message : String((err as any)?.message || err || '');
@@ -410,6 +399,9 @@ function ClinicApp() {
     }
     setActiveScreen(screen);
     safeStorage.setItem(StorageKeys.ACTIVE_SCREEN, screen);
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
   };
 
   // Theme state persisted in localStorage and synced with document root class
@@ -490,6 +482,10 @@ function ClinicApp() {
   };
 
   const handleGenerateYearlyDemoData = async () => {
+    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
+      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+      return;
+    }
     try {
       const { generateOneYearDemoData } = await import('./utils/demoDataGenerator');
       await generateOneYearDemoData(db);
@@ -502,6 +498,10 @@ function ClinicApp() {
   };
 
   const handleClearAllData = async () => {
+    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
+      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+      return;
+    }
     try {
       safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
       safeStorage.setJSON(StorageKeys.CLINIC_EXPENSES, []);
@@ -525,11 +525,15 @@ function ClinicApp() {
       alert('تم مسح سجلات المرضى والزيارات وقوائم الانتظار والمواعيد والفواتير بالكامل والبدء من جديد مع بقاء الإعدادات والأدلة الطبية الثابتة ✓');
     } catch (err) {
       console.error(err);
-      alert('حدث خطأ أثناء مسح البيانات.');
+      alert(err instanceof Error ? err.message : 'حدث خطأ أثناء مسح البيانات.');
     }
   };
 
   const handleClearBrowserVisitsOnly = async () => {
+    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
+      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+      return;
+    }
     try {
       safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
       safeStorage.setJSON(StorageKeys.CLINIC_EXPENSES, []);
@@ -573,6 +577,10 @@ function ClinicApp() {
   };
 
   const handleClearAllBrowserAndCloud = async () => {
+    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
+      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+      return;
+    }
     try {
       safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
       safeStorage.setJSON(StorageKeys.CLINIC_EXPENSES, []);
@@ -596,14 +604,17 @@ function ClinicApp() {
       alert('تم حذف وتدمير سجلات المرضى والزيارات والمواعيد بالكامل من المتصفح ومن قاعدة بيانات السحابة (Supabase) نهائياً ✓');
     } catch (err) {
       console.error(err);
-      alert('حدث خطأ أثناء تدمير ومسح بيانات السحابة.');
+      alert(err instanceof Error ? err.message : 'حدث خطأ أثناء تدمير ومسح بيانات السحابة.');
     }
   };
 
   const [activeExamPatient, setActiveExamPatient] = useState<PatientListItem | null>(null);
 
-  // Active Prescription sync state - starts clean
+  // Active Prescription sync state - starts clean and resets whenever patient changes
   const [activePrescription, setActivePrescription] = useState<PrescriptionItem[]>([]);
+  useEffect(() => {
+    setActivePrescription([]);
+  }, [activeExamPatient?.id]);
 
   // =========================================================================
   // SOLI MEDICAL CANONICAL STATE (SINGLE SOURCE OF TRUTH: FIRESTORE)
@@ -651,55 +662,6 @@ function ClinicApp() {
     }
   }, [patientsCanonical, activeExamPatient]);
 
-  // Auto-seed Firestore catalog references if empty on first-ever install (never seed mock patients/visits)
-  useEffect(() => {
-    try {
-      if (!db) return;
-      const seedTimer = setTimeout(async () => {
-        try {
-          const alreadyInitialized = safeStorage.getItem(StorageKeys.CLINIC_DB_INITIALIZED);
-          if (alreadyInitialized) {
-            return;
-          }
-
-          const querySnapshot = await getDocs(query(collection(db, 'medications'), limit(1)));
-          if (querySnapshot.empty) {
-            console.log('Firestore catalogs empty on first setup. Seeding reference catalogs...');
-            const batch = writeBatch(db);
-            INITIAL_MEDICATIONS_FULL.forEach((med) => {
-              batch.set(doc(db, 'medications', med.medicationId), med);
-            });
-            INITIAL_LAB_FULL.forEach((lt) => {
-              batch.set(doc(db, 'labTests', lt.labTestId), lt);
-            });
-            INITIAL_RADIOLOGY_FULL.forEach((rt) => {
-              batch.set(doc(db, 'radiologyTypes', rt.radiologyId), rt);
-            });
-            INITIAL_DIAGNOSES_FULL.forEach((diag) => {
-              batch.set(doc(db, 'diagnoses', diag.diagnosisId), diag);
-            });
-            INITIAL_SYMPTOMS_FULL.forEach((sym) => {
-              batch.set(doc(db, 'symptoms', sym.symptomId), sym);
-            });
-            INITIAL_CHRONIC_FULL.forEach((cd) => {
-              batch.set(doc(db, 'chronicDiseases', cd.diseaseId), cd);
-            });
-            await batch.commit();
-            safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
-            console.log('Reference catalogs successfully seeded to Firestore!');
-          } else {
-            safeStorage.setItem(StorageKeys.CLINIC_DB_INITIALIZED, 'true');
-          }
-        } catch (err) {
-          console.warn('Error during Firestore catalog seeding:', err);
-        }
-      }, 1500);
-      return () => clearTimeout(seedTimer);
-    } catch (err) {
-      console.warn('Error setting up catalog seeding:', err);
-      return undefined;
-    }
-  }, [db]);
 
   // Real-time Firestore-driven notifications refs & windowed listener readiness
   const previousVisitsMapRef = useRef<Map<string, Visit['status']>>(new Map());
@@ -829,12 +791,12 @@ function ClinicApp() {
     const catalogTimer = setTimeout(() => {
       if (!supabase || !isSubscriptionMounted) return;
       unsubscribers.push(
-        subscribeToMedications(db, (items) => { onDataSuccess(); if (items) setMedicationsCanonical(items); }, onError),
-        subscribeToLabTests(db, (items) => { onDataSuccess(); if (items) setLabTestsCanonical(items); }, onError),
-        subscribeToRadiologyTypes(db, (items) => { onDataSuccess(); if (items) setRadiologyTypesCanonical(items); }, onError),
-        subscribeToDiagnoses(db, (items) => { onDataSuccess(); if (items) setDiagnosesCanonical(items); }, onError),
-        subscribeToSymptoms(db, (items) => { onDataSuccess(); if (items) setSymptomsCanonical(items); }, onError),
-        subscribeToChronicDiseases(db, (items) => { onDataSuccess(); if (items) setChronicDiseasesCanonical(items); }, onError),
+        subscribeToMedications(db, (items) => { onDataSuccess(); if (items && items.length > 0) setMedicationsCanonical(items); }, onError),
+        subscribeToLabTests(db, (items) => { onDataSuccess(); if (items && items.length > 0) setLabTestsCanonical(items); }, onError),
+        subscribeToRadiologyTypes(db, (items) => { onDataSuccess(); if (items && items.length > 0) setRadiologyTypesCanonical(items); }, onError),
+        subscribeToDiagnoses(db, (items) => { onDataSuccess(); if (items && items.length > 0) setDiagnosesCanonical(items); }, onError),
+        subscribeToSymptoms(db, (items) => { onDataSuccess(); if (items && items.length > 0) setSymptomsCanonical(items); }, onError),
+        subscribeToChronicDiseases(db, (items) => { onDataSuccess(); if (items && items.length > 0) setChronicDiseasesCanonical(items); }, onError),
         subscribeToDoctorSettings(db, (settings) => { if (settings) setDoctorSettingsCanonical(settings); }, onError),
         subscribeToRecurringTemplates(db, (templates) => { if (templates) setCachedRecurringTemplates(templates); }, onError),
         subscribeToPrescriptionSettings(db, (settings) => {
@@ -2335,12 +2297,10 @@ function ClinicApp() {
     }
 
     if (!canPerform('billing-payments', 'create')) {
-      alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
-      return;
+      throw new Error('ليس لديك صلاحية لتنفيذ هذه العملية.');
     }
     if (!supabase) {
-      alert('قاعدة البيانات غير متصلة حالياً لحفظ المعاملة المالية.');
-      return;
+      throw new Error('قاعدة البيانات غير متصلة حالياً لحفظ المعاملة المالية.');
     }
 
     const txKey = `tx:${newTx.id || `${normalizeArabicName(newTx.patientName)}-${newTx.amount}`}`;
@@ -2439,9 +2399,25 @@ function ClinicApp() {
         if (rpcErr) {
           throw rpcErr;
         }
+        setInvoicesCanonical((prev) => [
+          newInvoice,
+          ...prev.filter((inv) => inv.invoiceId !== invoiceId),
+        ]);
+        if (shouldSavePayment) {
+          setPaymentsCanonical((prev) => [
+            newPayment,
+            ...prev.filter((pay) => pay.paymentId !== paymentId),
+          ]);
+        }
+        if (newPatientToCreate) {
+          setPatientsCanonical((prev) => [
+            newPatientToCreate!,
+            ...prev.filter((p) => p.patientId !== newPatientToCreate!.patientId),
+          ]);
+        }
       } catch (err) {
-        alert(translateDbError(err, 'تعذر حفظ المعاملة المالية في قاعدة البيانات'));
-        return;
+        const msg = translateDbError(err, 'تعذر حفظ المعاملة المالية في قاعدة البيانات');
+        throw new Error(msg);
       }
     } finally {
       inFlightActionsRef.current.delete(txKey);
@@ -2626,11 +2602,11 @@ function ClinicApp() {
   };
 
   // Walk-in: Patient + Invoice + Payment + Visit are committed in one transaction
-  const handleAddPatientToQueue = async (item: QueueItem) => {
+  const handleAddPatientToQueue = async (item: QueueItem): Promise<boolean> => {
     const cleanPhone = (item.phone || '').trim();
     const cleanName = (item.patientName || '').trim();
     const lockKey = `queue:${item.patientId || normalizePhoneDigits(cleanPhone) || normalizeArabicName(cleanName)}`;
-    if (inFlightActionsRef.current.has(lockKey)) return;
+    if (inFlightActionsRef.current.has(lockKey)) return false;
     inFlightActionsRef.current.add(lockKey);
 
     try {
@@ -2748,8 +2724,10 @@ function ClinicApp() {
           });
           scheduleBannerDismiss(5000, `new-${registeredVisit.visitId}`);
         }
+        return true;
       } catch (error) {
         alert(error instanceof Error ? error.message : 'فشل إضافة المريض للانتظار في قاعدة البيانات');
+        return false;
       }
     } finally {
       inFlightActionsRef.current.delete(lockKey);
@@ -2848,13 +2826,14 @@ function ClinicApp() {
       return;
     }
 
-    const activeWaiting =
-      visitsCanonical.find((v) => v.patientId === activeExamPatient?.id && (v.status === 'IN_PROGRESS' || v.status === 'WAITING')) ||
-      visitsCanonical.find((v) => v.status === 'IN_PROGRESS') ||
-      visitsCanonical.find((v) => v.status === 'WAITING');
+    const activeWaiting = activeExamPatient?.id
+      ? visitsCanonical.find(
+          (v) => v.patientId === activeExamPatient.id && (v.status === 'IN_PROGRESS' || v.status === 'WAITING')
+        )
+      : undefined;
 
     if (!activeWaiting) {
-      alert('لا توجد زيارة نشطة لهذا المريض في طابور الانتظار لحفظ الكشف عليها.');
+      alert('لا توجد زيارة نشطة لهذا المريض في طابور الانتظار لحفظ الكشف عليها. يرجى تسجيل زيارة للمريض أولاً.');
       return;
     }
 
@@ -3159,6 +3138,7 @@ function ClinicApp() {
 
               {activeScreen === 'clinical-exam' && (
                 <ExaminationScreen
+                  key={activeExamPatient?.id || 'no-active-patient'}
                   patient={activeExamPatient}
                   availablePatients={patients}
                   onSelectPatient={setActiveExamPatient}

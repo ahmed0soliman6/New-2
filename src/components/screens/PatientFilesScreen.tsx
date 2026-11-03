@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { PatientListItem, ScreenType } from '../../types';
 import { usePermissions } from '../../context/AuthContext';
 import { PatientDetailFullScreen } from './PatientDetailFullScreen';
-import { toEnglishDigits, formatAppDate } from '../../utils/numberUtils';
+import { toEnglishDigits } from '../../utils/numberUtils';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { READ_OPT } from '../../config/readOpt';
 import type {
@@ -64,7 +64,7 @@ export const PatientListItemsScreen: React.FC<PatientListItemsScreenProps> = ({
   followUps = [],
 }) => {
   const { canAccess } = usePermissions();
-  const { language, isRTL, t } = useLanguage();
+  const { language } = useLanguage();
   const [viewingPatientId, setViewingPatientId] = useState<string | null>(selectedPatientId || null);
   const [search, setSearch] = useState('');
   const [patientToDelete, setPatientToDelete] = useState<PatientListItem | null>(null);

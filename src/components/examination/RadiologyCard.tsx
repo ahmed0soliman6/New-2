@@ -260,7 +260,6 @@ export const RadiologyCard: React.FC<RadiologyCardProps> = ({
           ) : (
             <div className="flex items-center gap-1.5 animate-in fade-in">
               <select
-                autoFocus
                 value=""
                 onChange={(e) => {
                   const val = e.target.value;

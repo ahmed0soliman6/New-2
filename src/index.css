@@ -32,14 +32,12 @@
     font-family: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     font-feature-settings: 'locl' 0;
     -webkit-font-feature-settings: 'locl' 0;
-    -moz-font-feature-settings: 'locl' 0;
     font-variant-numeric: tabular-nums;
   }
 
   *, *::before, *::after {
     font-feature-settings: 'locl' 0;
     -webkit-font-feature-settings: 'locl' 0;
-    -moz-font-feature-settings: 'locl' 0;
   }
 
   html:not(.dark), body:not(.dark) {
