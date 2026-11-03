@@ -1,6 +1,12 @@
-import React, { useState, useTransition, useMemo } from 'react';
+import React, { useState, useTransition, useMemo, useRef, useEffect } from 'react';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { DiagnosisCatalogItem } from '../../types';
+import {
+  MEDICAL_DIAGNOSES_ARCHIVE,
+  searchDiagnosesInCatalogAndArchive,
+  fetchOnlineDiagnosesMatches,
+} from '../../data/medicalClinicalArchive';
+import { normalizeDrugText } from '../../data/egyptianDrugArchive';
 
 export interface PatientDiagnosis {
   id: string;
@@ -20,30 +26,6 @@ interface DiagnosisCardProps {
   frequentSuggestions?: Array<{ name: string; count?: number }>;
 }
 
-// Medical & Clinical ICD-10 Presets with abbreviations and bilingual support
-const MEDICAL_DIAGNOSES_PRESETS: (DiagnosisCatalogItem & { abbreviations?: string[] })[] = [
-  { id: 'preset-diag-1', code: 'I10', nameAr: 'ارتفاع ضغط الدم الشرياني المفرد', nameEn: 'Essential (primary) hypertension', category: 'القلب والأوعية', isFavorite: true, abbreviations: ['HTN', 'EH', 'Hypertension', 'ضغط'] },
-  { id: 'preset-diag-2', code: 'E11.9', nameAr: 'داء السكري من النوع الثاني', nameEn: 'Type 2 diabetes mellitus', category: 'الغدد والسكري', isFavorite: true, abbreviations: ['DM', 'T2DM', 'Diabetes', 'سكر', 'السكري'] },
-  { id: 'preset-diag-3', code: 'K21.9', nameAr: 'داء الارتجاع المعدي المريئي', nameEn: 'Gastro-esophageal reflux disease (GERD)', category: 'الجهاز الهضمي', isFavorite: true, abbreviations: ['GERD', 'Reflux', 'ارتجاع', 'المعدة'] },
-  { id: 'preset-diag-4', code: 'I25.1', nameAr: 'قصور الشرايين التاجية للقلب', nameEn: 'Atherosclerotic heart disease (IHD / CAD)', category: 'القلب والأوعية', isFavorite: true, abbreviations: ['IHD', 'CAD', 'Ischemic', 'شرايين'] },
-  { id: 'preset-diag-5', code: 'N39.0', nameAr: 'التهاب مجرى البول والمسالك', nameEn: 'Urinary tract infection (UTI)', category: 'الكلى والمسالك', isFavorite: true, abbreviations: ['UTI', 'Urinary', 'مسالك', 'التهاب البول'] },
-  { id: 'preset-diag-6', code: 'J06.9', nameAr: 'التهاب الجهاز التنفسي العلوي الحاد', nameEn: 'Acute upper respiratory infection (URTI / URI)', category: 'الجهاز التنفسي', isFavorite: true, abbreviations: ['URTI', 'URI', 'Cold', 'Flu', 'برد', 'نزلة برد'] },
-  { id: 'preset-diag-7', code: 'K58.0', nameAr: 'متلازمة القولون العصبي المصحوب بتقلصات', nameEn: 'Irritable bowel syndrome (IBS)', category: 'الجهاز الهضمي', isFavorite: true, abbreviations: ['IBS', 'Colon', 'قولون', 'القولون العصبي'] },
-  { id: 'preset-diag-8', code: 'J45.909', nameAr: 'الربو الشعبي والشعب الهوائية', nameEn: 'Bronchial asthma, unspecified', category: 'الجهاز التنفسي', isFavorite: false, abbreviations: ['BA', 'Asthma', 'ربو', 'حساسية صدر'] },
-  { id: 'preset-diag-9', code: 'J44.9', nameAr: 'الداء الرئوي الانسدادي المزمن', nameEn: 'Chronic obstructive pulmonary disease (COPD)', category: 'الجهاز التنفسي', isFavorite: false, abbreviations: ['COPD', 'Emphysema', 'سدد رئوي'] },
-  { id: 'preset-diag-10', code: 'N18.9', nameAr: 'القصور الفلوي المزمن', nameEn: 'Chronic kidney disease (CKD)', category: 'الكلى والمسالك', isFavorite: false, abbreviations: ['CKD', 'CRF', 'Renal', 'قصور كلوي'] },
-  { id: 'preset-diag-11', code: 'M19.90', nameAr: 'خشونة واحتكاك المفاصل', nameEn: 'Osteoarthritis (OA)', category: 'العظام والعمود الفقري', isFavorite: false, abbreviations: ['OA', 'Osteoarthritis', 'خشونة', 'مفاصل'] },
-  { id: 'preset-diag-12', code: 'H66.90', nameAr: 'التهاب الأذن الوسطى الحاد', nameEn: 'Acute otitis media (AOM)', category: 'أنف وأذن وحنجرة', isFavorite: false, abbreviations: ['AOM', 'Otitis', 'أذن وسطى'] },
-  { id: 'preset-diag-13', code: 'J03.90', nameAr: 'التهاب اللوزتين الحاد', nameEn: 'Acute tonsillitis', category: 'أنف وأذن وحنجرة', isFavorite: false, abbreviations: ['Tonsillitis', 'اللوزتين', 'احتقان'] },
-  { id: 'preset-diag-14', code: 'A09', nameAr: 'النزلة المعوية الحادة والتهاب الأمعاء', nameEn: 'Acute gastroenteritis (AGE)', category: 'الجهاز الهضمي', isFavorite: false, abbreviations: ['AGE', 'Gastroenteritis', 'نزلة معوية'] },
-  { id: 'preset-diag-15', code: 'D50.9', nameAr: 'أنيميا نقص الحديد', nameEn: 'Iron deficiency anemia', category: 'أمراض الدم', isFavorite: false, abbreviations: ['IDA', 'Anemia', 'أنيميا', 'فقر دم'] },
-  { id: 'preset-diag-16', code: 'E03.9', nameAr: 'قصور ونقص نشاط الغدة الدرقية', nameEn: 'Hypothyroidism, unspecified', category: 'الغدد والسكري', isFavorite: false, abbreviations: ['Hypo', 'Thyroid', 'درقية'] },
-  { id: 'preset-diag-17', code: 'I48.91', nameAr: 'الرجفان الأذيني للقلب', nameEn: 'Atrial fibrillation (AF)', category: 'القلب والأوعية', isFavorite: false, abbreviations: ['AF', 'AFib', 'رجفان'] },
-  { id: 'preset-diag-18', code: 'I82.90', nameAr: 'جلطة الوريد العميق', nameEn: 'Deep vein thrombosis (DVT)', category: 'القلب والأوعية', isFavorite: false, abbreviations: ['DVT', 'Thrombosis', 'جلطة'] },
-  { id: 'preset-diag-19', code: 'K76.0', nameAr: 'تشحم الكبد والكبد الدهني', nameEn: 'Nonalcoholic fatty liver disease (NAFLD)', category: 'الجهاز الهضمي', isFavorite: false, abbreviations: ['NAFLD', 'Fatty Liver', 'دهون الكبد'] },
-  { id: 'preset-diag-20', code: 'K27.9', nameAr: 'قرحة المعدة والأثنى عشر', nameEn: 'Peptic ulcer disease (PUD)', category: 'الجهاز الهضمي', isFavorite: false, abbreviations: ['PUD', 'Ulcer', 'قرحة'] },
-];
-
 export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
   diagnoses,
   onChangeDiagnoses,
@@ -59,6 +41,7 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
   const [isSearchingOnline, setIsSearchingOnline] = useState(false);
   const [onlineResults, setOnlineResults] = useState<DiagnosisCatalogItem[]>([]);
   const [, startTransition] = useTransition();
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // New diagnosis form
   const [newCode, setNewCode] = useState('');
@@ -67,20 +50,35 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
   const [newCategory, setNewCategory] = useState('الجهاز الهضمي');
   const [saveToCatalog, setSaveToCatalog] = useState(true);
 
-  // Merge catalog & presets
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  // Merge clinic catalog & comprehensive ICD-10 Medical Archive
   const combinedCatalog = useMemo(() => {
     const map = new Map<string, DiagnosisCatalogItem>();
-    (diagnosesCatalog || []).forEach((d) => map.set(d.nameAr.trim().toLowerCase(), d));
-    MEDICAL_DIAGNOSES_PRESETS.forEach((p) => {
-      const key = p.nameAr.trim().toLowerCase();
-      if (!map.has(key)) map.set(key, p);
+    (diagnosesCatalog || []).forEach((d) =>
+      map.set(normalizeDrugText(`${d.code}-${d.nameAr}`), { ...d, source: 'catalog' })
+    );
+    MEDICAL_DIAGNOSES_ARCHIVE.forEach((p) => {
+      const key = normalizeDrugText(`${p.code}-${p.nameAr}`);
+      if (!map.has(key)) map.set(key, { ...p, source: 'medical-archive' });
     });
     return Array.from(map.values());
   }, [diagnosesCatalog]);
 
   const handleSearchChange = (query: string) => {
     setSearchQuery(query);
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
 
     if (!q) {
       setOnlineResults([]);
@@ -88,49 +86,34 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
       return;
     }
 
-    setIsSearchingOnline(true);
-
+    const localMatches = searchDiagnosesInCatalogAndArchive(q, diagnosesCatalog);
     startTransition(() => {
-      const qClean = q.replace(/[\u064B-\u0652]/g, '');
-
-      // Search catalog + presets with abbreviations, code, arabic, english
-      const matches = combinedCatalog.filter((item) => {
-        const c = (item.code || '').toLowerCase();
-        const ar = (item.nameAr || '').toLowerCase();
-        const en = (item.nameEn || '').toLowerCase();
-        const cat = (item.category || '').toLowerCase();
-        const abbrevs = (item as any).abbreviations || [];
-
-        const hasAbbrevsMatch = abbrevs.some((ab: string) => ab.toLowerCase().includes(qClean));
-
-        return (
-          c.includes(qClean) ||
-          ar.includes(qClean) ||
-          en.includes(qClean) ||
-          cat.includes(qClean) ||
-          hasAbbrevsMatch
-        );
-      });
-
-      // Generate dynamic online ICD-10 medical result if query is custom / specific
-      let onlineDynamic: DiagnosisCatalogItem[] = [];
-      if (matches.length < 2 && qClean.length >= 2) {
-        const caps = query.trim().toUpperCase();
-        onlineDynamic = [
-          {
-            id: `diag-online-${Date.now()}`,
-            code: `ICD-${caps.substr(0, 3)}`,
-            nameAr: `تشخيص طبي: ${query.trim()} (مستدعى من الأرشيف الطبي السريري)`,
-            nameEn: `Clinical Condition matching "${caps}"`,
-            category: 'فهرس التشخيصات السريرية ICD-10',
-            isFavorite: false,
-          },
-        ];
-      }
-
-      setOnlineResults([...matches, ...onlineDynamic]);
-      setIsSearchingOnline(false);
+      setOnlineResults(localMatches);
     });
+
+    if (localMatches.length < 3 && q.length >= 2) {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      setIsSearchingOnline(true);
+
+      fetchOnlineDiagnosesMatches(q, controller.signal)
+        .then((remoteMatches) => {
+          if (controller.signal.aborted) return;
+          const seen = new Set(localMatches.map((m) => normalizeDrugText(m.code || m.nameAr)));
+          const uniqueRemote = remoteMatches.filter(
+            (r) => !seen.has(normalizeDrugText(r.code || r.nameAr))
+          );
+          setOnlineResults([...localMatches, ...uniqueRemote]);
+          setIsSearchingOnline(false);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setIsSearchingOnline(false);
+          }
+        });
+    } else {
+      setIsSearchingOnline(false);
+    }
   };
 
   const handleAddFromCatalog = (item: DiagnosisCatalogItem) => {
@@ -148,6 +131,22 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
     onChangeDiagnoses([...diagnoses, newDiag]);
     setSearchQuery('');
     setOnlineResults([]);
+  };
+
+  const handleSaveArchiveDiagToCatalog = (e: React.MouseEvent, item: DiagnosisCatalogItem) => {
+    e.stopPropagation();
+    const alreadyInCatalog = (diagnosesCatalog || []).some(
+      (c) => normalizeDrugText(c.nameAr) === normalizeDrugText(item.nameAr)
+    );
+    if (!alreadyInCatalog) {
+      onAddDiagnosisToCatalog({
+        ...item,
+        id: `diag-cat-${Date.now()}`,
+        isFavorite: true,
+        active: true,
+        source: 'catalog',
+      });
+    }
   };
 
   const handleAddNewCustomDiagnosis = (e: React.FormEvent) => {
@@ -201,26 +200,16 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
 
   const favoriteDiagnoses = diagnosesCatalog.filter((d) => d.isFavorite);
 
-  const filteredCatalog = combinedCatalog.filter((item) => {
-    if (!item) return false;
-    const q = (searchFilter || '').toLowerCase();
-    return (
-      (item.nameAr || '').toLowerCase().includes(q) ||
-      (item.nameEn || '').toLowerCase().includes(q) ||
-      (item.code || '').toLowerCase().includes(q) ||
-      (item.category || '').toLowerCase().includes(q)
-    );
-  });
+  const filteredCatalog = searchFilter.trim()
+    ? searchDiagnosesInCatalogAndArchive(searchFilter, diagnosesCatalog)
+    : combinedCatalog;
 
   const handleQuickAdd = () => {
     const trimmed = searchQuery.trim();
     if (!trimmed) return;
-    const matched = combinedCatalog.find(
-      (c) =>
-        c.nameAr.toLowerCase() === trimmed.toLowerCase() ||
-        (c.nameEn && c.nameEn.toLowerCase() === trimmed.toLowerCase()) ||
-        (c.code && c.code.toLowerCase() === trimmed.toLowerCase())
-    );
+    const matched =
+      onlineResults[0] ||
+      searchDiagnosesInCatalogAndArchive(trimmed, diagnosesCatalog)[0];
     if (matched) {
       handleAddFromCatalog(matched);
     } else {
@@ -255,8 +244,8 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
             </div>
             <p className="text-[11px] text-slate-500 dark:text-[#859394]">
               {language === 'en'
-                ? 'Specify primary diagnosis and accompanying secondary conditions'
-                : 'تحديد التشخيص الأساسي والتشخيصات الفرعية المصاحبة'}
+                ? 'Search by Arabic/English name, ICD-10 code, or medical abbreviation (HTN, DM, GERD, IBS, IHD, UTI...)'
+                : 'بحث بالاسم العربي/الإنجليزي أو كود ICD-10 أو الاختصار الطبي (HTN, DM, GERD, IBS, IHD, UTI, COPD...)'}
             </p>
           </div>
         </div>
@@ -287,14 +276,31 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
                 className="bg-white dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs font-bold py-1.5 px-3 rounded-xl border-2 border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-500/30 cursor-pointer min-w-[210px] max-w-[320px] shadow-sm"
               >
                 <option value="">{language === 'en' ? '-- Select diagnosis from catalog --' : '-- اضغط لاختيار تشخيص من دليلي --'}</option>
-                {combinedCatalog.map((item) => {
-                  const isAdded = diagnoses.some((d) => d.nameAr === item.nameAr);
-                  return (
-                    <option key={item.id} value={item.id} disabled={isAdded}>
-                      {isAdded ? '✓ [مضاف] ' : '+ '} {item.nameAr} {item.code ? `[${item.code}]` : ''}
-                    </option>
-                  );
-                })}
+                {diagnosesCatalog.length > 0 && (
+                  <optgroup label={language === 'en' ? '★ My Clinic Diagnoses Catalog' : '★ دليل تشخيصات عيادتي (دليلي)'}>
+                    {diagnosesCatalog.map((item) => {
+                      const isAdded = diagnoses.some((d) => d.nameAr === item.nameAr);
+                      return (
+                        <option key={item.id} value={item.id} disabled={isAdded}>
+                          {isAdded ? '✓ [مضاف] ' : '+ '} {item.nameAr} {item.code ? `[${item.code}]` : ''}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                )}
+                <optgroup label={language === 'en' ? '🇪🇬 Clinical ICD-10 Archive (Abbreviations)' : '🇪🇬 أرشيف التشخيصات القياسي ICD-10 (بالاختصارات)'}>
+                  {combinedCatalog
+                    .filter((item) => item.source !== 'catalog')
+                    .map((item) => {
+                      const isAdded = diagnoses.some((d) => d.nameAr === item.nameAr);
+                      const abbrLabel = item.abbreviations?.[0] ? ` (${item.abbreviations[0]})` : '';
+                      return (
+                        <option key={item.id} value={item.id} disabled={isAdded}>
+                          {isAdded ? '✓ [مضاف] ' : '+ '} [{item.code}]{abbrLabel} {item.nameAr}
+                        </option>
+                      );
+                    })}
+                </optgroup>
               </select>
               <button
                 type="button"
@@ -316,8 +322,8 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
             type="text"
             placeholder={
               language === 'en'
-                ? 'Search by name, code or abbreviation (HTN, DM, GERD, UTI) or type diagnosis and click Add...'
-                : 'ابحث بالاسم العربي/الإنجليزي أو الكود أو الاختصار (HTN, DM, GERD) أو اكتب تشخيصاً جديداً واضغط إضافة...'
+                ? 'Search in My Catalog & ICD-10 Archive by abbreviation (HTN, DM, GERD, IBS, IHD, UTI, COPD, IDA) or Arabic/English...'
+                : 'ابحث في دليلي وأرشيف ICD-10 بالاختصار الطبي (HTN, DM, GERD, IBS, IHD, UTI, COPD, IDA, ضغط, سكر, ارتجاع...) أو الاسم...'
             }
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
@@ -359,88 +365,150 @@ export const DiagnosisCard: React.FC<DiagnosisCardProps> = ({
 
         {/* Live Search Results */}
         {searchQuery.trim() && (
-          <div className="p-3 bg-white dark:bg-[#111A2E] rounded-xl border border-amber-500/30 space-y-2 animate-in fade-in">
-            <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-[#859394] border-b border-slate-100 dark:border-white/5 pb-1.5">
+          <div className="p-3 bg-white dark:bg-[#111A2E] rounded-xl border border-amber-500/30 space-y-2.5 animate-in fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-[#859394] border-b border-slate-100 dark:border-white/5 pb-1.5">
               <span className="flex items-center gap-1">
                 <span className="material-symbols-outlined text-xs text-amber-500">saved_search</span>
                 <span>
                   {language === 'en'
-                    ? `Search results for "${searchQuery}":`
-                    : `نتائج البحث للتشخيصات السريرية لـ "${searchQuery}":`}
+                    ? `Search results in My Catalog & ICD-10 Archive for "${searchQuery}":`
+                    : `نتائج البحث في دليلي وأرشيف التشخيصات ICD-10 لـ "${searchQuery}":`}
                 </span>
               </span>
               <span className="font-mono text-amber-600 dark:text-amber-400 font-bold">
                 {isSearchingOnline
-                  ? (language === 'en' ? 'Querying...' : 'جاري الاستعلام...')
+                  ? (language === 'en' ? 'Searching ICD-10...' : 'جاري البحث في أرشيف ICD-10...')
                   : (language === 'en' ? `${onlineResults.length} matching diagnoses` : `${onlineResults.length} تشخيص مطابق`)}
               </span>
             </div>
 
-            {isSearchingOnline ? (
-              <div className="py-4 text-center text-xs text-amber-500 font-bold flex items-center justify-center gap-2">
-                <span className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></span>
-                <span>
-                  {language === 'en'
-                    ? 'Searching in international ICD-10 medical index...'
-                    : 'جاري البحث في الفهرس الطبي الدولي ICD-10...'}
-                </span>
-              </div>
-            ) : onlineResults.length === 0 ? (
+            {onlineResults.length === 0 && !isSearchingOnline ? (
               <div className="py-4 text-center text-xs text-slate-500 space-y-2">
                 <p>
                   {language === 'en'
-                    ? `No direct results found matching "${searchQuery}".`
-                    : `لم يتم العثور على نتائج مباشرة تطابق "${searchQuery}".`}
+                    ? `No direct diagnosis found matching "${searchQuery}".`
+                    : `لم يتم العثور على تشخيص مطابق لـ "${searchQuery}" في دليلك أو أرشيف ICD-10.`}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewNameAr(searchQuery);
-                    setShowAddModal(true);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer shadow-xs"
-                >
-                  + إضافته كتشخيص جديد وتوثيقه بالملف
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleQuickAdd}
+                    className="px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer shadow-xs hover:bg-amber-400"
+                  >
+                    + إضافة "{searchQuery.trim()}" كتشخيص مباشر
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewNameAr(searchQuery.trim());
+                      setShowAddModal(true);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer hover:bg-slate-200"
+                  >
+                    + تخصيص وحفظ في دليلي
+                  </button>
+                </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-60 overflow-y-auto pr-1">
-                {onlineResults.map((item) => {
-                  const isAdded = diagnoses.some((d) => d.nameAr === item.nameAr);
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      disabled={isAdded}
-                      onClick={() => handleAddFromCatalog(item)}
-                      className={`p-3 rounded-xl text-right text-xs transition-all flex items-start justify-between cursor-pointer border ${
-                        isAdded
-                          ? 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-400 cursor-not-allowed'
-                          : 'bg-slate-50 dark:bg-[#080e1b] hover:border-amber-400 border-slate-200 dark:border-white/5 text-slate-800 dark:text-[#dde2f5]'
-                      }`}
-                    >
-                      <div className="space-y-1">
-                        <div className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-[#dde2f5]">
-                          <span className="font-mono text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 rounded">
-                            {item.code}
-                          </span>
-                          <span>{item.nameAr}</span>
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-72 overflow-y-auto pr-1">
+                  {onlineResults.map((item) => {
+                    const isAdded = diagnoses.some((d) => d.nameAr === item.nameAr);
+                    const isFromClinicCatalog =
+                      item.source === 'catalog' ||
+                      (diagnosesCatalog || []).some(
+                        (c) => normalizeDrugText(c.nameAr) === normalizeDrugText(item.nameAr)
+                      );
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => !isAdded && handleAddFromCatalog(item)}
+                        className={`p-3 rounded-xl text-right text-xs transition-all flex flex-col justify-between gap-2 border ${
+                          isAdded
+                            ? 'bg-slate-100 dark:bg-white/5 border-transparent text-slate-400 cursor-not-allowed'
+                            : 'bg-slate-50 dark:bg-[#080e1b] hover:border-amber-400 border-slate-200 dark:border-white/5 text-slate-800 dark:text-[#dde2f5] cursor-pointer'
+                        }`}
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                            <span className="font-mono text-[10px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 px-1.5 py-0.5 rounded">
+                              {item.code}
+                            </span>
+                            <span
+                              className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                                isFromClinicCatalog
+                                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20'
+                                  : 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/20'
+                              }`}
+                            >
+                              {isFromClinicCatalog ? 'من دليلي ✓' : 'أرشيف ICD-10 🇪🇬'}
+                            </span>
+                          </div>
+
+                          <div className="font-bold text-slate-900 dark:text-[#dde2f5] leading-snug">
+                            {item.nameAr}
+                          </div>
+
+                          {item.nameEn && (
+                            <span className="text-[10px] text-slate-400 font-mono block truncate" dir="ltr">
+                              {item.nameEn}
+                            </span>
+                          )}
+
+                          {item.abbreviations && item.abbreviations.length > 0 && (
+                            <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                              {item.abbreviations.slice(0, 4).map((abbr) => (
+                                <span
+                                  key={abbr}
+                                  className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20"
+                                >
+                                  {abbr}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        {item.nameEn && (
-                          <span className="text-[10px] text-slate-400 font-mono block" dir="ltr">
-                            {item.nameEn}
-                          </span>
-                        )}
+
+                        <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-200/50 dark:border-white/5">
+                          {isAdded ? (
+                            <span className="text-[10px] text-emerald-600 font-bold">مضاف بالكشف ✓</span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                              <span className="material-symbols-outlined text-sm">add_circle</span>
+                              <span>إضافة التشخيص</span>
+                            </span>
+                          )}
+
+                          {!isFromClinicCatalog && (
+                            <button
+                              type="button"
+                              onClick={(e) => handleSaveArchiveDiagToCatalog(e, item)}
+                              className="px-2 py-0.5 rounded-md bg-slate-200/80 hover:bg-amber-500 hover:text-slate-950 dark:bg-white/10 dark:hover:bg-amber-400 dark:hover:text-slate-950 text-[10px] font-bold transition-colors cursor-pointer"
+                            >
+                              + حفظ بدليلي
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      {isAdded ? (
-                        <span className="text-[10px] text-emerald-600 font-bold">مضاف ✓</span>
-                      ) : (
-                        <span className="material-symbols-outlined text-amber-500 text-base">add_circle</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-white/5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="text-slate-400">هل تبحث عن تشخيص سريري آخر غير ظاهر؟</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewNameAr(searchQuery.trim());
+                      setShowAddModal(true);
+                    }}
+                    className="text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer"
+                  >
+                    + إضافة "{searchQuery.trim()}" كتشخيص جديد في دليلي
+                  </button>
+                </div>
+              </>
             )}
           </div>
         )}

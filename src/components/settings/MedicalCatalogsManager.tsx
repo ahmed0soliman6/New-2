@@ -15,6 +15,12 @@ import {
   removeLifestylePreset,
   subscribeToLifestylePresets,
 } from '../../utils/lifestyleManager';
+import { searchDrugsInCatalogAndArchive } from '../../data/egyptianDrugArchive';
+import {
+  searchLabsInCatalogAndArchive,
+  searchRadiologyInCatalogAndArchive,
+  searchDiagnosesInCatalogAndArchive,
+} from '../../data/medicalClinicalArchive';
 
 interface MedicalCatalogsManagerProps {
   radiologyCatalog: RadiologyCatalogItem[];
@@ -271,41 +277,26 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
     setChronicName('');
   };
 
-  // Filtered lists
-  const filteredRadiology = radiologyCatalog.filter((item) => {
-    const q = (radSearch || '').toLowerCase();
-    const matchSearch =
-      (item.name || '').toLowerCase().includes(q) ||
-      (item.category || '').toLowerCase().includes(q);
-    const matchCat = radCatFilter === 'ALL' || item.category === radCatFilter;
-    return matchSearch && matchCat;
-  });
+  // Filtered lists (supports My Catalog + Medical Archive + Abbreviations when searching)
+  const filteredRadiology = (
+    radSearch.trim()
+      ? searchRadiologyInCatalogAndArchive(radSearch, radiologyCatalog)
+      : radiologyCatalog.map((r) => ({ ...r, source: 'catalog' as const }))
+  ).filter((item) => radCatFilter === 'ALL' || item.category === radCatFilter);
 
-  const filteredLab = labCatalog.filter((item) => {
-    const q = (labSearch || '').toLowerCase();
-    const matchSearch =
-      (item.name || '').toLowerCase().includes(q) ||
-      (item.category || '').toLowerCase().includes(q);
-    const matchCat = labCatFilter === 'ALL' || item.category === labCatFilter;
-    return matchSearch && matchCat;
-  });
+  const filteredLab = (
+    labSearch.trim()
+      ? searchLabsInCatalogAndArchive(labSearch, labCatalog)
+      : labCatalog.map((l) => ({ ...l, source: 'catalog' as const }))
+  ).filter((item) => labCatFilter === 'ALL' || item.category === labCatFilter);
 
-  const filteredDrugs = drugCatalog.filter((item) => {
-    const q = (drugSearch || '').toLowerCase();
-    const matchSearch =
-      (item.brandName || '').toLowerCase().includes(q) ||
-      (item.genericName && item.genericName.toLowerCase().includes(q));
-    return matchSearch;
-  });
+  const filteredDrugs = drugSearch.trim()
+    ? searchDrugsInCatalogAndArchive(drugSearch, drugCatalog)
+    : drugCatalog.map((d) => ({ ...d, source: 'catalog' as const }));
 
-  const filteredDiagnoses = diagnosesCatalog.filter((item) => {
-    const q = (diagSearch || '').toLowerCase();
-    return (
-      (item.nameAr || '').toLowerCase().includes(q) ||
-      (item.nameEn && item.nameEn.toLowerCase().includes(q)) ||
-      (item.code && item.code.toLowerCase().includes(q))
-    );
-  });
+  const filteredDiagnoses = diagSearch.trim()
+    ? searchDiagnosesInCatalogAndArchive(diagSearch, diagnosesCatalog)
+    : diagnosesCatalog.map((d) => ({ ...d, source: 'catalog' as const }));
 
   const filteredSymptoms = symptomsCatalog.filter((item) => {
     const q = (symSearch || '').toLowerCase();
@@ -483,7 +474,7 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
                 </span>
                 <input
                   type="text"
-                  placeholder="بحث في فحوصات الأشعة والتصوير..."
+                  placeholder="بحث في دليلي وأرشيف الأشعة بالاسم أو الاختصار (CXR, US, Echo, CT, MRI, MRCP)..."
                   value={radSearch}
                   onChange={(e) => setRadSearch(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-white/5 focus:outline-none"
@@ -510,44 +501,84 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
 
             {/* Items Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
-              {filteredRadiology.map((item) => (
-                <div
-                  key={item.id}
-                  className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-sky-300 dark:hover:border-sky-800 transition-all"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.name}</h4>
-                    <span className="text-[10px] text-sky-600 dark:text-sky-400 block mt-0.5">{item.category}</span>
-                  </div>
+              {filteredRadiology.map((item) => {
+                const isFromArchive = item.source === 'medical-archive';
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-sky-300 dark:hover:border-sky-800 transition-all"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {item.code && (
+                          <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300">
+                            [{item.code}]
+                          </span>
+                        )}
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.name}</h4>
+                        {isFromArchive && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/20">
+                            أرشيف الأشعة 🇪🇬
+                          </span>
+                        )}
+                      </div>
+                      {item.englishName && (
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-mono" dir="ltr">
+                          {item.englishName}
+                        </p>
+                      )}
+                      <span className="text-[10px] text-sky-600 dark:text-sky-400 block mt-0.5">{item.category}</span>
+                    </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onToggleRadiologyFavorite(item.id)}
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-                        item.isFavorite
-                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
-                          : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
-                      }`}
-                      title="المفضلة"
-                    >
-                      <span className="material-symbols-outlined text-sm">
-                        {item.isFavorite ? 'star' : 'star_border'}
-                      </span>
-                    </button>
-                    {allowDelete && (
-                      <button
-                        type="button"
-                        onClick={() => onRemoveRadiology(item.id)}
-                        className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
-                        title="حذف من الدليل"
-                      >
-                        ✕
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isFromArchive ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onAddRadiology({
+                              ...item,
+                              id: `rad-${Date.now()}`,
+                              isFavorite: true,
+                              active: true,
+                              source: 'catalog',
+                            })
+                          }
+                          className="px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-[10px] transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
+                        >
+                          + إضافة لدليلي
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onToggleRadiologyFavorite(item.id)}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                              item.isFavorite
+                                ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
+                                : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
+                            }`}
+                            title="المفضلة"
+                          >
+                            <span className="material-symbols-outlined text-sm">
+                              {item.isFavorite ? 'star' : 'star_border'}
+                            </span>
+                          </button>
+                          {allowDelete && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveRadiology(item.id)}
+                              className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
+                              title="حذف من الدليل"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -673,7 +704,7 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
                 </span>
                 <input
                   type="text"
-                  placeholder="بحث في تحاليل المعمل..."
+                  placeholder="بحث في دليلي والأرشيف المعملي بالاسم أو الاختصار (CBC, HbA1c, CRP, TSH, ESR, LFT, KFT)..."
                   value={labSearch}
                   onChange={(e) => setLabSearch(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-white/5 focus:outline-none"
@@ -700,51 +731,91 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
 
             {/* Items Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
-              {filteredLab.map((item) => (
-                <div
-                  key={item.id}
-                  className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-emerald-300 dark:hover:border-emerald-800 transition-all"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.name}</h4>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400">{item.category}</span>
-                      {item.referenceRange && (
-                        <span className="text-[10px] text-slate-400 dark:text-[#859394] font-mono">
-                          • {item.referenceRange}
-                        </span>
+              {filteredLab.map((item) => {
+                const isFromArchive = item.source === 'medical-archive';
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-emerald-300 dark:hover:border-emerald-800 transition-all"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {item.code && (
+                          <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                            [{item.code}]
+                          </span>
+                        )}
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.name}</h4>
+                        {isFromArchive && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20">
+                            الأرشيف المعملي 🇪🇬
+                          </span>
+                        )}
+                      </div>
+                      {item.englishName && (
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-mono" dir="ltr">
+                          {item.englishName}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] text-emerald-600 dark:text-emerald-400">{item.category}</span>
+                        {item.referenceRange && (
+                          <span className="text-[10px] text-slate-400 dark:text-[#859394] font-mono truncate">
+                            • {item.referenceRange}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isFromArchive ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onAddLab({
+                              ...item,
+                              id: `lab-${Date.now()}`,
+                              isFavorite: true,
+                              active: true,
+                              source: 'catalog',
+                            })
+                          }
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
+                        >
+                          + إضافة لدليلي
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onToggleLabFavorite(item.id)}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                              item.isFavorite
+                                ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
+                                : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
+                            }`}
+                            title="المفضلة"
+                          >
+                            <span className="material-symbols-outlined text-sm">
+                              {item.isFavorite ? 'star' : 'star_border'}
+                            </span>
+                          </button>
+                          {allowDelete && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveLab(item.id)}
+                              className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
+                              title="حذف من الدليل"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onToggleLabFavorite(item.id)}
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-                        item.isFavorite
-                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
-                          : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
-                      }`}
-                      title="المفضلة"
-                    >
-                      <span className="material-symbols-outlined text-sm">
-                        {item.isFavorite ? 'star' : 'star_border'}
-                      </span>
-                    </button>
-                    {allowDelete && (
-                      <button
-                        type="button"
-                        onClick={() => onRemoveLab(item.id)}
-                        className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
-                        title="حذف من الدليل"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -876,7 +947,7 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
               </span>
               <input
                 type="text"
-                placeholder="بحث في الأدوية بالاسم التجاري أو العلمي..."
+                placeholder="بحث في دليل العيادة وأرشيف الدواء المصري بالاسم التجاري أو العلمي (عربي / إنجليزي)..."
                 value={drugSearch}
                 onChange={(e) => setDrugSearch(e.target.value)}
                 className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-white/5 focus:outline-none"
@@ -885,49 +956,86 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
 
             {/* Items Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
-              {filteredDrugs.map((item) => (
-                <div
-                  key={item.id}
-                  className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-teal-300 dark:hover:border-teal-800 transition-all"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.brandName}</h4>
-                    {item.genericName && (
-                      <p className="text-[10px] text-teal-600 dark:text-[#45dee7] truncate">{item.genericName}</p>
-                    )}
-                    <span className="text-[10px] text-slate-400 dark:text-[#859394] block mt-0.5 font-mono">
-                      {item.defaultDosage} • {item.defaultTiming}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onToggleDrugFavorite(item.id)}
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-                        item.isFavorite
-                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
-                          : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
-                      }`}
-                      title="المفضلة"
-                    >
-                      <span className="material-symbols-outlined text-sm">
-                        {item.isFavorite ? 'star' : 'star_border'}
+              {filteredDrugs.map((item) => {
+                const isFromArchive = item.source === 'eda-archive';
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-teal-300 dark:hover:border-teal-800 transition-all"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.brandName}</h4>
+                        {isFromArchive && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/20">
+                            أرشيف الدواء المصري 🇪🇬
+                          </span>
+                        )}
+                      </div>
+                      {item.arabicBrand && (
+                        <p className="text-[11px] font-bold text-teal-700 dark:text-[#45dee7] truncate">{item.arabicBrand}</p>
+                      )}
+                      {item.genericName && (
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-mono" dir="ltr">{item.genericName}</p>
+                      )}
+                      {item.arabicGeneric && (
+                        <p className="text-[10px] text-slate-500 dark:text-[#859394] truncate">المادة الفعالة: {item.arabicGeneric}</p>
+                      )}
+                      <span className="text-[10px] text-slate-400 dark:text-[#859394] block mt-0.5 font-mono">
+                        {item.defaultDosage} • {item.defaultTiming}
                       </span>
-                    </button>
-                    {allowDelete && (
-                      <button
-                        type="button"
-                        onClick={() => onRemoveDrug(item.id)}
-                        className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
-                        title="حذف من الدليل"
-                      >
-                        ✕
-                      </button>
-                    )}
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isFromArchive ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onAddDrug({
+                              ...item,
+                              id: `med-${Date.now()}`,
+                              isFavorite: true,
+                              active: true,
+                              source: 'catalog',
+                            })
+                          }
+                          className="px-2.5 py-1.5 rounded-lg bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-bold text-[10px] transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
+                          title="إضافة هذا الدواء من أرشيف الدواء المصري إلى دليل العيادة"
+                        >
+                          + إضافة لدليلي
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onToggleDrugFavorite(item.id)}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                              item.isFavorite
+                                ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
+                                : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
+                            }`}
+                            title="المفضلة"
+                          >
+                            <span className="material-symbols-outlined text-sm">
+                              {item.isFavorite ? 'star' : 'star_border'}
+                            </span>
+                          </button>
+                          {allowDelete && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveDrug(item.id)}
+                              className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
+                              title="حذف من الدليل"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1036,7 +1144,7 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
               </span>
               <input
                 type="text"
-                placeholder="بحث في التشخيصات الطبية وأكواد ICD..."
+                placeholder="بحث في دليلي وأرشيف التشخيصات ICD-10 بالاسم أو الاختصار (HTN, DM, GERD, IBS, IHD, UTI)..."
                 value={diagSearch}
                 onChange={(e) => setDiagSearch(e.target.value)}
                 className="w-full bg-slate-50 dark:bg-[#080e1b] text-slate-900 dark:text-[#dde2f5] text-xs pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-white/5 focus:outline-none"
@@ -1045,49 +1153,93 @@ export const MedicalCatalogsManager: React.FC<MedicalCatalogsManagerProps> = ({
 
             {/* Items Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-96 overflow-y-auto pr-1">
-              {filteredDiagnoses.map((item) => (
-                <div
-                  key={item.id}
-                  className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-amber-300 dark:hover:border-amber-800 transition-all"
-                >
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.nameAr}</h4>
-                    {item.nameEn && (
-                      <p className="text-[10px] text-slate-500 dark:text-[#859394] truncate">{item.nameEn}</p>
-                    )}
-                    <span className="text-[10px] text-amber-600 dark:text-amber-400 font-mono block mt-0.5">
-                      {item.code || 'ICD-10'}
-                    </span>
-                  </div>
+              {filteredDiagnoses.map((item) => {
+                const isFromArchive = item.source === 'medical-archive';
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-slate-50 dark:bg-[#080e1b] p-3 rounded-xl border border-slate-200 dark:border-white/5 flex items-center justify-between gap-2 hover:border-amber-300 dark:hover:border-amber-800 transition-all"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[9px] text-amber-700 dark:text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded font-mono font-bold">
+                          {item.code || 'ICD-10'}
+                        </span>
+                        <h4 className="text-xs font-bold text-slate-900 dark:text-[#dde2f5] truncate">{item.nameAr}</h4>
+                        {isFromArchive && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/20">
+                            أرشيف ICD-10 🇪🇬
+                          </span>
+                        )}
+                      </div>
+                      {item.nameEn && (
+                        <p className="text-[10px] text-slate-500 dark:text-[#859394] truncate font-mono mt-0.5" dir="ltr">
+                          {item.nameEn}
+                        </p>
+                      )}
+                      {item.abbreviations && item.abbreviations.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap mt-1">
+                          {item.abbreviations.slice(0, 3).map((abbr) => (
+                            <span
+                              key={abbr}
+                              className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-white/5 text-slate-600 dark:text-slate-300"
+                            >
+                              {abbr}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => onToggleDiagnosisFavorite(item.id)}
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-                        item.isFavorite
-                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
-                          : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
-                      }`}
-                      title="المفضلة"
-                    >
-                      <span className="material-symbols-outlined text-sm">
-                        {item.isFavorite ? 'star' : 'star_border'}
-                      </span>
-                    </button>
-                    {allowDelete && (
-                      <button
-                        type="button"
-                        onClick={() => onRemoveDiagnosis(item.id)}
-                        className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
-                        title="حذف من الدليل"
-                      >
-                        ✕
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {isFromArchive ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onAddDiagnosis({
+                              ...item,
+                              id: `diag-${Date.now()}`,
+                              isFavorite: true,
+                              active: true,
+                              source: 'catalog',
+                            })
+                          }
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] transition-colors cursor-pointer whitespace-nowrap shadow-2xs"
+                        >
+                          + إضافة لدليلي
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onToggleDiagnosisFavorite(item.id)}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                              item.isFavorite
+                                ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40'
+                                : 'text-slate-400 hover:text-amber-500 bg-white dark:bg-[#111A2E]'
+                            }`}
+                            title="المفضلة"
+                          >
+                            <span className="material-symbols-outlined text-sm">
+                              {item.isFavorite ? 'star' : 'star_border'}
+                            </span>
+                          </button>
+                          {allowDelete && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveDiagnosis(item.id)}
+                              className="w-7 h-7 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center justify-center transition-colors cursor-pointer text-xs"
+                              title="حذف من الدليل"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

@@ -224,7 +224,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-1',
     brandName: 'Concor 5 mg Plus Tab.',
+    arabicBrand: 'كونكور 5 بلس أقراص',
     genericName: 'Bisoprolol 5mg + Hydrochlorothiazide 12.5mg',
+    arabicGeneric: 'بيسوبرولول 5 ملجم + هيدروكلوروثيازيد 12.5 ملجم',
     strength: '5/12.5 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والضغط',
@@ -237,7 +239,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-2',
     brandName: 'Norvasc 5 mg Tab.',
+    arabicBrand: 'نورفاسك 5 ملجم أقراص',
     genericName: 'Amlodipine 5mg',
+    arabicGeneric: 'أملوديبين 5 ملجم',
     strength: '5 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والضغط',
@@ -250,7 +254,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-3',
     brandName: 'Nexium 40 mg Tab.',
+    arabicBrand: 'نيكسيوم 40 ملجم أقراص',
     genericName: 'Esomeprazole 40mg',
+    arabicGeneric: 'إيسوميبرازول 40 ملجم',
     strength: '40 mg',
     form: 'أقراص معدية (Tablets)',
     category: 'الجهاز الهضمي',
@@ -263,7 +269,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-4',
     brandName: 'Glucophage 1000 mg Tab.',
+    arabicBrand: 'جلوكوفاج 1000 ملجم أقراص',
     genericName: 'Metformin Hydrochloride 1000mg',
+    arabicGeneric: 'ميتفورمين هيدروكلوريد 1000 ملجم',
     strength: '1000 mg',
     form: 'أقراص ممتدة المفعول (Tablets)',
     category: 'الغدد والسكري',
@@ -276,7 +284,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-5',
     brandName: 'Janumet 50/1000 mg Tab.',
+    arabicBrand: 'جانوميت 50/1000 ملجم أقراص',
     genericName: 'Sitagliptin 50mg + Metformin 1000mg',
+    arabicGeneric: 'سيتاجليبتين 50 ملجم + ميتفورمين 1000 ملجم',
     strength: '50/1000 mg',
     form: 'أقراص (Tablets)',
     category: 'الغدد والسكري',
@@ -289,7 +299,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-6',
     brandName: 'Forxiga 10 mg Tab.',
+    arabicBrand: 'فورسيجا 10 ملجم أقراص',
     genericName: 'Dapagliflozin 10mg',
+    arabicGeneric: 'داباجليفلوزين 10 ملجم',
     strength: '10 mg',
     form: 'أقراص (Tablets)',
     category: 'الغدد والسكري',
@@ -302,7 +314,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-7',
     brandName: 'Gastreg 200 mg Tab.',
+    arabicBrand: 'جاست ريج 200 ملجم أقراص',
     genericName: 'Trimebutine Maleate 200mg',
+    arabicGeneric: 'تريميبوتين ماليات 200 ملجم',
     strength: '200 mg',
     form: 'أقراص (Tablets)',
     category: 'الجهاز الهضمي',
@@ -315,7 +329,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-8',
     brandName: 'Gaviscon Advance Oral Susp.',
+    arabicBrand: 'جافيسكون أدفانس شراب معلق',
     genericName: 'Sodium Alginate + Potassium Bicarbonate',
+    arabicGeneric: 'ألجينات الصوديوم + بيكربونات البوتاسيوم',
     strength: '500/100 mg per 10ml',
     form: 'شراب معلق (Suspension)',
     category: 'الجهاز الهضمي',
@@ -328,7 +344,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-9',
     brandName: 'Ator 20 mg Tab.',
+    arabicBrand: 'أتور 20 ملجم أقراص',
     genericName: 'Atorvastatin Calcium 20mg',
+    arabicGeneric: 'أتورفاستاتين كالسيوم 20 ملجم',
     strength: '20 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والأوعية',
@@ -341,7 +359,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-10',
     brandName: 'Augmentin 1 gm Tab.',
+    arabicBrand: 'أوجمنتين 1 جرام أقراص',
     genericName: 'Amoxicillin 875mg + Clavulanic Acid 125mg',
+    arabicGeneric: 'أموكسيسيلين 875 ملجم + حمض الكلافولانيك 125 ملجم',
     strength: '1 gm',
     form: 'أقراص (Tablets)',
     category: 'مضادات حيوية',
@@ -356,7 +376,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-11',
     brandName: 'Klacid 500 mg Tab.',
+    arabicBrand: 'كلاسيد 500 ملجم أقراص',
     genericName: 'Clarithromycin 500mg',
+    arabicGeneric: 'كلاريثرومايسين 500 ملجم',
     strength: '500 mg',
     form: 'أقراص (Tablets)',
     category: 'مضادات حيوية',
@@ -368,7 +390,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-12',
     brandName: 'Flagyl 500 mg Tab.',
+    arabicBrand: 'فلاجيل 500 ملجم أقراص',
     genericName: 'Metronidazole 500mg',
+    arabicGeneric: 'مترونيدازول 500 ملجم',
     strength: '500 mg',
     form: 'أقراص (Tablets)',
     category: 'مضادات حيوية ومطهرات',
@@ -380,7 +404,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-13',
     brandName: 'Panadol Extra Tab.',
+    arabicBrand: 'بانادول إكسترا أقراص',
     genericName: 'Paracetamol 500mg + Caffeine 65mg',
+    arabicGeneric: 'باراسيتامول 500 ملجم + كافيين 65 ملجم',
     strength: '500/65 mg',
     form: 'أقراص (Tablets)',
     category: 'مسكنات وخافض حرارة',
@@ -392,7 +418,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-14',
     brandName: 'Cataflam 50 mg Tab.',
+    arabicBrand: 'كتافلام 50 ملجم أقراص',
     genericName: 'Diclofenac Potassium 50mg',
+    arabicGeneric: 'ديكلوفيناك بوتاسيوم 50 ملجم',
     strength: '50 mg',
     form: 'أقراص (Tablets)',
     category: 'مسكنات ومضادات التهاب',
@@ -404,7 +432,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-15',
     brandName: 'Controloc 40 mg Tab.',
+    arabicBrand: 'كونترولوك 40 ملجم أقراص',
     genericName: 'Pantoprazole 40mg',
+    arabicGeneric: 'بانتوبرازول 40 ملجم',
     strength: '40 mg',
     form: 'أقراص (Tablets)',
     category: 'الجهاز الهضمي',
@@ -416,7 +446,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-16',
     brandName: 'Plavix 75 mg Tab.',
+    arabicBrand: 'بلافيكس 75 ملجم أقراص',
     genericName: 'Clopidogrel 75mg',
+    arabicGeneric: 'كلوبيدوجريل 75 ملجم',
     strength: '75 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والأوعية',
@@ -428,7 +460,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-17',
     brandName: 'Aspocid 75 mg Chewable Tab.',
+    arabicBrand: 'أسبوسيد 75 ملجم أقراص للمضغ',
     genericName: 'Acetylsalicylic Acid (Aspirin) 75mg',
+    arabicGeneric: 'حمض أسيتيل ساليسيليك (أسبرين) 75 ملجم',
     strength: '75 mg',
     form: 'أقراص للمضغ (Chewable)',
     category: 'القلب والأوعية',
@@ -440,7 +474,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-18',
     brandName: 'Tritace 5 mg Tab.',
+    arabicBrand: 'تريتاس 5 ملجم أقراص',
     genericName: 'Ramipril 5mg',
+    arabicGeneric: 'راميبريل 5 ملجم',
     strength: '5 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والضغط',
@@ -452,7 +488,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-19',
     brandName: 'Exforge 10/160 mg Tab.',
+    arabicBrand: 'إكسفورج 10/160 ملجم أقراص',
     genericName: 'Amlodipine 10mg + Valsartan 160mg',
+    arabicGeneric: 'أملوديبين 10 ملجم + فالسارتان 160 ملجم',
     strength: '10/160 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والضغط',
@@ -464,7 +502,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-20',
     brandName: 'Crestor 10 mg Tab.',
+    arabicBrand: 'كريستور 10 ملجم أقراص',
     genericName: 'Rosuvastatin 10mg',
+    arabicGeneric: 'روزوفاستاتين 10 ملجم',
     strength: '10 mg',
     form: 'أقراص (Tablets)',
     category: 'القلب والدهون',
@@ -476,7 +516,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-21',
     brandName: 'Ventolin Inhaler 100 mcg',
+    arabicBrand: 'فنتولين بخاخ استنشاق 100 ميكروجرام',
     genericName: 'Salbutamol 100mcg/puff',
+    arabicGeneric: 'سالبوتامول 100 ميكروجرام',
     strength: '100 mcg/dose',
     form: 'بخاخ استنشاق (Inhaler)',
     category: 'الجهاز التنفسي',
@@ -488,7 +530,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-22',
     brandName: 'Symbicort Turbuhaler 160/4.5',
+    arabicBrand: 'سيمبيكورت تربوهيلر 160/4.5',
     genericName: 'Budesonide 160mcg + Formoterol 4.5mcg',
+    arabicGeneric: 'بوديزونيد 160 ميكروجرام + فورموتيرول 4.5 ميكروجرام',
     strength: '160/4.5 mcg',
     form: 'جهاز استنشاق بودرة (Turbuhaler)',
     category: 'الجهاز التنفسي',
@@ -500,7 +544,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-23',
     brandName: 'Eltroxin 50 mcg Tab.',
+    arabicBrand: 'إلتروكسين 50 ميكروجرام أقراص',
     genericName: 'Levothyroxine Sodium 50mcg',
+    arabicGeneric: 'ليفوتيروكسين صوديوم 50 ميكروجرام',
     strength: '50 mcg',
     form: 'أقراص (Tablets)',
     category: 'الغدد والهرمونات',
@@ -512,7 +558,9 @@ export const INITIAL_DRUG_CATALOG: DrugCatalogItem[] = [
   {
     id: 'med-24',
     brandName: 'Neurobion Ampoules',
+    arabicBrand: 'نيوروبيون أمبولات حقن عضل',
     genericName: 'Vitamin B1 + B6 + B12',
+    arabicGeneric: 'فيتامين ب1 + ب6 + ب12 للأعصاب',
     strength: '100/100/1 mg',
     form: 'أمبولات حقن عضل (Ampoules)',
     category: 'فيتامينات وأعصاب',

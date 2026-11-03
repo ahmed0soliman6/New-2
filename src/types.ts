@@ -138,10 +138,14 @@ export type RadiologyStatus = 'REQUEST' | 'RESULT' | 'REPORT';
 export interface RadiologyCatalogItem {
   id: string;
   name: string;
+  englishName?: string;
+  code?: string;
+  abbreviations?: string[];
   category: string; // e.g. أشعة عادية X-Ray, موجات صوتية Ultrasound, أشعة مقطعية CT, رنين مغناطيسي MRI, دوبلر Doppler
   isFavorite: boolean;
   active?: boolean;
   notes?: string;
+  source?: 'catalog' | 'medical-archive' | 'online-archive';
 }
 
 export interface RadiologyOrderItem {
@@ -163,6 +167,9 @@ export type LabStatus = 'REQUEST' | 'RESULT' | 'REPORT';
 export interface LabCatalogItem {
   id: string;
   name: string;
+  englishName?: string;
+  code?: string;
+  abbreviations?: string[];
   category: string; // e.g. صورة دم, كيمياء حيوية, هرمونات, مناعة وفيروسات, بول وبراز
   sampleType?: string; // e.g. عينة دم وريدي, بول صباحي
   fastingRequired?: boolean;
@@ -170,6 +177,7 @@ export interface LabCatalogItem {
   unit?: string;
   isFavorite: boolean;
   active?: boolean;
+  source?: 'catalog' | 'medical-archive' | 'online-archive';
 }
 
 export interface LabOrderItem {
@@ -194,6 +202,8 @@ export interface DrugCatalogItem {
   id: string;
   brandName: string;
   genericName: string;
+  arabicBrand?: string;
+  arabicGeneric?: string;
   strength: string;
   form: string; // أقراص, كبسولات, شراب, أمبولات حقن, فوار, نقط
   category: string;
@@ -203,6 +213,7 @@ export interface DrugCatalogItem {
   isFavorite: boolean;
   active?: boolean;
   notes?: string;
+  source?: 'catalog' | 'eda-archive' | 'online-archive';
 }
 
 export interface DiagnosisCatalogItem {
@@ -210,9 +221,11 @@ export interface DiagnosisCatalogItem {
   code: string; // ICD-10
   nameAr: string;
   nameEn: string;
+  abbreviations?: string[];
   category: string;
   isFavorite: boolean;
   active?: boolean;
+  source?: 'catalog' | 'medical-archive' | 'online-archive';
 }
 
 export interface SymptomCatalogItem {
