@@ -82,8 +82,12 @@ end $$;
 
 -- ===== Clinic settings & backups are admin-writable only; prescriptions are doctor/admin-writable =====
 drop policy if exists "member_all" on public.settings;
+-- Non-admin members can read all settings EXCEPT internal system recovery row
 create policy "settings_read" on public.settings for select to authenticated
-  using (public.is_clinic_member(clinic_id));
+  using (
+    public.is_clinic_member(clinic_id)
+    and (id <> '_system_recovery' or public.is_clinic_admin(clinic_id))
+  );
 create policy "settings_write" on public.settings for all to authenticated
   using (public.is_clinic_admin(clinic_id))
   with check (public.is_clinic_admin(clinic_id));
@@ -99,6 +103,40 @@ drop policy if exists "member_all" on public.prescriptions;
 create policy "prescriptions_read" on public.prescriptions for select to authenticated
   using (public.is_clinic_member(clinic_id));
 create policy "prescriptions_write" on public.prescriptions for all to authenticated
+  using (public.is_clinic_doctor_or_admin(clinic_id))
+  with check (public.is_clinic_doctor_or_admin(clinic_id));
+
+-- ===== Granular Deletion Guards (Admins Only for Patient & Financial records) =====
+-- Patients: Only admin can permanently delete a patient file
+drop policy if exists "patients_delete_guard" on public.patients;
+create policy "patients_delete_guard" on public.patients for delete to authenticated
+  using (public.is_clinic_admin(clinic_id));
+
+-- Financials: Invoices, Payments, Transactions, Expenses can only be deleted by Admin
+drop policy if exists "invoices_delete_guard" on public.invoices;
+create policy "invoices_delete_guard" on public.invoices for delete to authenticated
+  using (public.is_clinic_admin(clinic_id));
+
+drop policy if exists "payments_delete_guard" on public.payments;
+create policy "payments_delete_guard" on public.payments for delete to authenticated
+  using (public.is_clinic_admin(clinic_id));
+
+drop policy if exists "transactions_delete_guard" on public.transactions;
+create policy "transactions_delete_guard" on public.transactions for delete to authenticated
+  using (public.is_clinic_admin(clinic_id));
+
+drop policy if exists "expenses_delete_guard" on public.expenses;
+create policy "expenses_delete_guard" on public.expenses for delete to authenticated
+  using (public.is_clinic_admin(clinic_id));
+
+-- Clinical orders: Lab & Radiology write/delete restricted to doctor or admin
+drop policy if exists "lab_orders_write_guard" on public.lab_orders;
+create policy "lab_orders_write_guard" on public.lab_orders for all to authenticated
+  using (public.is_clinic_doctor_or_admin(clinic_id))
+  with check (public.is_clinic_doctor_or_admin(clinic_id));
+
+drop policy if exists "radiology_orders_write_guard" on public.radiology_orders;
+create policy "radiology_orders_write_guard" on public.radiology_orders for all to authenticated
   using (public.is_clinic_doctor_or_admin(clinic_id))
   with check (public.is_clinic_doctor_or_admin(clinic_id));
 

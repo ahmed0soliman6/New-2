@@ -67,7 +67,8 @@ function sendResponse(res: any, status: number, data: any) {
 }
 
 export default async function handler(req: any, res: any) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -168,8 +169,13 @@ export default async function handler(req: any, res: any) {
     });
 
     if (updateErr) {
+      console.error(JSON.stringify({
+        event: 'reset_password_failed',
+        targetUid,
+        error: updateErr.message,
+      }));
       return sendResponse(res, 400, {
-        error: updateErr.message || 'تعذر تحديث كلمة المرور المؤقتة للمستخدم.',
+        error: 'تعذر تحديث كلمة المرور المؤقتة للمستخدم.',
       });
     }
 
@@ -182,8 +188,14 @@ export default async function handler(req: any, res: any) {
     if (err instanceof Error && err.message === 'PAYLOAD_TOO_LARGE') {
       return sendResponse(res, 413, { error: 'حجم الطلب يتجاوز الحد الأقصى المسموح به (64KB).' });
     }
+    console.error(JSON.stringify({
+      event: 'user_reset_password_error',
+      timestamp: new Date().toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    }));
     return sendResponse(res, 500, {
-      error: err instanceof Error ? err.message : 'حدث خطأ أثناء إعادة تعيين كلمة المرور.',
+      error: 'حدث خطأ في الخادم أثناء إعادة تعيين كلمة المرور.',
     });
   }
 }

@@ -30,10 +30,13 @@ function toArabicError(error: unknown, fallbackMessage: string): Error {
   if (raw.includes('Only scheduled appointments can be checked in')) {
     return new Error('لا يمكن تسجيل الحضور إلا للمواعيد المجدولة فقط.');
   }
-  if (raw.includes('Unauthorized')) {
-    return new Error('غير مصرح لحسابك بتنفيذ هذه العملية في هذه العيادة.');
+  if (raw.includes('Unauthorized') || raw.includes('caller must be an active doctor or admin')) {
+    return new Error('غير مصرح لحسابك بتنفيذ هذه العملية الطبية.');
   }
-  return new Error(raw ? `${fallbackMessage}: ${raw}` : fallbackMessage);
+  if (raw.includes('violates row-level security policy') || raw.includes('row-level security')) {
+    return new Error('غير مصرح لحسابك بتعديل أو حذف هذه السجلات.');
+  }
+  return new Error(fallbackMessage);
 }
 
 /**

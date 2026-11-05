@@ -147,11 +147,11 @@ async function decryptWithCode(code: string, salt: Uint8Array, ciphertextHex: st
 
 /**
  * Saves a new Admin Recovery Code into Supabase settings using PBKDF2 hash and an encrypted escrow envelope.
- * Plaintext code is NEVER saved.
+ * Saves a new Admin Recovery Code into Supabase settings using PBKDF2 hash.
+ * Plaintext code and passwords are NEVER saved.
  */
 export async function setupAdminRecoveryCode(params: {
   recoveryCode: string;
-  adminCurrentPassword?: string;
 }): Promise<void> {
   if (!supabase) throw new Error('عميل Supabase غير مهيأ.');
   const { data: sessionData } = await supabase.auth.getSession();
@@ -165,17 +165,7 @@ export async function setupAdminRecoveryCode(params: {
 
   // Compute PBKDF2 hash (100,000 iterations)
   const hashHex = await derivePbkdf2Hash(params.recoveryCode, salt);
-
-  // Encrypt admin verification payload (stored securely in envelope)
   const adminEmail = currentUser.email || 'admin@auth.solimedical.local';
-  const payloadToEscrow = JSON.stringify({
-    uid: currentUser.id,
-    email: adminEmail,
-    adminPass: params.adminCurrentPassword || 'admin1234',
-    created: Date.now(),
-  });
-
-  const { ciphertext, iv } = await encryptWithCode(params.recoveryCode, salt, payloadToEscrow);
   const nowIso = new Date().toISOString();
 
   const { error } = await supabase.from('settings').upsert(
@@ -183,11 +173,9 @@ export async function setupAdminRecoveryCode(params: {
       clinic_id: clinicId,
       id: RECOVERY_DOC_ID,
       data: {
-        version: 2,
+        version: 3,
         salt: saltHex,
         hash: hashHex,
-        envelope: ciphertext,
-        iv: iv,
         targetEmail: adminEmail,
         attempts: 0,
         lockedUntil: null,
@@ -224,154 +212,49 @@ export async function hasAdminRecoveryConfigured(): Promise<boolean> {
 
 /**
  * Recovers the admin account using the recovery code and sets a new password.
- * Rate-limited: max 5 failed attempts before temporary lockout.
+ * Delegated to the secure serverless endpoint /api/users/recover-admin with server-side rate-limiting.
  */
 export async function recoverAdminPasswordWithCode(params: {
   username: string;
   recoveryCode: string;
   newPassword: string;
 }): Promise<{ success: boolean; message: string }> {
-  if (!supabase) throw new Error('عميل Supabase غير مهيأ.');
   const normalizedUsername = params.username.trim().toLowerCase();
-
   if (normalizedUsername !== 'admin') {
     throw new Error('رمز الاسترداد مخصص لحساب مدير النظام (admin) فقط.');
+  }
+
+  if (!params.recoveryCode?.trim()) {
+    throw new Error('رمز الاسترداد مطلوب.');
   }
 
   if (params.newPassword.length < 8) {
     throw new Error('كلمة المرور الجديدة يجب ألا تقل عن 8 خانات.');
   }
 
-  const { data: recoveryRow } = await supabase
-    .from('settings')
-    .select('data')
-    .eq('clinic_id', clinicId)
-    .eq('id', RECOVERY_DOC_ID)
-    .maybeSingle();
-
-  const data = (recoveryRow?.data || {}) as Record<string, any>;
-  if (!data?.hash) {
-    throw new Error('لم يتم تعيين رمز استرداد للمدير في هذا النظام من قبل.');
-  }
-
-  // Rate Limiting / Lockout Check
-  const now = Date.now();
-  if (data.lockedUntil && Number(data.lockedUntil) > now) {
-    const remainingMinutes = Math.ceil((Number(data.lockedUntil) - now) / 60000);
-    throw new Error(`تم إيقاف محاولات الاسترداد مؤقتاً بسبب المحاولات الخاطئة المتكررة. حاول مجدداً بعد ${remainingMinutes} دقيقة.`);
-  }
-
-  const salt = hex2buf(data.salt);
-  const calculatedHash = await derivePbkdf2Hash(params.recoveryCode, salt);
-
-  if (calculatedHash !== data.hash) {
-    const currentAttempts = (data.attempts || 0) + 1;
-    const isLocked = currentAttempts >= 5;
-    await supabase.from('settings').upsert(
-      {
-        clinic_id: clinicId,
-        id: RECOVERY_DOC_ID,
-        data: {
-          ...data,
-          attempts: currentAttempts,
-          lockedUntil: isLocked ? now + 15 * 60 * 1000 : null,
-        },
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'clinic_id,id' }
-    );
-
-    if (isLocked) {
-      throw new Error('رمز الاسترداد غير صحيح. تم إيقاف المحاولات لمدة 15 دقيقة لدواعي الأمان.');
-    } else {
-      throw new Error(`رمز الاسترداد غير صحيح. المتبقي لك ${5 - currentAttempts} محاولات قبل الإغلاق.`);
-    }
-  }
-
-  // Decrypt the escrow envelope to get admin session
-  let decryptedPayload: { uid?: string; email?: string; adminPass?: string } = {};
-  if (data.envelope && data.iv) {
-    try {
-      const plaintext = await decryptWithCode(params.recoveryCode, salt, data.envelope, data.iv);
-      decryptedPayload = JSON.parse(plaintext);
-    } catch {
-      console.warn('[Recovery] Envelope decryption skipped.');
-    }
-  }
-
-  const adminEmail = data.targetEmail || decryptedPayload.email || 'admin@auth.solimedical.local';
-  const knownPass = decryptedPayload.adminPass || 'admin1234';
-
-  const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim() || '';
-  const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)?.trim() || '';
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('إعدادات Supabase غير مكتملة.');
-  }
-
-  const secondaryClient = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
+  const response = await fetch('/api/users/recover-admin', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({
+      username: normalizedUsername,
+      recoveryCode: params.recoveryCode.trim(),
+      newPassword: params.newPassword,
+      clinicId,
+    }),
   });
 
-  try {
-    let signInRes = await secondaryClient.auth.signInWithPassword({
-      email: adminEmail,
-      password: knownPass,
-    });
+  const result = await response.json().catch(() => ({}));
 
-    if (signInRes.error) {
-      signInRes = await secondaryClient.auth.signInWithPassword({
-        email: adminEmail,
-        password: 'admin1234',
-      });
-    }
-
-    if (signInRes.error || !signInRes.data.user) {
-      throw new Error(signInRes.error?.message || 'تعذر التحقق من جلسة المدير لاسترداد كلمة المرور.');
-    }
-
-    const { error: updateErr } = await secondaryClient.auth.updateUser({
-      password: params.newPassword,
-    });
-    if (updateErr) {
-      throw new Error(updateErr.message);
-    }
-
-    const updatedPayload = JSON.stringify({
-      uid: signInRes.data.user.id,
-      email: adminEmail,
-      adminPass: params.newPassword,
-      recoveredAt: Date.now(),
-    });
-    const { ciphertext, iv } = await encryptWithCode(params.recoveryCode, salt, updatedPayload);
-    const nowIso = new Date().toISOString();
-
-    await supabase.from('settings').upsert(
-      {
-        clinic_id: clinicId,
-        id: RECOVERY_DOC_ID,
-        data: {
-          ...data,
-          envelope: ciphertext,
-          iv: iv,
-          attempts: 0,
-          lockedUntil: null,
-          lastRecoveredAt: nowIso,
-        },
-        updated_at: nowIso,
-      },
-      { onConflict: 'clinic_id,id' }
-    );
-
-    return {
-      success: true,
-      message: 'تم استرداد حساب المدير وتحديث كلمة المرور بنجاح! يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.',
-    };
-  } finally {
-    await secondaryClient.auth.signOut().catch(() => undefined);
+  if (!response.ok) {
+    throw new Error(result.error || 'تعذر إتمام عملية استرداد كلمة المرور.');
   }
+
+  return {
+    success: true,
+    message: result.message || 'تم تحديث كلمة مرور المدير بنجاح! يمكنك الآن تسجيل الدخول.',
+  };
 }
+
 

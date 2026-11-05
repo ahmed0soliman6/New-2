@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
           '/api/users/create': './api/users/create',
           '/api/users/delete': './api/users/delete',
           '/api/users/reset-password': './api/users/reset-password',
+          '/api/users/recover-admin': './api/users/recover-admin',
         };
         const matchedPath = Object.keys(routeMap).find((prefix) => url.startsWith(prefix));
         if (matchedPath) {

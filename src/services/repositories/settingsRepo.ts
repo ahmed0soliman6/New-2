@@ -25,7 +25,7 @@ export interface ClinicStatusState {
   message?: string;
 }
 
-const SETTINGS_POLL_MS = 15000;
+const SETTINGS_POLL_MS = 60000;
 
 function subscribeSettingDoc<T>(
   docId: string,

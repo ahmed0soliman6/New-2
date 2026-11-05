@@ -261,7 +261,7 @@ function evaluateConstraints<T>(items: T[], constraints: unknown[]): T[] {
   return result;
 }
 
-const SYNC_POLL_INTERVAL_MS = 15000;
+const SYNC_POLL_INTERVAL_MS = 60000;
 
 export function subscribeQuery<T>(
   _db: DbClient,

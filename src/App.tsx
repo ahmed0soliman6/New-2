@@ -115,13 +115,16 @@ const where = (field: string, op: string, value: unknown): QueryConstraint => ({
 
 function translateDbError(err: unknown, fallbackMessage: string): string {
   const raw = err instanceof Error ? err.message : String((err as any)?.message || err || '');
-  if (raw.includes('Unauthorized')) {
+  if (raw.includes('Unauthorized') || raw.includes('permission denied')) {
     return 'ليس لديك صلاحية لتنفيذ هذه العملية.';
   }
   if (raw.includes('Completed visit cannot be removed')) {
     return 'لا يمكن إزالة زيارة تم الكشف عليها.';
   }
-  return raw ? `${fallbackMessage}: ${raw}` : fallbackMessage;
+  if (raw.includes('violates row-level security policy') || raw.includes('row-level security')) {
+    return 'غير مصرح بتنفيذ هذه العملية وفقاً لصلاحيات حسابك.';
+  }
+  return fallbackMessage;
 }
 import { logoutAccount } from './services/auth';
 import { AuthScreen } from './components/AuthScreen';

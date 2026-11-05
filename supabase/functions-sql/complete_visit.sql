@@ -29,9 +29,9 @@ declare
   v_first_diagnosis text;
   v_item jsonb;
 begin
-  -- 1. Enforce multi-clinic membership guard
-  if not public.is_clinic_member(p_clinic_id) then
-    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  -- 1. Enforce multi-clinic membership and doctor/admin role guard
+  if not public.is_clinic_doctor_or_admin(p_clinic_id) then
+    raise exception 'Unauthorized: caller must be an active doctor or admin of clinic % to complete visits', p_clinic_id;
   end if;
 
   -- 2. Lock and read visit row (if it does not exist, exit gracefully like Firestore workflow)

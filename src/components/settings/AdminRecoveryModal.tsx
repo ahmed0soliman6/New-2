@@ -9,7 +9,6 @@ interface AdminRecoveryModalProps {
 export const AdminRecoveryModal: React.FC<AdminRecoveryModalProps> = ({ onClose, onSuccess }) => {
   const [code, setCode] = useState(() => generateAdminRecoveryCode());
   const [copied, setCopied] = useState(false);
-  const [adminPass, setAdminPass] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,9 +30,8 @@ export const AdminRecoveryModal: React.FC<AdminRecoveryModalProps> = ({ onClose,
     try {
       await setupAdminRecoveryCode({
         recoveryCode: code,
-        adminCurrentPassword: adminPass || undefined,
       });
-      onSuccess('تم حفظ وتفعيل رمز استرداد المدير بنجاح عبر تشفير PBKDF2 و AES-GCM.');
+      onSuccess('تم حفظ وتفعيل رمز استرداد المدير بنجاح عبر تشفير PBKDF2.');
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر حفظ رمز الاسترداد.');
@@ -111,21 +109,6 @@ export const AdminRecoveryModal: React.FC<AdminRecoveryModalProps> = ({ onClose,
           <p className="text-[10px] text-amber-700 dark:text-amber-400 font-semibold mt-1">
             ⚠️ انسخ هذا الرمز واحفظه في مكان آمن وخاص بك (مثل خزانة كلمات المرور).
           </p>
-        </div>
-
-        {/* Optional Current Admin Password */}
-        <div>
-          <label className="text-xs font-bold text-slate-700 dark:text-[#dde2f5] block mb-1">
-            كلمة مرور المدير الحالية (لربط المحفظة المشفرة):
-          </label>
-          <input
-            type="password"
-            placeholder="كلمة مرور حساب المدير الحالية"
-            value={adminPass}
-            onChange={(e) => setAdminPass(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0c1322] p-2.5 text-xs focus:ring-1 focus:ring-purple-500 outline-none"
-            dir="ltr"
-          />
         </div>
 
         {/* Modal Footer */}
