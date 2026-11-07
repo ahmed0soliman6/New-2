@@ -113,19 +113,25 @@ export default async function handler(req: any, res: any) {
 
     const { data: callerMember, error: memberErr } = await supabaseAdmin
       .from('clinic_members')
-      .select('role, is_active')
+      .select('role, is_active, permissions')
       .eq('clinic_id', targetClinicId)
       .eq('user_id', callerUid)
       .maybeSingle();
 
-    if (
-      memberErr ||
-      !callerMember ||
-      callerMember.is_active === false ||
-      String(callerMember.role).toLowerCase() !== 'admin'
-    ) {
+    const callerPerms = (callerMember?.permissions || {}) as Record<string, any>;
+    const callerSpecial = callerPerms.specialPermissions as Record<string, boolean> | undefined;
+    const callerCustom = callerPerms.customPermissions as Record<string, Record<string, boolean>> | undefined;
+    const isCallerAdminRole = String(callerMember?.role || '').toLowerCase() === 'admin';
+    const hasExplicitManage =
+      typeof callerSpecial?.['users.manage'] === 'boolean'
+        ? callerSpecial['users.manage']
+        : typeof callerCustom?.['system-settings']?.delete === 'boolean'
+        ? callerCustom['system-settings'].delete
+        : isCallerAdminRole;
+
+    if (memberErr || !callerMember || callerMember.is_active === false || !hasExplicitManage) {
       return sendResponse(res, 403, {
-        error: 'غير مصرح: هذه العملية متاحة لمدير العيادة (Admin) فقط.',
+        error: 'غير مصرح: هذه العملية متاحة لمن يملك صلاحية إدارة المستخدمين (users.manage) فقط.',
       });
     }
 

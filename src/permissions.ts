@@ -1,6 +1,8 @@
 /**
- * SOLI MEDICAL — CENTRAL PERMISSION MATRIX & RBAC
- * Single source of truth for Roles, Permissions, and Access Control.
+ * SOLI MEDICAL — CENTRAL PERMISSION MATRIX & CUSTOM RBAC/ABAC ENGINE (v3.0.0)
+ * Single source of truth for Roles, Custom Screen Permissions, and Special Operational Permissions.
+ * Role ('admin' | 'doctor' | 'secretary') is used ONLY as an initial default template;
+ * explicit customPermissions and specialPermissions granted by the manager take full precedence.
  */
 
 export type Role = 'admin' | 'doctor' | 'secretary';
@@ -28,6 +30,7 @@ export type Permission =
   // Patients
   | 'patients.view'
   | 'patients.create'
+  | 'patients.update'
   | 'patients.edit'
   | 'patients.delete'
   // Visits
@@ -40,25 +43,41 @@ export type Permission =
   | 'queue.manage'
   // Clinical Examination
   | 'clinical.view'
+  | 'clinical.open'
   | 'clinical.edit'
   | 'clinical.complete'
   // Prescriptions
   | 'prescription.view'
   | 'prescription.create'
+  | 'prescription.edit'
+  | 'prescription.delete'
   | 'prescription.print'
+  // Lab & Radiology
+  | 'lab.view'
+  | 'lab.create'
+  | 'lab.update'
+  | 'lab.delete'
+  | 'radiology.view'
+  | 'radiology.create'
+  | 'radiology.update'
+  | 'radiology.delete'
   // Appointments & Follow-ups
   | 'appointments.view'
   | 'appointments.create'
   | 'appointments.edit'
   | 'appointments.delete'
   | 'appointments.checkin'
-  // Billing & Finance
+  // Billing, Invoices & Payments
   | 'billing.view'
   | 'billing.create'
   | 'billing.edit'
   | 'billing.delete'
   | 'billing.expenses'
   | 'billing.closeShift'
+  | 'payments.view'
+  | 'payments.create'
+  | 'payments.edit'
+  | 'payments.delete'
   // Reports & Analytics
   | 'reports.view'
   | 'reports.financial'
@@ -72,15 +91,111 @@ export type Permission =
   | 'users.edit'
   | 'users.disable'
   | 'users.delete'
-  | 'roles.manage';
+  | 'users.manage'
+  | 'roles.manage'
+  // Special High-Sensitivity Operations
+  | 'system.clear_all_data'
+  | 'backup.export'
+  | 'backup.restore'
+  | 'demo.manage';
+
+export type SpecialPermissionsMap = Partial<Record<Permission, boolean>>;
+
+export interface SpecialPermissionDef {
+  id: Permission;
+  title: string;
+  description: string;
+  category: 'patients' | 'clinical' | 'finance' | 'system';
+  icon: string;
+  danger?: boolean;
+}
+
+export const ALL_SPECIAL_PERMISSIONS: SpecialPermissionDef[] = [
+  {
+    id: 'patients.update',
+    title: 'تعديل بيانات المرضى (patients.update)',
+    description: 'السماح بتحديث البيانات الأساسية والطبية في ملف المريض.',
+    category: 'patients',
+    icon: 'edit_note',
+  },
+  {
+    id: 'patients.delete',
+    title: 'حذف مريض مفرد (patients.delete)',
+    description: 'السماح بحذف ملف مريض واحد من سجلات العيادة (منفصل عن الحذف الجماعي).',
+    category: 'patients',
+    icon: 'person_remove',
+    danger: true,
+  },
+  {
+    id: 'clinical.open',
+    title: 'فتح كشف طبي (clinical.open)',
+    description: 'السماح بفتح شاشة الكشف الطبي وبدء جلسة فحص للمريض.',
+    category: 'clinical',
+    icon: 'medical_services',
+  },
+  {
+    id: 'clinical.complete',
+    title: 'اعتماد وإنهاء الكشف والروشتة (clinical.complete)',
+    description: 'حفظ التشخيص والروشتة وطلبات التحاليل والأشعة وإنهاء الزيارة.',
+    category: 'clinical',
+    icon: 'task_alt',
+  },
+  {
+    id: 'billing.delete',
+    title: 'حذف الفواتير والمدفوعات المالية (billing.delete)',
+    description: 'حذف السجلات المالية والمدفوعات (منفصل عن صلاحية حذف الملف الطبي).',
+    category: 'finance',
+    icon: 'delete_sweep',
+    danger: true,
+  },
+  {
+    id: 'backup.export',
+    title: 'تصدير نسخة احتياطية (backup.export)',
+    description: 'تحميل نسخة احتياطية موثقة (JSON + Manifest + Checksum) لبيانات العيادة.',
+    category: 'system',
+    icon: 'download',
+  },
+  {
+    id: 'backup.restore',
+    title: 'استعادة من نسخة احتياطية (backup.restore)',
+    description: 'استيراد واسترجاع بيانات العيادة من ملف نسخة احتياطية (منفصل عن التصدير).',
+    category: 'system',
+    icon: 'settings_backup_restore',
+    danger: true,
+  },
+  {
+    id: 'system.clear_all_data',
+    title: 'الحذف الجماعي السحابي لبيانات العيادة (system.clear_all_data)',
+    description: 'مسح جميع سجلات المرضى والزيارات والفواتير من السحابة مع بقاء الإعدادات والكتالوجات.',
+    category: 'system',
+    icon: 'delete_forever',
+    danger: true,
+  },
+  {
+    id: 'demo.manage',
+    title: 'إدارة وتوليد البيانات التجريبية (demo.manage)',
+    description: 'توليد أو مسح البيانات التجريبية المعزولة بعلامة isDemo.',
+    category: 'system',
+    icon: 'science',
+  },
+  {
+    id: 'users.manage',
+    title: 'إدارة المستخدمين والصلاحيات (users.manage)',
+    description: 'إنشاء وتعديل وحذف حسابات المستخدمين وتخصيص صلاحياتهم.',
+    category: 'system',
+    icon: 'manage_accounts',
+    danger: true,
+  },
+];
 
 /**
- * ALL_PERMISSIONS list for Admin super-user.
+ * ALL_PERMISSIONS list for full access template.
  */
 export const ALL_PERMISSIONS: Permission[] = [
   'dashboard.view',
   'patients.view',
   'patients.create',
+  'patients.update',
   'patients.edit',
   'patients.delete',
   'visits.create',
@@ -90,11 +205,22 @@ export const ALL_PERMISSIONS: Permission[] = [
   'queue.view',
   'queue.manage',
   'clinical.view',
+  'clinical.open',
   'clinical.edit',
   'clinical.complete',
   'prescription.view',
   'prescription.create',
+  'prescription.edit',
+  'prescription.delete',
   'prescription.print',
+  'lab.view',
+  'lab.create',
+  'lab.update',
+  'lab.delete',
+  'radiology.view',
+  'radiology.create',
+  'radiology.update',
+  'radiology.delete',
   'appointments.view',
   'appointments.create',
   'appointments.edit',
@@ -106,6 +232,10 @@ export const ALL_PERMISSIONS: Permission[] = [
   'billing.delete',
   'billing.expenses',
   'billing.closeShift',
+  'payments.view',
+  'payments.create',
+  'payments.edit',
+  'payments.delete',
   'reports.view',
   'reports.financial',
   'reports.clinical',
@@ -116,49 +246,66 @@ export const ALL_PERMISSIONS: Permission[] = [
   'users.edit',
   'users.disable',
   'users.delete',
+  'users.manage',
   'roles.manage',
+  'system.clear_all_data',
+  'backup.export',
+  'backup.restore',
+  'demo.manage',
 ];
 
 /**
- * Centrally defined Role -> Permissions Matrix
+ * Default Role -> Permissions Matrix (Used ONLY when not overridden by customPermissions / specialPermissions)
  */
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
-  // ADMIN: Full access to all screens, actions, settings, and user management.
   admin: ALL_PERMISSIONS,
 
-  // DOCTOR: Clinical exam, prescriptions, patient files, appointments, queue, medical reports.
   doctor: [
     'dashboard.view',
     'patients.view',
     'patients.create',
+    'patients.update',
     'patients.edit',
     'visits.view',
     'visits.edit',
     'queue.view',
     'queue.manage',
     'clinical.view',
+    'clinical.open',
     'clinical.edit',
     'clinical.complete',
     'prescription.view',
     'prescription.create',
+    'prescription.edit',
+    'prescription.delete',
     'prescription.print',
+    'lab.view',
+    'lab.create',
+    'lab.update',
+    'lab.delete',
+    'radiology.view',
+    'radiology.create',
+    'radiology.update',
+    'radiology.delete',
     'appointments.view',
     'appointments.create',
     'appointments.edit',
     'appointments.delete',
     'appointments.checkin',
     'billing.view',
+    'payments.view',
     'reports.view',
     'reports.clinical',
     'settings.view',
     'settings.edit',
+    'backup.export',
   ],
 
-  // SECRETARY: New visit registration, queue management, appointments, patient files, billing/payments/expenses, printing receipts.
   secretary: [
     'dashboard.view',
     'patients.view',
     'patients.create',
+    'patients.update',
     'patients.edit',
     'visits.create',
     'visits.view',
@@ -175,14 +322,14 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'billing.edit',
     'billing.expenses',
     'billing.closeShift',
+    'payments.view',
+    'payments.create',
+    'payments.edit',
     'prescription.print',
     'reports.view',
   ],
 };
 
-/**
- * Detailed specification of every system screen/page for admin customization.
- */
 export interface SystemScreenDef {
   id: string;
   title: string;
@@ -295,9 +442,6 @@ export const ALL_SYSTEM_SCREENS: SystemScreenDef[] = [
   },
 ];
 
-/**
- * Screen ID aliases mapping for seamless compatibility across routes.
- */
 const SCREEN_ALIASES: Record<string, string[]> = {
   dashboard: ['dashboard'],
   'new-visit': ['new-visit'],
@@ -316,9 +460,6 @@ const SCREEN_ALIASES: Record<string, string[]> = {
   settings: ['system-settings', 'settings'],
 };
 
-/**
- * Normalizes any string or Firestore representation to 'admin' | 'doctor' | 'secretary'.
- */
 export function normalizeRole(rawRole: unknown): Role {
   if (!rawRole) return 'secretary';
   const str = String(rawRole).toLowerCase().trim();
@@ -328,9 +469,6 @@ export function normalizeRole(rawRole: unknown): Role {
   return 'secretary';
 }
 
-/**
- * Returns default granular permissions per screen for a given role.
- */
 export function getDefaultRolePermissions(role: Role | string | undefined | null): CustomPermissionsMap {
   const norm = normalizeRole(role);
   const result: CustomPermissionsMap = {};
@@ -360,8 +498,17 @@ export function getDefaultRolePermissions(role: Role | string | undefined | null
       // Secretary defaults
       if (['dashboard', 'clinical-reports'].includes(screen.id)) {
         result[screen.id] = { view: true, create: false, update: false, delete: false };
-      } else if (['new-visit', 'waiting-queue', 'upcoming-followups', 'patient-records', 'billing-payments'].includes(screen.id)) {
-        result[screen.id] = { view: true, create: true, update: true, delete: screen.id === 'upcoming-followups' };
+      } else if (
+        ['new-visit', 'waiting-queue', 'upcoming-followups', 'patient-records', 'billing-payments'].includes(
+          screen.id
+        )
+      ) {
+        result[screen.id] = {
+          view: true,
+          create: true,
+          update: true,
+          delete: screen.id === 'upcoming-followups',
+        };
       } else {
         result[screen.id] = { view: false, create: false, update: false, delete: false };
       }
@@ -371,9 +518,50 @@ export function getDefaultRolePermissions(role: Role | string | undefined | null
   return result;
 }
 
-/**
- * Returns default screens for a given role if no custom allowedScreens were specified.
- */
+export function getDefaultSpecialPermissions(role: Role | string | undefined | null): SpecialPermissionsMap {
+  const norm = normalizeRole(role);
+  if (norm === 'admin') {
+    return {
+      'patients.update': true,
+      'patients.delete': true,
+      'clinical.open': true,
+      'clinical.complete': true,
+      'billing.delete': true,
+      'backup.export': true,
+      'backup.restore': true,
+      'system.clear_all_data': true,
+      'demo.manage': true,
+      'users.manage': true,
+    };
+  }
+  if (norm === 'doctor') {
+    return {
+      'patients.update': true,
+      'patients.delete': false,
+      'clinical.open': true,
+      'clinical.complete': true,
+      'billing.delete': false,
+      'backup.export': true,
+      'backup.restore': false,
+      'system.clear_all_data': false,
+      'demo.manage': false,
+      'users.manage': false,
+    };
+  }
+  return {
+    'patients.update': true,
+    'patients.delete': false,
+    'clinical.open': false,
+    'clinical.complete': false,
+    'billing.delete': false,
+    'backup.export': false,
+    'backup.restore': false,
+    'system.clear_all_data': false,
+    'demo.manage': false,
+    'users.manage': false,
+  };
+}
+
 export function getDefaultAllowedScreens(role: Role | string | undefined | null): string[] {
   const defaultPerms = getDefaultRolePermissions(role);
   return Object.keys(defaultPerms).filter((screenId) => defaultPerms[screenId]?.view);
@@ -381,62 +569,147 @@ export function getDefaultAllowedScreens(role: Role | string | undefined | null)
 
 /**
  * Checks whether a user has permission to perform an action on a specific screen.
+ * Respects explicit customPermissions & specialPermissions regardless of the user's base role.
  */
 export function checkScreenPermission(
   role: Role | string | undefined | null,
   screenId: string,
   action: ScreenAction,
   customPermissions?: CustomPermissionsMap | null,
-  allowedScreens?: string[] | null
+  allowedScreens?: string[] | null,
+  specialPermissions?: SpecialPermissionsMap | null
 ): boolean {
   const normRole = normalizeRole(role);
 
-  // Admin super-user has full access to everything
-  if (normRole === 'admin') {
-    return true;
-  }
-
-  // Resolve aliases (e.g., 'finance' -> 'billing-payments', 'settings' -> 'system-settings')
   const canonicalScreenId =
     ALL_SYSTEM_SCREENS.find((s) => (SCREEN_ALIASES[s.id] || [s.id]).includes(screenId))?.id || screenId;
 
-  // 1. Check custom permissions matrix if explicitly set for this user
+  // 1. Check explicit specialPermissions overrides mapped to specific screen actions
+  if (specialPermissions && typeof specialPermissions === 'object') {
+    if (canonicalScreenId === 'patient-records' && action === 'delete') {
+      if (typeof specialPermissions['patients.delete'] === 'boolean') {
+        return specialPermissions['patients.delete'];
+      }
+    }
+    if (canonicalScreenId === 'patient-records' && action === 'update') {
+      if (typeof specialPermissions['patients.update'] === 'boolean') {
+        return specialPermissions['patients.update'];
+      }
+      if (typeof specialPermissions['patients.edit'] === 'boolean') {
+        return specialPermissions['patients.edit'];
+      }
+    }
+    if (canonicalScreenId === 'billing-payments' && action === 'delete') {
+      if (typeof specialPermissions['billing.delete'] === 'boolean') {
+        return specialPermissions['billing.delete'];
+      }
+      if (typeof specialPermissions['payments.delete'] === 'boolean') {
+        return specialPermissions['payments.delete'];
+      }
+    }
+    if (canonicalScreenId === 'clinical-exam' && (action === 'view' || action === 'create')) {
+      if (specialPermissions['clinical.open'] === true || specialPermissions['clinical.complete'] === true) {
+        return true;
+      }
+    }
+    if (canonicalScreenId === 'clinical-exam' && action === 'update') {
+      if (typeof specialPermissions['clinical.complete'] === 'boolean') {
+        return specialPermissions['clinical.complete'];
+      }
+      if (typeof specialPermissions['clinical.open'] === 'boolean') {
+        return specialPermissions['clinical.open'];
+      }
+    }
+  }
+
+  // 2. Check customPermissions matrix if explicitly set for this user
   if (customPermissions && typeof customPermissions === 'object') {
     const userPerm = customPermissions[canonicalScreenId];
-    if (userPerm) {
+    if (userPerm && typeof userPerm[action] === 'boolean') {
       return Boolean(userPerm[action]);
     }
   }
 
-  // 2. Fallback to allowedScreens array if only screens list was stored (backward compatibility)
+  // 3. Fallback to allowedScreens array for view action
   if (action === 'view' && allowedScreens && Array.isArray(allowedScreens) && allowedScreens.length > 0) {
     const aliases = SCREEN_ALIASES[canonicalScreenId] || [canonicalScreenId];
     return aliases.some((a) => allowedScreens.includes(a));
   }
 
-  // 3. Fallback to role-based default permissions
+  // 4. Fallback to role-based default permissions
+  if (normRole === 'admin') {
+    return true;
+  }
   const defaultRolePerms = getDefaultRolePermissions(normRole);
   const screenPerm = defaultRolePerms[canonicalScreenId];
   return screenPerm ? Boolean(screenPerm[action]) : false;
 }
 
 /**
- * Checks whether a given role holds a specific permission (legacy string check).
+ * Checks whether a user holds a specific granular permission.
+ * Evaluates explicit specialPermissions & customPermissions BEFORE falling back to role defaults.
  */
 export function hasPermission(
   role: Role | string | undefined | null,
   permission: Permission,
   customPermissions?: CustomPermissionsMap | null,
-  allowedScreens?: string[] | null
+  allowedScreens?: string[] | null,
+  specialPermissions?: SpecialPermissionsMap | null
 ): boolean {
   const normRole = normalizeRole(role);
-  if (normRole === 'admin') return true;
 
-  // Map legacy permission keys to screen actions
+  // 1. Check explicit specialPermissions map first (highest precedence for any role)
+  if (specialPermissions && typeof specialPermissions === 'object') {
+    if (typeof specialPermissions[permission] === 'boolean') {
+      return Boolean(specialPermissions[permission]);
+    }
+    // Check aliases in specialPermissions
+    if (permission === 'patients.edit' && typeof specialPermissions['patients.update'] === 'boolean') {
+      return Boolean(specialPermissions['patients.update']);
+    }
+    if (permission === 'patients.update' && typeof specialPermissions['patients.edit'] === 'boolean') {
+      return Boolean(specialPermissions['patients.edit']);
+    }
+    if (permission === 'payments.delete' && typeof specialPermissions['billing.delete'] === 'boolean') {
+      return Boolean(specialPermissions['billing.delete']);
+    }
+    if (permission === 'billing.delete' && typeof specialPermissions['payments.delete'] === 'boolean') {
+      return Boolean(specialPermissions['payments.delete']);
+    }
+    if (
+      (permission === 'clinical.view' || permission === 'clinical.edit') &&
+      (specialPermissions['clinical.open'] === true || specialPermissions['clinical.complete'] === true)
+    ) {
+      return true;
+    }
+    if (
+      ['users.view', 'users.create', 'users.edit', 'users.disable', 'users.delete', 'roles.manage'].includes(
+        permission
+      ) &&
+      typeof specialPermissions['users.manage'] === 'boolean'
+    ) {
+      return Boolean(specialPermissions['users.manage']);
+    }
+  }
+
+  // 2. High-sensitivity standalone permissions require explicit specialPermissions for non-admin
+  const standaloneSpecials: Permission[] = [
+    'system.clear_all_data',
+    'backup.restore',
+    'demo.manage',
+    'users.manage',
+  ];
+  if (standaloneSpecials.includes(permission)) {
+    const defaults = getDefaultSpecialPermissions(normRole);
+    return Boolean(defaults[permission]);
+  }
+
+  // 3. Map granular permissions to screen CRUD actions
   const permMapping: Record<string, { screenId: string; action: ScreenAction }> = {
     'dashboard.view': { screenId: 'dashboard', action: 'view' },
     'patients.view': { screenId: 'patient-records', action: 'view' },
     'patients.create': { screenId: 'patient-records', action: 'create' },
+    'patients.update': { screenId: 'patient-records', action: 'update' },
     'patients.edit': { screenId: 'patient-records', action: 'update' },
     'patients.delete': { screenId: 'patient-records', action: 'delete' },
     'visits.create': { screenId: 'new-visit', action: 'create' },
@@ -446,11 +719,22 @@ export function hasPermission(
     'queue.view': { screenId: 'waiting-queue', action: 'view' },
     'queue.manage': { screenId: 'waiting-queue', action: 'update' },
     'clinical.view': { screenId: 'clinical-exam', action: 'view' },
+    'clinical.open': { screenId: 'clinical-exam', action: 'update' },
     'clinical.edit': { screenId: 'clinical-exam', action: 'update' },
     'clinical.complete': { screenId: 'clinical-exam', action: 'update' },
     'prescription.view': { screenId: 'prescription-pad', action: 'view' },
     'prescription.create': { screenId: 'prescription-pad', action: 'create' },
+    'prescription.edit': { screenId: 'prescription-pad', action: 'update' },
+    'prescription.delete': { screenId: 'prescription-pad', action: 'delete' },
     'prescription.print': { screenId: 'prescription-pad', action: 'view' },
+    'lab.view': { screenId: 'clinical-exam', action: 'view' },
+    'lab.create': { screenId: 'clinical-exam', action: 'create' },
+    'lab.update': { screenId: 'clinical-exam', action: 'update' },
+    'lab.delete': { screenId: 'clinical-exam', action: 'delete' },
+    'radiology.view': { screenId: 'clinical-exam', action: 'view' },
+    'radiology.create': { screenId: 'clinical-exam', action: 'create' },
+    'radiology.update': { screenId: 'clinical-exam', action: 'update' },
+    'radiology.delete': { screenId: 'clinical-exam', action: 'delete' },
     'appointments.view': { screenId: 'upcoming-followups', action: 'view' },
     'appointments.create': { screenId: 'upcoming-followups', action: 'create' },
     'appointments.edit': { screenId: 'upcoming-followups', action: 'update' },
@@ -462,11 +746,16 @@ export function hasPermission(
     'billing.delete': { screenId: 'billing-payments', action: 'delete' },
     'billing.expenses': { screenId: 'billing-payments', action: 'create' },
     'billing.closeShift': { screenId: 'billing-payments', action: 'update' },
+    'payments.view': { screenId: 'billing-payments', action: 'view' },
+    'payments.create': { screenId: 'billing-payments', action: 'create' },
+    'payments.edit': { screenId: 'billing-payments', action: 'update' },
+    'payments.delete': { screenId: 'billing-payments', action: 'delete' },
     'reports.view': { screenId: 'clinical-reports', action: 'view' },
     'reports.financial': { screenId: 'clinical-reports', action: 'view' },
     'reports.clinical': { screenId: 'clinical-reports', action: 'view' },
     'settings.view': { screenId: 'system-settings', action: 'view' },
     'settings.edit': { screenId: 'system-settings', action: 'update' },
+    'backup.export': { screenId: 'system-settings', action: 'view' },
     'users.view': { screenId: 'system-settings', action: 'view' },
     'users.create': { screenId: 'system-settings', action: 'create' },
     'users.edit': { screenId: 'system-settings', action: 'update' },
@@ -477,20 +766,21 @@ export function hasPermission(
 
   const target = permMapping[permission];
   if (target) {
-    return checkScreenPermission(normRole, target.screenId, target.action, customPermissions, allowedScreens);
+    return checkScreenPermission(
+      normRole,
+      target.screenId,
+      target.action,
+      customPermissions,
+      allowedScreens,
+      specialPermissions
+    );
   }
 
   const permissions = ROLE_PERMISSIONS[normRole];
   return permissions ? permissions.includes(permission) : false;
 }
 
-/**
- * Checks whether a screen is in the allowedScreens list, respecting aliases.
- */
-export function isScreenAllowed(
-  screenId: string,
-  allowedScreens?: string[] | null
-): boolean {
+export function isScreenAllowed(screenId: string, allowedScreens?: string[] | null): boolean {
   if (!allowedScreens || !Array.isArray(allowedScreens) || allowedScreens.length === 0) {
     return false;
   }
@@ -498,42 +788,42 @@ export function isScreenAllowed(
   return aliases.some((alias) => allowedScreens.includes(alias));
 }
 
-/**
- * Checks whether a role can navigate to a specific screen/route.
- */
 export function canAccessRoute(
   role: Role | string | undefined | null,
   screenId: string,
   userAllowedScreens?: string[] | null,
-  customPermissions?: CustomPermissionsMap | null
+  customPermissions?: CustomPermissionsMap | null,
+  specialPermissions?: SpecialPermissionsMap | null
 ): boolean {
-  return checkScreenPermission(role, screenId, 'view', customPermissions, userAllowedScreens);
+  return checkScreenPermission(
+    role,
+    screenId,
+    'view',
+    customPermissions,
+    userAllowedScreens,
+    specialPermissions
+  );
 }
 
-/**
- * Asserts that the role has the permission, otherwise throws an error.
- */
 export function assertPermission(
   role: Role | string | undefined | null,
   permission: Permission,
   actionDescription?: string,
-  customPermissions?: CustomPermissionsMap | null
+  customPermissions?: CustomPermissionsMap | null,
+  allowedScreens?: string[] | null,
+  specialPermissions?: SpecialPermissionsMap | null
 ): void {
-  if (!hasPermission(role, permission, customPermissions)) {
+  if (!hasPermission(role, permission, customPermissions, allowedScreens, specialPermissions)) {
     const norm = normalizeRole(role);
     const label = ROLE_LABELS[norm];
     const desc = actionDescription ? ` (${actionDescription})` : '';
     throw new Error(
-      `غير مصرح: دورك الحالي (${label}) لا يملك صلاحية تنفيذ هذا الإجراء${desc} [${permission}].`
+      `غير مصرح: حسابك الحالي (${label}) لا يملك الصلاحية المخصصة لتنفيذ هذا الإجراء${desc} [${permission}].`
     );
   }
 }
 
-/**
- * Returns all permissions granted to a given role.
- */
 export function getRolePermissions(role: Role | string | undefined | null): readonly Permission[] {
   const norm = normalizeRole(role);
   return ROLE_PERMISSIONS[norm] || [];
 }
-

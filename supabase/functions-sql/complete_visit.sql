@@ -1,6 +1,6 @@
 -- Soli Medical: Atomic Complete Visit Transaction
 -- Tables affected atomically: visits, patients, prescriptions, lab_orders, radiology_orders, follow_ups
--- Do NOT execute automatically; review and run in Supabase SQL Editor.
+-- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
 create or replace function public.complete_visit(
   p_clinic_id text,
@@ -29,12 +29,23 @@ declare
   v_first_diagnosis text;
   v_item jsonb;
 begin
-  -- 1. Enforce multi-clinic membership and doctor/admin role guard
-  if not public.is_clinic_doctor_or_admin(p_clinic_id) then
-    raise exception 'Unauthorized: caller must be an active doctor or admin of clinic % to complete visits', p_clinic_id;
+  -- 1. Enforce multi-clinic membership and custom clinical permission guard (not hardcoded to role)
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
 
-  -- 2. Lock and read visit row (if it does not exist, exit gracefully like Firestore workflow)
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(p_clinic_id, 'clinical-exam', 'update')
+  ) then
+    raise exception 'Unauthorized: caller lacks clinical.complete / clinical-exam.update permission in clinic %', p_clinic_id;
+  end if;
+
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+
+  -- 2. Lock and read visit row
   select data
     into v_visit_data
     from public.visits
@@ -64,8 +75,8 @@ begin
      set data = v_visit_data || jsonb_build_object(
        'status', 'COMPLETED',
        'doctorId', p_doctor_id,
-       'clinicalData', p_clinical_data,
-       'vitalSigns', p_vital_signs,
+       'clinicalData', coalesce(p_clinical_data, '{}'::jsonb),
+       'vitalSigns', coalesce(p_vital_signs, '{}'::jsonb),
        'completedAt', p_timestamp,
        'updatedAt', p_timestamp
      ),

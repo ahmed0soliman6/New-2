@@ -1,0 +1,970 @@
+-- =============================================================================
+-- Soli Medical v3.0.0 — Custom Permissions & Granular RLS Migration
+-- File: supabase/migrations/20261107_fix_custom_permissions_rls.sql
+-- =============================================================================
+-- تعليمات التشغيل اليدوية (Manual Execution Instructions):
+-- 1. افتح لوحة تحكم Supabase الخاصة بالمشروع (Supabase Dashboard).
+-- 2. انتقل إلى قسم SQL Editor ثم اضغط New Query.
+-- 3. انسخ محتوى هذا الملف بالكامل والصقه في المحرر ثم اضغط Run.
+-- 4. ملاحظة أمنية: هذا السكربت يحذف السياسة العامة القديمة (member_all) التي كانت
+--    تسمح لأي عضو بالحذف أو التعديل، ويستبدلها بسياسات منفصلة (SELECT / INSERT / UPDATE / DELETE)
+--    تعتمد على دالة public.has_clinic_permission(clinic_id, permission, action)
+--    التي تقرأ الصلاحيات المخصصة الفردية من clinic_members.permissions بغض النظر عن المسمى الوظيفي.
+-- =============================================================================
+
+begin;
+
+-- 1. Core Membership Helper
+create or replace function public.is_clinic_member(cid text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+      from public.clinic_members m
+     where m.clinic_id = cid
+       and m.user_id = auth.uid()
+       and m.is_active = true
+  );
+$$;
+
+-- 2. Flexible Custom Permission Evaluator (Role is only a default fallback!)
+create or replace function public.has_clinic_permission(
+  p_clinic_id text,
+  p_permission text,
+  p_action text default 'view'
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_role text;
+  v_is_active boolean;
+  v_perms jsonb;
+  v_special jsonb;
+  v_custom jsonb;
+  v_allowed jsonb;
+  v_screen_id text;
+  v_mapped_action text;
+  v_special_key text;
+begin
+  if auth.uid() is null or p_clinic_id is null or btrim(p_clinic_id) = '' then
+    return false;
+  end if;
+
+  select lower(coalesce(m.role, 'secretary')),
+         coalesce(m.is_active, false),
+         coalesce(m.permissions, '{}'::jsonb)
+    into v_role, v_is_active, v_perms
+    from public.clinic_members m
+   where m.clinic_id = p_clinic_id
+     and m.user_id = auth.uid();
+
+  if not found or v_is_active is distinct from true then
+    return false;
+  end if;
+
+  v_special := v_perms->'specialPermissions';
+  v_custom := v_perms->'customPermissions';
+  v_allowed := v_perms->'allowedScreens';
+  v_mapped_action := lower(coalesce(nullif(btrim(p_action), ''), 'view'));
+
+  -- Map permission token or screen name to canonical (v_screen_id, v_mapped_action, v_special_key)
+  v_screen_id := p_permission;
+  v_special_key := p_permission;
+
+  case p_permission
+    when 'patients.view' then v_screen_id := 'patient-records'; v_mapped_action := 'view';
+    when 'patients.create' then v_screen_id := 'patient-intake'; v_mapped_action := 'create';
+    when 'patients.update' then v_screen_id := 'patient-records'; v_mapped_action := 'update';
+    when 'patients.delete' then v_screen_id := 'patient-records'; v_mapped_action := 'delete';
+    when 'appointments.view' then v_screen_id := 'appointments-scheduling'; v_mapped_action := 'view';
+    when 'appointments.create' then v_screen_id := 'appointments-scheduling'; v_mapped_action := 'create';
+    when 'appointments.update', 'appointments.checkin' then v_screen_id := 'appointments-scheduling'; v_mapped_action := 'update';
+    when 'appointments.delete', 'appointments.cancel' then v_screen_id := 'appointments-scheduling'; v_mapped_action := 'delete';
+    when 'queue.view' then v_screen_id := 'waiting-queue'; v_mapped_action := 'view';
+    when 'queue.create' then v_screen_id := 'waiting-queue'; v_mapped_action := 'create';
+    when 'queue.update' then v_screen_id := 'waiting-queue'; v_mapped_action := 'update';
+    when 'queue.delete' then v_screen_id := 'waiting-queue'; v_mapped_action := 'delete';
+    when 'clinical.view' then v_screen_id := 'clinical-exam'; v_mapped_action := 'view';
+    when 'clinical.open', 'clinical.create' then v_screen_id := 'clinical-exam'; v_mapped_action := 'create'; v_special_key := 'clinical.open';
+    when 'clinical.complete', 'clinical.update' then v_screen_id := 'clinical-exam'; v_mapped_action := 'update'; v_special_key := 'clinical.complete';
+    when 'clinical.delete' then v_screen_id := 'clinical-exam'; v_mapped_action := 'delete';
+    when 'prescriptions.view' then v_screen_id := 'prescription-print'; v_mapped_action := 'view';
+    when 'prescriptions.create' then v_screen_id := 'prescription-print'; v_mapped_action := 'create';
+    when 'prescriptions.update' then v_screen_id := 'prescription-print'; v_mapped_action := 'update';
+    when 'prescriptions.delete' then v_screen_id := 'prescription-print'; v_mapped_action := 'delete';
+    when 'lab.view' then v_screen_id := 'clinical-exam'; v_mapped_action := 'view';
+    when 'lab.create' then v_screen_id := 'clinical-exam'; v_mapped_action := 'create';
+    when 'lab.update' then v_screen_id := 'clinical-exam'; v_mapped_action := 'update';
+    when 'lab.delete' then v_screen_id := 'clinical-exam'; v_mapped_action := 'delete';
+    when 'radiology.view' then v_screen_id := 'clinical-exam'; v_mapped_action := 'view';
+    when 'radiology.create' then v_screen_id := 'clinical-exam'; v_mapped_action := 'create';
+    when 'radiology.update' then v_screen_id := 'clinical-exam'; v_mapped_action := 'update';
+    when 'radiology.delete' then v_screen_id := 'clinical-exam'; v_mapped_action := 'delete';
+    when 'billing.view', 'payments.view' then v_screen_id := 'billing-payments'; v_mapped_action := 'view';
+    when 'billing.create', 'payments.create' then v_screen_id := 'billing-payments'; v_mapped_action := 'create';
+    when 'billing.update', 'payments.update' then v_screen_id := 'billing-payments'; v_mapped_action := 'update';
+    when 'billing.delete' then v_screen_id := 'billing-payments'; v_mapped_action := 'delete'; v_special_key := 'billing.delete';
+    when 'payments.delete' then v_screen_id := 'billing-payments'; v_mapped_action := 'delete'; v_special_key := 'payments.delete';
+    when 'expenses.view' then v_screen_id := 'daily-expenses'; v_mapped_action := 'view';
+    when 'expenses.create' then v_screen_id := 'daily-expenses'; v_mapped_action := 'create';
+    when 'expenses.update' then v_screen_id := 'daily-expenses'; v_mapped_action := 'update';
+    when 'expenses.delete' then v_screen_id := 'daily-expenses'; v_mapped_action := 'delete';
+    when 'catalogs.view' then v_screen_id := 'medical-catalogs'; v_mapped_action := 'view';
+    when 'catalogs.create' then v_screen_id := 'medical-catalogs'; v_mapped_action := 'create';
+    when 'catalogs.update' then v_screen_id := 'medical-catalogs'; v_mapped_action := 'update';
+    when 'catalogs.delete' then v_screen_id := 'medical-catalogs'; v_mapped_action := 'delete';
+    when 'settings.view' then v_screen_id := 'system-settings'; v_mapped_action := 'view';
+    when 'settings.update' then v_screen_id := 'system-settings'; v_mapped_action := 'update';
+    when 'users.manage' then v_screen_id := 'system-settings'; v_mapped_action := 'update'; v_special_key := 'users.manage';
+    when 'backup.export' then v_screen_id := 'system-settings'; v_mapped_action := 'view'; v_special_key := 'backup.export';
+    when 'backup.restore' then v_screen_id := 'system-settings'; v_mapped_action := 'update'; v_special_key := 'backup.restore';
+    when 'system.clear_all_data' then v_screen_id := 'system-settings'; v_mapped_action := 'delete'; v_special_key := 'system.clear_all_data';
+    when 'demo.manage' then v_screen_id := 'system-settings'; v_mapped_action := 'update'; v_special_key := 'demo.manage';
+    else
+      null;
+  end case;
+
+  -- Priority 1: Explicit specialPermissions override in clinic_members.permissions
+  if v_special is not null and jsonb_typeof(v_special) = 'object' then
+    if v_special ? p_permission and jsonb_typeof(v_special->p_permission) = 'boolean' then
+      return (v_special->>p_permission)::boolean;
+    end if;
+    if v_special ? v_special_key and jsonb_typeof(v_special->v_special_key) = 'boolean' then
+      return (v_special->>v_special_key)::boolean;
+    end if;
+  end if;
+
+  -- Priority 2: Explicit customPermissions screen action matrix in clinic_members.permissions
+  if v_custom is not null and jsonb_typeof(v_custom) = 'object' then
+    if v_custom ? v_screen_id and jsonb_typeof(v_custom->v_screen_id) = 'object' then
+      if (v_custom->v_screen_id) ? v_mapped_action then
+        return coalesce((v_custom->v_screen_id->>v_mapped_action)::boolean, false);
+      end if;
+    end if;
+    -- Also allow patient-records.create if checking patient-intake.create
+    if v_screen_id = 'patient-intake' and (v_custom ? 'patient-records') then
+      return coalesce((v_custom->'patient-records'->>v_mapped_action)::boolean, false);
+    end if;
+  end if;
+
+  -- Priority 3: Legacy allowedScreens array check
+  if v_allowed is not null and jsonb_typeof(v_allowed) = 'array' then
+    if not (v_allowed ? v_screen_id) then
+      return false;
+    end if;
+  end if;
+
+  -- Priority 4: Default Role Template Fallback (used ONLY when not explicitly customized)
+  if v_role = 'admin' then
+    return true;
+  elsif v_role = 'doctor' then
+    if v_special_key in ('patients.delete', 'billing.delete', 'payments.delete', 'system.clear_all_data', 'backup.restore', 'users.manage', 'demo.manage') then
+      return false;
+    end if;
+    if v_screen_id in ('system-settings', 'daily-expenses') and v_mapped_action <> 'view' then
+      return false;
+    end if;
+    if v_screen_id = 'patient-records' and v_mapped_action = 'delete' then
+      return false;
+    end if;
+    if v_screen_id = 'billing-payments' and v_mapped_action in ('create', 'update', 'delete') then
+      return false;
+    end if;
+    return true;
+  else
+    -- Secretary default template
+    if v_screen_id in ('dashboard', 'patient-intake', 'waiting-queue', 'appointments-scheduling') then
+      return true;
+    end if;
+    if v_screen_id = 'patient-records' then
+      return v_mapped_action in ('view', 'create', 'update');
+    end if;
+    if v_screen_id in ('billing-payments', 'daily-expenses') then
+      return v_mapped_action in ('view', 'create', 'update');
+    end if;
+    if v_screen_id = 'prescription-print' then
+      return v_mapped_action = 'view';
+    end if;
+    if v_screen_id = 'medical-catalogs' then
+      return v_mapped_action = 'view';
+    end if;
+    return false;
+  end if;
+end;
+$$;
+
+-- Keep legacy helpers delegating to custom permissions where appropriate
+create or replace function public.is_clinic_admin(cid text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.has_clinic_permission(cid, 'users.manage', 'update')
+      or public.has_clinic_permission(cid, 'system-settings', 'update');
+$$;
+
+create or replace function public.is_clinic_doctor_or_admin(cid text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.has_clinic_permission(cid, 'clinical.complete', 'update')
+      or public.has_clinic_permission(cid, 'clinical-exam', 'update');
+$$;
+
+-- =============================================================================
+-- 3. Drop legacy permissive "member_all" and old policies on all 22 tables
+-- =============================================================================
+do $$
+declare
+  t text;
+  p record;
+  tables text[] := array[
+    'patients','appointments','visits','invoices','payments','transactions',
+    'expenses','expense_categories','prescriptions','follow_ups','lab_orders',
+    'radiology_orders','medications','lab_tests','radiology_types','diagnoses',
+    'symptoms','chronic_diseases','services','backups','settings','counters'
+  ];
+begin
+  foreach t in array tables loop
+    for p in
+      select policyname
+        from pg_policies
+       where schemaname = 'public'
+         and tablename = t
+    loop
+      execute format('drop policy if exists %I on public.%I', p.policyname, t);
+    end loop;
+  end loop;
+end $$;
+
+-- =============================================================================
+-- 4. Granular Per-Table Policies (SELECT / INSERT / UPDATE / DELETE)
+-- =============================================================================
+
+-- 4.1 PATIENTS
+create policy "patients_select" on public.patients for select to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'patients.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'patient-intake', 'view')
+    or public.has_clinic_permission(clinic_id, 'waiting-queue', 'view')
+    or public.has_clinic_permission(clinic_id, 'clinical-exam', 'view')
+  ));
+create policy "patients_insert" on public.patients for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'patient-records', 'create')
+  ));
+create policy "patients_update" on public.patients for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'patients.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'patients.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "patients_delete" on public.patients for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.2 APPOINTMENTS
+create policy "appointments_select" on public.appointments for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "appointments_insert" on public.appointments for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'appointments.create', 'create'));
+create policy "appointments_update" on public.appointments for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'appointments.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.checkin', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'appointments.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.checkin', 'update')
+  ));
+create policy "appointments_delete" on public.appointments for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'appointments.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.3 VISITS
+create policy "visits_select" on public.visits for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "visits_insert" on public.visits for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'queue.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.open', 'create')
+  ));
+create policy "visits_update" on public.visits for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'queue.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.open', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'queue.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.open', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "visits_delete" on public.visits for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'queue.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'clinical.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.4 PRESCRIPTIONS
+create policy "prescriptions_select" on public.prescriptions for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "prescriptions_insert" on public.prescriptions for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'prescriptions.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "prescriptions_update" on public.prescriptions for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'prescriptions.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'prescriptions.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "prescriptions_delete" on public.prescriptions for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'prescriptions.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.5 LAB_ORDERS & RADIOLOGY_ORDERS & FOLLOW_UPS
+create policy "lab_orders_select" on public.lab_orders for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "lab_orders_insert" on public.lab_orders for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'lab.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "lab_orders_update" on public.lab_orders for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'lab.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'lab.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "lab_orders_delete" on public.lab_orders for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'lab.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+create policy "radiology_orders_select" on public.radiology_orders for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "radiology_orders_insert" on public.radiology_orders for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'radiology.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "radiology_orders_update" on public.radiology_orders for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'radiology.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'radiology.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+  ));
+create policy "radiology_orders_delete" on public.radiology_orders for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'radiology.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+create policy "follow_ups_select" on public.follow_ups for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "follow_ups_insert" on public.follow_ups for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.create', 'create')
+  ));
+create policy "follow_ups_update" on public.follow_ups for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.update', 'update')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.update', 'update')
+  ));
+create policy "follow_ups_delete" on public.follow_ups for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(clinic_id, 'appointments.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.6 INVOICES, PAYMENTS, TRANSACTIONS
+create policy "invoices_select" on public.invoices for select to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'billing.view', 'view'));
+create policy "invoices_insert" on public.invoices for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'billing.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'appointments.checkin', 'update')
+  ));
+create policy "invoices_update" on public.invoices for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'billing.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'billing.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+  ));
+create policy "invoices_delete" on public.invoices for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'billing.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'queue.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+create policy "payments_select" on public.payments for select to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'payments.view', 'view'));
+create policy "payments_insert" on public.payments for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'payments.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(clinic_id, 'appointments.checkin', 'update')
+  ));
+create policy "payments_update" on public.payments for update to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'payments.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+  ))
+  with check (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'payments.update', 'update')
+    or public.has_clinic_permission(clinic_id, 'patients.delete', 'delete')
+  ));
+create policy "payments_delete" on public.payments for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'payments.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'billing.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'queue.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+create policy "transactions_select" on public.transactions for select to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'billing.view', 'view'));
+create policy "transactions_insert" on public.transactions for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'billing.create', 'create'));
+create policy "transactions_update" on public.transactions for update to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'billing.update', 'update'))
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'billing.update', 'update'));
+create policy "transactions_delete" on public.transactions for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'payments.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'billing.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+-- 4.7 EXPENSES & EXPENSE_CATEGORIES
+create policy "expenses_select" on public.expenses for select to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.view', 'view'));
+create policy "expenses_insert" on public.expenses for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.create', 'create'));
+create policy "expenses_update" on public.expenses for update to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.update', 'update'))
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.update', 'update'));
+create policy "expenses_delete" on public.expenses for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'expenses.delete', 'delete')
+    or public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete')
+  ));
+
+create policy "expense_categories_select" on public.expense_categories for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "expense_categories_insert" on public.expense_categories for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.create', 'create'));
+create policy "expense_categories_update" on public.expense_categories for update to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.update', 'update'))
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.update', 'update'));
+create policy "expense_categories_delete" on public.expense_categories for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'expenses.delete', 'delete'));
+
+-- 4.8 MEDICAL CATALOGS (medications, lab_tests, radiology_types, diagnoses, symptoms, chronic_diseases, services)
+do $$
+declare
+  ct text;
+  catalog_tables text[] := array[
+    'medications','lab_tests','radiology_types','diagnoses','symptoms','chronic_diseases','services'
+  ];
+begin
+  foreach ct in array catalog_tables loop
+    execute format($f$
+      create policy "%1$s_select" on public.%1$I for select to authenticated
+        using (public.is_clinic_member(clinic_id));
+      create policy "%1$s_insert" on public.%1$I for insert to authenticated
+        with check (public.is_clinic_member(clinic_id) and (
+          public.has_clinic_permission(clinic_id, 'catalogs.create', 'create')
+          or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+        ));
+      create policy "%1$s_update" on public.%1$I for update to authenticated
+        using (public.is_clinic_member(clinic_id) and (
+          public.has_clinic_permission(clinic_id, 'catalogs.update', 'update')
+          or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+        ))
+        with check (public.is_clinic_member(clinic_id) and (
+          public.has_clinic_permission(clinic_id, 'catalogs.update', 'update')
+          or public.has_clinic_permission(clinic_id, 'clinical.complete', 'update')
+        ));
+      create policy "%1$s_delete" on public.%1$I for delete to authenticated
+        using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'catalogs.delete', 'delete'));
+    $f$, ct);
+  end loop;
+end $$;
+
+-- 4.9 SETTINGS (with protection for _system_recovery and _audit_log)
+create policy "settings_select" on public.settings for select to authenticated
+  using (
+    public.is_clinic_member(clinic_id)
+    and (
+      id <> '_system_recovery'
+      or public.has_clinic_permission(clinic_id, 'users.manage', 'update')
+    )
+  );
+create policy "settings_insert" on public.settings for insert to authenticated
+  with check (
+    public.is_clinic_member(clinic_id)
+    and (
+      id = '_audit_log'
+      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    )
+  );
+create policy "settings_update" on public.settings for update to authenticated
+  using (
+    public.is_clinic_member(clinic_id)
+    and (
+      id = '_audit_log'
+      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    )
+  )
+  with check (
+    public.is_clinic_member(clinic_id)
+    and (
+      id = '_audit_log'
+      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    )
+  );
+create policy "settings_delete" on public.settings for delete to authenticated
+  using (
+    public.is_clinic_member(clinic_id)
+    and id not in ('_system_recovery', '_audit_log')
+    and public.has_clinic_permission(clinic_id, 'settings.update', 'delete')
+  );
+
+-- 4.10 BACKUPS
+create policy "backups_select" on public.backups for select to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'backup.export', 'view'));
+create policy "backups_insert" on public.backups for insert to authenticated
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'backup.export', 'create'));
+create policy "backups_update" on public.backups for update to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'backup.restore', 'update'))
+  with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'backup.restore', 'update'));
+create policy "backups_delete" on public.backups for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'backup.restore', 'delete'));
+
+-- 4.11 COUNTERS
+create policy "counters_select" on public.counters for select to authenticated
+  using (public.is_clinic_member(clinic_id));
+create policy "counters_insert" on public.counters for insert to authenticated
+  with check (public.is_clinic_member(clinic_id));
+create policy "counters_update" on public.counters for update to authenticated
+  using (public.is_clinic_member(clinic_id))
+  with check (public.is_clinic_member(clinic_id));
+create policy "counters_delete" on public.counters for delete to authenticated
+  using (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'system.clear_all_data', 'delete'));
+
+-- 4.12 CLINIC_MEMBERS
+drop policy if exists "members_read_own_clinic" on public.clinic_members;
+drop policy if exists "members_admin_write" on public.clinic_members;
+
+create policy "members_select" on public.clinic_members for select to authenticated
+  using (
+    user_id = auth.uid()
+    or public.has_clinic_permission(clinic_id, 'users.manage', 'view')
+    or public.has_clinic_permission(clinic_id, 'system-settings', 'view')
+  );
+create policy "members_insert" on public.clinic_members for insert to authenticated
+  with check (
+    public.has_clinic_permission(clinic_id, 'users.manage', 'create')
+    or public.has_clinic_permission(clinic_id, 'system-settings', 'create')
+  );
+create policy "members_update" on public.clinic_members for update to authenticated
+  using (
+    public.has_clinic_permission(clinic_id, 'users.manage', 'update')
+    or public.has_clinic_permission(clinic_id, 'system-settings', 'update')
+  )
+  with check (
+    public.has_clinic_permission(clinic_id, 'users.manage', 'update')
+    or public.has_clinic_permission(clinic_id, 'system-settings', 'update')
+  );
+create policy "members_delete" on public.clinic_members for delete to authenticated
+  using (
+    user_id <> auth.uid()
+    and (
+      public.has_clinic_permission(clinic_id, 'users.manage', 'delete')
+      or public.has_clinic_permission(clinic_id, 'system-settings', 'delete')
+    )
+  );
+
+-- =============================================================================
+-- 5. Hardened RPC Functions (Enforcing Membership + Custom Permissions + Input Validation)
+--    (Full standalone definitions also available in supabase/functions-sql/*.sql)
+-- =============================================================================
+
+-- 5.1 complete_visit
+create or replace function public.complete_visit(
+  p_clinic_id text,
+  p_visit_id text,
+  p_doctor_id text,
+  p_timestamp text,
+  p_clinical_data jsonb,
+  p_vital_signs jsonb,
+  p_prescription jsonb default null,
+  p_lab_orders jsonb default '[]'::jsonb,
+  p_radiology_orders jsonb default '[]'::jsonb,
+  p_follow_up jsonb default null
+)
+returns void language plpgsql security invoker set search_path = public as $$
+declare
+  v_visit_data jsonb;
+  v_patient_id text;
+  v_patient_data jsonb;
+  v_already_completed boolean;
+  v_prev_visits_count integer;
+  v_next_visits_count integer;
+  v_first_diagnosis text;
+  v_item jsonb;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'clinical.complete', 'update')
+    or public.has_clinic_permission(p_clinic_id, 'clinical-exam', 'update')
+  ) then
+    raise exception 'Unauthorized: caller lacks clinical.complete permission in clinic %', p_clinic_id;
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+
+  select data into v_visit_data from public.visits where clinic_id = p_clinic_id and id = p_visit_id for update;
+  if v_visit_data is null then return; end if;
+
+  v_patient_id := v_visit_data->>'patientId';
+  v_already_completed := (coalesce(v_visit_data->>'status', '') = 'COMPLETED');
+
+  if v_patient_id is not null and v_patient_id <> '' then
+    select data into v_patient_data from public.patients where clinic_id = p_clinic_id and id = v_patient_id for update;
+  end if;
+
+  update public.visits
+     set data = v_visit_data || jsonb_build_object(
+       'status', 'COMPLETED',
+       'doctorId', p_doctor_id,
+       'clinicalData', coalesce(p_clinical_data, '{}'::jsonb),
+       'vitalSigns', coalesce(p_vital_signs, '{}'::jsonb),
+       'completedAt', p_timestamp,
+       'updatedAt', p_timestamp
+     ),
+     updated_at = now()
+   where clinic_id = p_clinic_id and id = p_visit_id;
+
+  if v_patient_data is not null then
+    v_prev_visits_count := coalesce((v_patient_data->>'visitsCount')::integer, 0);
+    if v_already_completed then
+      v_next_visits_count := case when v_prev_visits_count > 0 then v_prev_visits_count else 1 end;
+    else
+      v_next_visits_count := v_prev_visits_count + 1;
+    end if;
+    v_first_diagnosis := coalesce(p_clinical_data->'diagnosis'->>0, '');
+    update public.patients
+       set data = v_patient_data || jsonb_build_object(
+         'hasClinicalFile', true,
+         'visitsCount', v_next_visits_count,
+         'lastVisitAt', p_timestamp,
+         'lastDiagnosis', v_first_diagnosis,
+         'updatedAt', p_timestamp
+       ),
+       updated_at = now()
+     where clinic_id = p_clinic_id and id = v_patient_id;
+  end if;
+
+  delete from public.prescriptions where clinic_id = p_clinic_id and data->>'visitId' = p_visit_id;
+  if p_prescription is not null and (p_prescription->>'prescriptionId') is not null then
+    insert into public.prescriptions (clinic_id, id, data)
+    values (p_clinic_id, p_prescription->>'prescriptionId', p_prescription)
+    on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+  end if;
+
+  delete from public.lab_orders where clinic_id = p_clinic_id and data->>'visitId' = p_visit_id;
+  if p_lab_orders is not null and jsonb_typeof(p_lab_orders) = 'array' then
+    for v_item in select * from jsonb_array_elements(p_lab_orders) loop
+      if (v_item->>'labOrderId') is not null then
+        insert into public.lab_orders (clinic_id, id, data)
+        values (p_clinic_id, v_item->>'labOrderId', v_item)
+        on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+      end if;
+    end loop;
+  end if;
+
+  delete from public.radiology_orders where clinic_id = p_clinic_id and data->>'visitId' = p_visit_id;
+  if p_radiology_orders is not null and jsonb_typeof(p_radiology_orders) = 'array' then
+    for v_item in select * from jsonb_array_elements(p_radiology_orders) loop
+      if (v_item->>'radiologyOrderId') is not null then
+        insert into public.radiology_orders (clinic_id, id, data)
+        values (p_clinic_id, v_item->>'radiologyOrderId', v_item)
+        on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+      end if;
+    end loop;
+  end if;
+
+  delete from public.follow_ups where clinic_id = p_clinic_id and data->>'sourceVisitId' = p_visit_id;
+  if p_follow_up is not null and (p_follow_up->>'followUpId') is not null then
+    insert into public.follow_ups (clinic_id, id, data)
+    values (p_clinic_id, p_follow_up->>'followUpId', p_follow_up)
+    on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+  end if;
+end;
+$$;
+
+-- 5.2 delete_patient
+create or replace function public.delete_patient(
+  p_clinic_id text,
+  p_patient_id text,
+  p_mode text default 'file_only'
+)
+returns void language plpgsql security invoker set search_path = public as $$
+declare
+  v_pat jsonb;
+  v_patient_name text;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'patients.delete', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'patient-records', 'delete')
+  ) then
+    raise exception 'Unauthorized: caller lacks patients.delete permission';
+  end if;
+  if p_mode = 'everything' and not (
+    public.has_clinic_permission(p_clinic_id, 'billing.delete', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'billing-payments', 'delete')
+  ) then
+    raise exception 'Unauthorized: caller lacks billing.delete permission required for full deletion';
+  end if;
+  if p_patient_id is null or btrim(p_patient_id) = '' then
+    raise exception 'Invalid input: p_patient_id is required';
+  end if;
+
+  select data into v_pat from public.patients where clinic_id = p_clinic_id and id = p_patient_id for update;
+  v_patient_name := coalesce(v_pat->>'fullName', v_pat->>'name', '');
+
+  delete from public.prescriptions where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  delete from public.lab_orders where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  delete from public.radiology_orders where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  delete from public.follow_ups where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  delete from public.appointments where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  delete from public.visits where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+
+  if p_mode = 'everything' then
+    delete from public.payments where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+    delete from public.invoices where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  else
+    update public.invoices
+       set data = data || jsonb_build_object('patientId', 'pat-general', 'patientName', coalesce(nullif(data->>'patientName', ''), v_patient_name)),
+           updated_at = now()
+     where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+    update public.payments
+       set data = data || jsonb_build_object('patientId', 'pat-general', 'patientName', coalesce(nullif(data->>'patientName', ''), v_patient_name)),
+           updated_at = now()
+     where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
+  end if;
+
+  delete from public.patients where clinic_id = p_clinic_id and id = p_patient_id;
+end;
+$$;
+
+-- 5.3 remove_queue_visit
+create or replace function public.remove_queue_visit(
+  p_clinic_id text,
+  p_visit_id text
+)
+returns void language plpgsql security invoker set search_path = public as $$
+declare
+  v_visit jsonb;
+  v_appointment_id text;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'queue.delete', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'waiting-queue', 'delete')
+  ) then
+    raise exception 'Unauthorized: caller lacks waiting-queue.delete permission';
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+
+  select data into v_visit from public.visits where clinic_id = p_clinic_id and id = p_visit_id for update;
+  if v_visit is null then return; end if;
+
+  v_appointment_id := nullif(v_visit->>'appointmentId', '');
+
+  delete from public.payments
+   where clinic_id = p_clinic_id
+     and (data->>'visitId' = p_visit_id or data->>'invoiceId' in (select id from public.invoices where clinic_id = p_clinic_id and data->>'visitId' = p_visit_id));
+  delete from public.invoices where clinic_id = p_clinic_id and data->>'visitId' = p_visit_id;
+  delete from public.visits where clinic_id = p_clinic_id and id = p_visit_id;
+
+  if v_appointment_id is not null then
+    update public.appointments
+       set data = data || jsonb_build_object('status', 'CANCELLED'),
+           updated_at = now()
+     where clinic_id = p_clinic_id and id = v_appointment_id;
+  end if;
+end;
+$$;
+
+-- 5.4 add_transaction
+create or replace function public.add_transaction(
+  p_clinic_id text,
+  p_timestamp text,
+  p_invoice_id text,
+  p_invoice_data jsonb,
+  p_payment_id text default null,
+  p_payment_data jsonb default null,
+  p_patient_id text default null,
+  p_patient_data jsonb default null
+)
+returns void language plpgsql security invoker set search_path = public as $$
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'billing.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'payments.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'billing-payments', 'create')
+  ) then
+    raise exception 'Unauthorized: caller lacks billing.create / payments.create permission';
+  end if;
+  if p_invoice_id is null or btrim(p_invoice_id) = '' or p_invoice_data is null then
+    raise exception 'Invalid input: p_invoice_id and p_invoice_data are required';
+  end if;
+
+  if p_patient_id is not null and btrim(p_patient_id) <> '' and p_patient_data is not null then
+    insert into public.patients (clinic_id, id, data)
+    values (p_clinic_id, p_patient_id, p_patient_data)
+    on conflict (clinic_id, id) do nothing;
+  end if;
+
+  insert into public.invoices (clinic_id, id, data)
+  values (p_clinic_id, p_invoice_id, p_invoice_data)
+  on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+
+  if p_payment_id is not null and btrim(p_payment_id) <> '' and p_payment_data is not null then
+    insert into public.payments (clinic_id, id, data)
+    values (p_clinic_id, p_payment_id, p_payment_data)
+    on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+  end if;
+end;
+$$;
+
+-- 5.5 delete_transaction
+create or replace function public.delete_transaction(
+  p_clinic_id text,
+  p_payment_id text,
+  p_invoice_id text,
+  p_tx_id text
+)
+returns void language plpgsql security invoker set search_path = public as $$
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'payments.delete', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'billing.delete', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'billing-payments', 'delete')
+  ) then
+    raise exception 'Unauthorized: caller lacks payments.delete / billing.delete permission';
+  end if;
+
+  delete from public.payments
+   where clinic_id = p_clinic_id
+     and (id = coalesce(p_payment_id, '') or id = coalesce(p_tx_id, '') or data->>'invoiceId' = coalesce(p_invoice_id, ''));
+  delete from public.invoices
+   where clinic_id = p_clinic_id
+     and (id = coalesce(p_invoice_id, '') or id = coalesce(p_tx_id, ''));
+  delete from public.transactions
+   where clinic_id = p_clinic_id
+     and (id = coalesce(p_tx_id, '') or id = coalesce(p_payment_id, '') or id = coalesce(p_invoice_id, ''));
+end;
+$$;
+
+-- 5.6 admin_delete_clinic_user
+create or replace function public.admin_delete_clinic_user(
+  p_clinic_id text,
+  p_user_id uuid
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_exists boolean;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'users.manage', 'delete')
+    or public.has_clinic_permission(p_clinic_id, 'system-settings', 'delete')
+  ) then
+    raise exception 'Unauthorized: caller lacks users.manage permission';
+  end if;
+  if p_user_id = auth.uid() then
+    raise exception 'Cannot delete your own active account';
+  end if;
+
+  select exists(select 1 from public.clinic_members where clinic_id = p_clinic_id and user_id = p_user_id) into v_exists;
+  if not v_exists then
+    raise exception 'User is not a member of this clinic';
+  end if;
+
+  delete from public.clinic_members where clinic_id = p_clinic_id and user_id = p_user_id;
+  if not exists (select 1 from public.clinic_members where user_id = p_user_id) then
+    delete from public.usernames where user_id = p_user_id;
+  end if;
+end;
+$$;
+
+commit;

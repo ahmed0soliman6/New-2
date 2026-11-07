@@ -5,6 +5,7 @@ import type { UserRole } from '../../types/database';
 import {
   ALL_SYSTEM_SCREENS,
   CustomPermissionsMap,
+  SpecialPermissionsMap,
   getDefaultAllowedScreens,
   normalizeRole,
   Role,
@@ -26,6 +27,7 @@ type ManagedUser = {
   active: boolean;
   allowedScreens?: string[];
   customPermissions?: CustomPermissionsMap;
+  specialPermissions?: SpecialPermissionsMap;
 };
 
 export const UserManagementPanel: React.FC = () => {
@@ -110,6 +112,10 @@ export const UserManagementPanel: React.FC = () => {
         customPermissions:
           perms.customPermissions && typeof perms.customPermissions === 'object'
             ? (perms.customPermissions as CustomPermissionsMap)
+            : undefined,
+        specialPermissions:
+          perms.specialPermissions && typeof perms.specialPermissions === 'object'
+            ? (perms.specialPermissions as SpecialPermissionsMap)
             : undefined,
       };
     });

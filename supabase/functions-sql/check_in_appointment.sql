@@ -1,6 +1,6 @@
 -- Soli Medical: Atomic Check-In Appointment Transaction
 -- Tables affected atomically: appointments, counters, invoices, payments, visits
--- Do NOT execute automatically; review and run in Supabase SQL Editor.
+-- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
 create or replace function public.check_in_appointment(
   p_clinic_id text,
@@ -34,12 +34,30 @@ declare
   v_invoice jsonb;
   v_payment jsonb;
 begin
-  -- 1. Enforce multi-clinic membership guard
+  -- 1. Enforce multi-clinic membership and custom permission guard
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
 
-  -- 2. Lock and read the appointment row
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'appointments.checkin', 'update')
+    or public.has_clinic_permission(p_clinic_id, 'waiting-queue', 'create')
+  ) then
+    raise exception 'Unauthorized: missing permission appointments.checkin / waiting-queue.create';
+  end if;
+
+  -- 2. Input validation
+  if p_appointment_id is null or btrim(p_appointment_id) = '' then
+    raise exception 'Invalid input: p_appointment_id is required';
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+  if p_payment_amount is null or p_payment_amount < 0 then
+    raise exception 'Invalid input: p_payment_amount cannot be negative';
+  end if;
+
+  -- 3. Lock and read the appointment row
   select data
     into v_appointment
     from public.appointments
@@ -55,7 +73,7 @@ begin
     raise exception 'Only scheduled appointments can be checked in';
   end if;
 
-  -- 3. Ensure daily queue counter row exists, then lock it with FOR UPDATE
+  -- 4. Ensure daily queue counter row exists, then lock it with FOR UPDATE
   insert into public.counters (clinic_id, id, data)
   values (
     p_clinic_id,
@@ -81,7 +99,7 @@ begin
   v_clinic_location_id := nullif(v_appointment->>'clinicLocationId', '');
   v_visit_type := case when p_payment_amount = 0 then 'FOLLOW_UP' else 'NEW' end;
 
-  -- 4. Update daily queue counter
+  -- 5. Update daily queue counter
   update public.counters
      set data = coalesce(v_counter_data, '{}'::jsonb) || jsonb_build_object(
        'lastNumber', v_assigned_queue,
@@ -91,7 +109,7 @@ begin
    where clinic_id = p_clinic_id
      and id = ('queue_' || p_today);
 
-  -- 5. Update appointment status to ARRIVED
+  -- 6. Update appointment status to ARRIVED
   v_updated_appointment := v_appointment || jsonb_build_object(
     'status', 'ARRIVED',
     'updatedAt', p_timestamp
@@ -103,7 +121,7 @@ begin
    where clinic_id = p_clinic_id
      and id = p_appointment_id;
 
-  -- 6. Build and insert invoice
+  -- 7. Build and insert invoice
   v_invoice := jsonb_build_object(
     'invoiceId', p_invoice_id,
     'patientId', v_patient_id,
@@ -127,7 +145,7 @@ begin
     set data = excluded.data,
         updated_at = now();
 
-  -- 7. Build and insert payment
+  -- 8. Build and insert payment
   v_payment := jsonb_build_object(
     'paymentId', p_payment_id,
     'patientId', v_patient_id,
@@ -149,7 +167,7 @@ begin
     set data = excluded.data,
         updated_at = now();
 
-  -- 8. Build and insert visit
+  -- 9. Build and insert visit
   v_visit := jsonb_build_object(
     'visitId', p_visit_id,
     'patientId', v_patient_id,

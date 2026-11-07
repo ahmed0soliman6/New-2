@@ -129,22 +129,28 @@ export default async function handler(req: any, res: any) {
       return sendResponse(res, 400, { error: 'كلمة المرور المؤقتة يجب ألا تقل عن 8 خانات.' });
     }
 
-    // 3. Verify caller is an active admin in clinic_members for the same clinic
+    // 3. Verify caller is an active member with user management permission in clinic_members
     const { data: callerMember, error: callerMemberErr } = await supabaseAdmin
       .from('clinic_members')
-      .select('role, is_active')
+      .select('role, is_active, permissions')
       .eq('clinic_id', targetClinicId)
       .eq('user_id', callerUid)
       .maybeSingle();
 
-    if (
-      callerMemberErr ||
-      !callerMember ||
-      callerMember.is_active === false ||
-      String(callerMember.role).toLowerCase() !== 'admin'
-    ) {
+    const callerPerms = (callerMember?.permissions || {}) as Record<string, any>;
+    const callerSpecial = callerPerms.specialPermissions as Record<string, boolean> | undefined;
+    const callerCustom = callerPerms.customPermissions as Record<string, Record<string, boolean>> | undefined;
+    const isCallerAdminRole = String(callerMember?.role || '').toLowerCase() === 'admin';
+    const hasExplicitManage =
+      typeof callerSpecial?.['users.manage'] === 'boolean'
+        ? callerSpecial['users.manage']
+        : typeof callerCustom?.['system-settings']?.update === 'boolean'
+        ? callerCustom['system-settings'].update
+        : isCallerAdminRole;
+
+    if (callerMemberErr || !callerMember || callerMember.is_active === false || !hasExplicitManage) {
       return sendResponse(res, 403, {
-        error: 'غير مصرح: إعادة تعيين كلمة المرور متاحة لمدير العيادة (Admin) فقط.',
+        error: 'غير مصرح: إعادة تعيين كلمة المرور متاحة لمن يملك صلاحية إدارة المستخدمين (users.manage) فقط.',
       });
     }
 

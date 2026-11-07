@@ -182,7 +182,10 @@ import { buildTransactions } from './utils/buildTransactions';
 import { READ_OPT, HOT_DAYS, APPT_PAST_DAYS } from './config/readOpt';
 import { subscribeMerged } from './services/repositories/windowed';
 import { invalidatePatientHistory } from './services/history';
-import { hasRecentLocalWrite, clearCachedTables } from './services/offlineSync';
+import { hasRecentLocalWrite, clearCachedTables, markTombstone } from './services/offlineSync';
+import { validateAndSanitizePatientUpdate } from './utils/patientValidation';
+import { recordAuditLog } from './services/auditLog';
+import { ConflictResolutionModal } from './components/modals/ConflictResolutionModal';
 
 // Merged full initial reference catalogs combining database.ts and previewMedicalCatalogs.ts
 const INITIAL_RADIOLOGY_FULL: RadiologyType[] = (() => {
@@ -330,7 +333,7 @@ const VALID_SCREENS: ScreenType[] = [
 ];
 
 function ClinicApp() {
-  const { canAccess, canPerform, canDelete, allowedScreens, userProfile } = usePermissions();
+  const { canAccess, canPerform, canDelete, hasPermission, allowedScreens, userProfile } = usePermissions();
   const { language, dir, isRTL, t } = useLanguage();
 
   const [patientDeleteModalState, setPatientDeleteModalState] = useState<{
@@ -485,24 +488,33 @@ function ClinicApp() {
   };
 
   const handleGenerateYearlyDemoData = async () => {
-    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
-      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+    const canManageDemo = hasPermission('demo.manage');
+    if (!canManageDemo) {
+      alert('غير مصرح: ليس لديك صلاحية توليد أو إدارة البيانات التجريبية (demo.manage).');
       return;
     }
     try {
       const { generateOneYearDemoData } = await import('./utils/demoDataGenerator');
-      await generateOneYearDemoData(db);
+      await generateOneYearDemoData({
+        hasDemoPermission: canManageDemo,
+        actor: {
+          uid: userProfile?.uid,
+          username: userProfile?.username,
+          role: userProfile?.role,
+        },
+      });
       setSyncRetryCounter((c) => c + 1);
-      alert('تم توليد بيانات تجريبية متكاملة لمدى سنة كاملة بنجاح! تشمل سجلات المرضى والزيارات الموزعة، الحجوزات، الفواتير، المقبوضات ومصروفات العيادة المتنوعة لتظهر في التقارير والرسوم البيانية بشكل دقيق.');
+      alert('تم توليد بيانات تجريبية آمنة (موسومة بـ isDemo: true) بنجاح ✓');
     } catch (err) {
       console.error(err);
-      alert('حدث خطأ أثناء توليد البيانات التجريبية.');
+      alert(err instanceof Error ? err.message : 'حدث خطأ أثناء توليد البيانات التجريبية.');
     }
   };
 
   const handleClearAllData = async () => {
-    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
-      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+    const canClearSystem = hasPermission('system.clear_all_data');
+    if (!canClearSystem) {
+      alert('غير مصرح: ليس لديك صلاحية المسح الجماعي لبيانات العيادة (system.clear_all_data).');
       return;
     }
     try {
@@ -511,7 +523,14 @@ function ClinicApp() {
       window.dispatchEvent(new CustomEvent('soli_clinic_expenses_updated'));
 
       const { clearAllDatabaseCollections } = await import('./utils/demoDataGenerator');
-      await clearAllDatabaseCollections(db);
+      await clearAllDatabaseCollections({
+        hasClearPermission: canClearSystem,
+        actor: {
+          uid: userProfile?.uid,
+          username: userProfile?.username,
+          role: userProfile?.role,
+        },
+      });
       
       setPatientsCanonical([]);
       setAppointmentsCanonical([]);
@@ -533,8 +552,8 @@ function ClinicApp() {
   };
 
   const handleClearBrowserVisitsOnly = async () => {
-    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
-      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+    if (!hasPermission('system.clear_all_data') && !canPerform('system-settings', 'update')) {
+      alert('غير مصرح: ليس لديك صلاحية لتفريغ ذاكرة المتصفح.');
       return;
     }
     try {
@@ -580,8 +599,9 @@ function ClinicApp() {
   };
 
   const handleClearAllBrowserAndCloud = async () => {
-    if (String(userProfile?.role || '').toLowerCase() !== 'admin') {
-      alert('غير مصرح: هذه العملية الحساسة متاحة لمدير النظام (Admin) فقط.');
+    const canClearSystem = hasPermission('system.clear_all_data');
+    if (!canClearSystem) {
+      alert('غير مصرح: ليس لديك صلاحية المسح الجماعي لبيانات العيادة والسحابة (system.clear_all_data).');
       return;
     }
     try {
@@ -590,7 +610,14 @@ function ClinicApp() {
       window.dispatchEvent(new CustomEvent('soli_clinic_expenses_updated'));
 
       const { clearAllDatabaseCollections } = await import('./utils/demoDataGenerator');
-      await clearAllDatabaseCollections(db);
+      await clearAllDatabaseCollections({
+        hasClearPermission: canClearSystem,
+        actor: {
+          uid: userProfile?.uid,
+          username: userProfile?.username,
+          role: userProfile?.role,
+        },
+      });
       
       setPatientsCanonical([]);
       setAppointmentsCanonical([]);
@@ -2181,11 +2208,11 @@ function ClinicApp() {
 
   // Delete patient record via RPC ('file_only' | 'everything')
   const handleDeletePatient = async (patientId: string, mode: 'file_only' | 'everything' = 'file_only'): Promise<boolean> => {
-    if (!canDelete('patient-records')) {
+    if (!canDelete('patient-records') && !hasPermission('patients.delete')) {
       alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
       return false;
     }
-    if (mode === 'everything' && !canDelete('billing-payments')) {
+    if (mode === 'everything' && !canDelete('billing-payments') && !hasPermission('billing.delete')) {
       alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
       return false;
     }
@@ -2204,8 +2231,21 @@ function ClinicApp() {
         throw error;
       }
 
+      await markTombstone('patients', patientId, clinicId);
+
       const patRecord = patientsCanonical.find((p) => p.patientId === patientId);
       const preservedPatientName = patRecord?.fullName || patients.find((p) => p.id === patientId)?.name || '';
+
+      await recordAuditLog({
+        action: 'patient.delete',
+        actorUid: userProfile?.uid,
+        actorUsername: userProfile?.username,
+        actorRole: userProfile?.role,
+        targetId: patientId,
+        targetType: 'patient',
+        summary: `حذف ملف المريض (${preservedPatientName || patientId}) بنمط (${mode})`,
+        metadata: { mode, patientId },
+      });
 
       setPatientsCanonical((prev) => prev.filter((p) => p.patientId !== patientId));
       setVisitsCanonical((prev) => prev.filter((v) => v.patientId !== patientId));
@@ -2246,12 +2286,17 @@ function ClinicApp() {
     }
   };
 
-  // Update patient record
+  // Update patient record (Protected by patients.update, field validation, and Audit Log)
   const handleUpdatePatient = async (
     patientIdOrUpdated: string | (Partial<Patient> & { patientId: string }),
     maybeFields?: Partial<Patient>
   ) => {
-    const timestamp = new Date().toISOString();
+    const canUpdatePatient = hasPermission('patients.update') || canPerform('patient-records', 'update');
+    if (!canUpdatePatient) {
+      alert('غير مصرح: ليس لديك صلاحية تعديل بيانات المريض (patients.update).');
+      return;
+    }
+
     const patientId = typeof patientIdOrUpdated === 'string' ? patientIdOrUpdated : patientIdOrUpdated.patientId;
     const fields = typeof patientIdOrUpdated === 'string' ? maybeFields || {} : patientIdOrUpdated;
     if (!patientId) return;
@@ -2269,13 +2314,24 @@ function ClinicApp() {
         .maybeSingle();
       if (fetchErr) throw fetchErr;
 
-      const prevData = (existing?.data && typeof existing.data === 'object' ? existing.data : {}) as Record<string, unknown>;
-      const mergedData = {
-        ...prevData,
-        ...fields,
-        patientId,
-        updatedAt: timestamp,
-      };
+      const prevData = (existing?.data && typeof existing.data === 'object'
+        ? existing.data
+        : patientsCanonical.find((p) => p.patientId === patientId) || { patientId }) as Record<string, unknown>;
+
+      const validation = validateAndSanitizePatientUpdate(
+        prevData as Partial<Patient> & Record<string, unknown>,
+        fields as Partial<Patient> & Record<string, unknown>,
+        canUpdatePatient
+      );
+
+      if (!validation.valid || !validation.sanitizedData) {
+        alert(validation.error || 'بيانات المريض غير صالحة للتحديث.');
+        return;
+      }
+
+      const mergedData = validation.sanitizedData;
+      const timestamp = mergedData.updatedAt || new Date().toISOString();
+
       const { error: upsertErr } = await supabase.from('patients').upsert(
         {
           clinic_id: clinicId,
@@ -2286,6 +2342,25 @@ function ClinicApp() {
         { onConflict: 'clinic_id,id' }
       );
       if (upsertErr) throw upsertErr;
+
+      setPatientsCanonical((prev) =>
+        prev.map((p) => (p.patientId === patientId ? (mergedData as Patient) : p))
+      );
+
+      await recordAuditLog({
+        action: 'patient.update',
+        actorUid: userProfile?.uid,
+        actorUsername: userProfile?.username,
+        actorRole: userProfile?.role,
+        targetId: patientId,
+        targetType: 'patient',
+        summary: `تعديل بيانات المريض (${mergedData.fullName}) — الحقول: ${(validation.changedFields || []).join(', ') || 'تحديث عام'}`,
+        metadata: {
+          patientId,
+          changedFields: validation.changedFields || [],
+          rev: mergedData._rev,
+        },
+      });
     } catch (err) {
       alert(translateDbError(err, 'تعذر تحديث بيانات المريض في قاعدة البيانات'));
       return;
@@ -2429,7 +2504,7 @@ function ClinicApp() {
 
   // Delete invoice / transaction safely (UI Action -> Supabase RPC -> Realtime -> UI)
   const handleDeleteTransaction = async (txId: string) => {
-    if (!canDelete('billing-payments')) {
+    if (!canDelete('billing-payments') && !hasPermission('payments.delete') && !hasPermission('billing.delete')) {
       alert('ليس لديك صلاحية لتنفيذ هذه العملية.');
       return;
     }
@@ -2473,6 +2548,9 @@ function ClinicApp() {
         throw error;
       }
 
+      if (targetPaymentId) await markTombstone('payments', targetPaymentId, clinicId);
+      if (targetInvoiceId) await markTombstone('invoices', targetInvoiceId, clinicId);
+
       setPaymentsCanonical((prev) =>
         prev.filter((p) => p.paymentId !== targetPaymentId && p.paymentId !== txId && p.invoiceId !== targetInvoiceId)
       );
@@ -2487,6 +2565,10 @@ function ClinicApp() {
 
   // Call Patient
   const handleCallPatient = async (ticket: string, name: string) => {
+    if (!hasPermission('clinical.open') && !canPerform('clinical-exam', 'create') && !canPerform('clinical-exam', 'update')) {
+      alert('غير مصرح: ليس لديك صلاحية فتح كشف طبي (clinical.open).');
+      return;
+    }
     const targetQueueNum = parseInt(ticket.replace(/\D/g, ''), 10);
     const targetVisit =
       visitsCanonical.find((v) => v.queueNumber === targetQueueNum) ||
@@ -2497,7 +2579,7 @@ function ClinicApp() {
 
     const callerDoctorId = userProfile?.username || userProfile?.uid;
     if (!callerDoctorId) {
-      alert('تعذر التحقق من حساب الطبيب المسجل حاليًا قبل بدء الكشف.');
+      alert('تعذر التحقق من حساب المستخدم المسجل حاليًا قبل بدء الكشف.');
       return;
     }
 
@@ -2814,9 +2896,13 @@ function ClinicApp() {
     examination?: string;
     history?: string;
   }): Promise<boolean> => {
+    if (!hasPermission('clinical.complete') && !canPerform('clinical-exam', 'update') && !canPerform('clinical-exam', 'create')) {
+      alert('غير مصرح: ليس لديك صلاحية إنهاء الكشف الطبي وحفظ الزيارة (clinical.complete).');
+      return false;
+    }
     const resolvedDoctorId = userProfile?.username || userProfile?.uid;
     if (!resolvedDoctorId) {
-      alert('تعذر التحقق من حساب الطبيب المسجل حاليًا. يرجى إعادة تسجيل الدخول قبل إنهاء الكشف.');
+      alert('تعذر التحقق من حساب المستخدم المسجل حاليًا. يرجى إعادة تسجيل الدخول قبل إنهاء الكشف.');
       return false;
     }
 
@@ -3346,6 +3432,9 @@ function ClinicApp() {
         onAddAppointment={handleAddAppointment}
         visitTypesList={visitTypesList}
       />
+
+      {/* Offline Sync Conflict Comparison Modal */}
+      <ConflictResolutionModal />
 
       {/* Database Architecture Inspector Modal */}
       {isDatabaseInspectorOpen && (

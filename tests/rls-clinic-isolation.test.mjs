@@ -38,36 +38,91 @@ const PROTECTED_TABLES = [
   'expenses',
   'expense_categories',
   'settings',
+  'backups',
+  'counters',
 ];
 
-test('1. فحص سياسات العزل (RLS) في ملفات SQL لجميع جداول العيادات', () => {
-  const schemaPath = path.resolve(process.cwd(), 'supabase/schema.sql');
-  assert.ok(fs.existsSync(schemaPath), 'ملف supabase/schema.sql يجب أن يكون موجوداً');
-  const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+const SENSITIVE_RPC_FILES = [
+  'check_in_appointment.sql',
+  'register_walk_in.sql',
+  'complete_visit.sql',
+  'create_appointment.sql',
+  'remove_queue_visit.sql',
+  'delete_patient.sql',
+  'add_transaction.sql',
+  'delete_transaction.sql',
+  'admin_delete_clinic_user.sql',
+];
 
-  // التأكد من وجود دالة فحص عضوية العيادة
-  assert.match(
+test('1. فحص سياسات العزل (RLS) وإلغاء member_all في schema.sql وملف الترحيل', () => {
+  const schemaPath = path.resolve(process.cwd(), 'supabase/schema.sql');
+  const migrationPath = path.resolve(process.cwd(), 'supabase/migrations/20261107_fix_custom_permissions_rls.sql');
+
+  assert.ok(fs.existsSync(schemaPath), 'ملف supabase/schema.sql يجب أن يكون موجوداً');
+  assert.ok(fs.existsSync(migrationPath), 'ملف الترحيل اليدوي 20261107_fix_custom_permissions_rls.sql يجب أن يكون موجوداً');
+
+  const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+  const migrationSql = fs.readFileSync(migrationPath, 'utf8');
+
+  // التأكد من عدم وجود أي CREATE POLICY member_all FOR ALL
+  assert.doesNotMatch(
     schemaSql,
-    /create\s+or\s+replace\s+function\s+public\.is_clinic_member\s*\(\s*\w+\s+text\s*\)/i,
-    'يجب تعريف الدالة is_clinic_member(cid text)'
+    /create\s+policy\s+member_all\s+on/i,
+    'يجب إزالة سياسة member_all (FOR ALL) تماماً من schema.sql'
+  );
+  assert.doesNotMatch(
+    migrationSql,
+    /create\s+policy\s+member_all\s+on/i,
+    'يجب ألا ينشئ ملف الترحيل سياسة member_all عامة'
   );
 
-  // التأكد من تفعيل RLS على جدول المرضى وجميع الجداول الحساسة
+  // التأكد من تعريف دالة فحص الصلاحيات المخصصة على مستوى الصفوف
+  assert.match(
+    schemaSql,
+    /create\s+or\s+replace\s+function\s+public\.has_clinic_permission/i,
+    'يجب تعريف الدالة public.has_clinic_permission في schema.sql'
+  );
+  assert.match(
+    migrationSql,
+    /create\s+or\s+replace\s+function\s+public\.has_clinic_permission/i,
+    'يجب تعريف الدالة public.has_clinic_permission في ملف الترحيل'
+  );
+
+  // التأكد من وجود سياسات منفصلة SELECT / INSERT / UPDATE / DELETE لجميع الجداول
   for (const table of PROTECTED_TABLES) {
     assert.ok(
       schemaSql.includes(`'${table}'`) || schemaSql.includes(`public.${table}`),
-      `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS في schema.sql`
+      `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS المنفصلة في schema.sql`
+    );
+    assert.ok(
+      migrationSql.includes(`'${table}'`) || migrationSql.includes(`public.${table}`),
+      `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS المنفصلة في ملف الترحيل`
     );
   }
 });
 
-test('2. اختبار عزل بيانات العيادة A عن العيادة B عبر Supabase (Live RLS Isolation)', async (t) => {
+test('2. التحقق من تأمين جميع دوال RPC التسع الحساسة بالصلاحيات المخصصة و clinic_id', () => {
+  const rpcDir = path.resolve(process.cwd(), 'supabase/functions-sql');
+  for (const fileName of SENSITIVE_RPC_FILES) {
+    const fullPath = path.join(rpcDir, fileName);
+    assert.ok(fs.existsSync(fullPath), `ملف الدالة ${fileName} يجب أن يكون موجوداً في supabase/functions-sql`);
+    const sql = fs.readFileSync(fullPath, 'utf8');
+    assert.match(
+      sql,
+      /(auth\.uid\(\)|public\.is_clinic_member)/i,
+      `الدالة ${fileName} يجب أن تتحقق من هوية وعضوية المستخدم`
+    );
+    assert.match(sql, /public\.has_clinic_permission/i, `الدالة ${fileName} يجب أن تتحقق من الصلاحيات عبر has_clinic_permission`);
+    assert.match(sql, /set\s+search_path\s*=\s*public/i, `الدالة ${fileName} يجب أن تضبط search_path = public`);
+  }
+});
+
+test('3. اختبار عزل بيانات العيادة A عن العيادة B عبر Supabase (Live RLS Isolation)', async (t) => {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     t.skip('تم تخطي الاتصال الحي لعدم ضبط VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY في البيئة.');
     return;
   }
 
-  // الحالة الأولى: توفر SUPABASE_SERVICE_ROLE_KEY لإنشاء بيانات اختبارية مؤقتة في عيادتين وحذفها تلقائياً
   if (SERVICE_ROLE_KEY) {
     const adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -83,13 +138,11 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
     let userAId = null;
 
     try {
-      // 1. إنشاء العيادتين A و B
       await adminClient.from('clinics').upsert([
         { id: clinicA, name: 'Clinic A Test' },
         { id: clinicB, name: 'Clinic B Test' },
       ]);
 
-      // 2. إنشاء مستخدم تابع للعيادة A فقط
       const { data: createdUser, error: createErr } = await adminClient.auth.admin.createUser({
         email: emailA,
         password: passwordA,
@@ -106,15 +159,13 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
         permissions: { username: `user_a_${stamp}` },
       });
 
-      // 3. زرع بيانات خاصة بالعيادة B
       const { error: seedErr } = await adminClient.from('patients').insert({
         clinic_id: clinicB,
         id: secretPatientIdB,
-        data: { patientId: secretPatientIdB, fullName: 'مريض سري في عيادة B', phone: '01000000000' },
+        data: { patientId: secretPatientIdB, fullName: 'مريض سري في عيادة B', phone: '00000000000' },
       });
       assert.ifError(seedErr);
 
-      // 4. تسجيل الدخول كمستخدم من العيادة A باستخدام المفتاح العام (Anon Key)
       const userAClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         auth: { persistSession: false, autoRefreshToken: false },
       });
@@ -124,20 +175,14 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
       });
       assert.ifError(signInErr);
 
-      // أ) التحقق أن مستخدم العيادة A لا يستطيع قراءة مرضى العيادة B
       const { data: readB, error: readBErr } = await userAClient
         .from('patients')
         .select('id, clinic_id, data')
         .eq('clinic_id', clinicB);
 
       assert.ifError(readBErr);
-      assert.equal(
-        (readB || []).length,
-        0,
-        'مستخدم العيادة A يجب ألا يرى أي سجل من سجلات العيادة B'
-      );
+      assert.equal((readB || []).length, 0, 'مستخدم العيادة A يجب ألا يرى أي سجل من سجلات العيادة B');
 
-      // ب) التحقق أن مستخدم العيادة A لا يستطيع إضافة سجل داخل العيادة B
       const { error: insertBErr } = await userAClient.from('patients').insert({
         clinic_id: clinicB,
         id: `pat-intrude-${stamp}`,
@@ -145,7 +190,6 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
       });
       assert.ok(insertBErr, 'يجب أن ترفض قاعدة البيانات (RLS) إدخال بيانات في العيادة B من مستخدم العيادة A');
 
-      // ج) التحقق أن مستخدم العيادة A يستطيع قراءة وكتابة بيانات عيادته A بشكل طبيعي
       const ownPatientId = `pat-own-a-${stamp}`;
       const { error: insertAErr } = await userAClient.from('patients').insert({
         clinic_id: clinicA,
@@ -162,7 +206,6 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
       assert.ifError(readAErr);
       assert.equal((readA || []).length, 1, 'مستخدم العيادة A يجب أن يقرأ بيانات عيادته A بنجاح');
     } finally {
-      // تنظيف جميع بيانات الاختبار المؤقتة
       await adminClient.from('patients').delete().in('clinic_id', [clinicA, clinicB]);
       await adminClient.from('clinic_members').delete().in('clinic_id', [clinicA, clinicB]);
       await adminClient.from('clinics').delete().in('id', [clinicA, clinicB]);
@@ -173,11 +216,8 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
     return;
   }
 
-  // الحالة الثانية: التشغيل باستخدام حساب فعلي للعيادة A (بدون الحاجة إلى SERVICE_ROLE_KEY)
   if (!CLINIC_A_EMAIL || !CLINIC_A_PASSWORD) {
-    t.skip(
-      'لتشغيل الاختبار الحي بدون SUPABASE_SERVICE_ROLE_KEY، مرر TEST_CLINIC_A_EMAIL و TEST_CLINIC_A_PASSWORD.'
-    );
+    t.skip('لتشغيل الاختبار الحي بدون SUPABASE_SERVICE_ROLE_KEY، مرر TEST_CLINIC_A_EMAIL و TEST_CLINIC_A_PASSWORD.');
     return;
   }
 
@@ -191,7 +231,6 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
   });
   assert.ifError(loginErr);
 
-  // محاولة قراءة بيانات عيادة أخرى (CLINIC_B_ID)
   for (const table of ['patients', 'visits', 'invoices', 'payments', 'appointments']) {
     const { data: rowsB, error: errB } = await userAClient
       .from(table)
@@ -205,15 +244,4 @@ test('2. اختبار عزل بيانات العيادة A عن العيادة B
       `مستخدم العيادة (${CLINIC_A_ID}) يجب ألا يقرأ أي صف من جدول ${table} للعيادة (${CLINIC_B_ID})`
     );
   }
-
-  // محاولة الكتابة في عيادة أخرى (CLINIC_B_ID) يجب أن تُرفض بواسطة RLS
-  const { error: writeOtherClinicErr } = await userAClient.from('patients').insert({
-    clinic_id: CLINIC_B_ID,
-    id: `unauthorized-${Date.now()}`,
-    data: { fullName: 'غير مصرح' },
-  });
-  assert.ok(
-    writeOtherClinicErr,
-    'يجب أن تمنع سياسات RLS مستخدم العيادة A من الكتابة في العيادة B'
-  );
 });

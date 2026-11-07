@@ -1,6 +1,6 @@
 -- Soli Medical: Atomic Create Appointment Transaction
 -- Tables affected atomically: patients (optional upsert), appointments
--- Do NOT execute automatically; review and run in Supabase SQL Editor.
+-- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
 create or replace function public.create_appointment(
   p_clinic_id text,
@@ -20,14 +20,26 @@ declare
   v_final_patient jsonb;
   v_final_appointment jsonb;
 begin
-  -- 1. Enforce multi-clinic membership guard
+  -- 1. Enforce multi-clinic membership and custom permission guard
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'appointments.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'appointments-scheduling', 'create')
+  ) then
+    raise exception 'Unauthorized: caller lacks appointments.create permission in clinic %', p_clinic_id;
+  end if;
+
+  if p_appointment_id is null or btrim(p_appointment_id) = '' then
+    raise exception 'Invalid input: p_appointment_id is required';
   end if;
 
   -- 2. If patient is provided: insert with ON CONFLICT DO NOTHING, or touch updatedAt preserving createdAt
   if p_patient_id is not null and p_patient_id <> '' and p_patient_data is not null then
     v_final_patient := p_patient_data || jsonb_build_object(
+      'patientId', p_patient_id,
       'createdAt', coalesce(nullif(p_patient_data->>'createdAt', ''), p_timestamp),
       'updatedAt', p_timestamp
     );
@@ -59,6 +71,7 @@ begin
 
   -- 3. Upsert appointment document: add createdAt only on new insert, preserve old createdAt on update
   v_final_appointment := coalesce(p_appointment_data, '{}'::jsonb) || jsonb_build_object(
+    'appointmentId', p_appointment_id,
     'createdAt', coalesce(nullif(p_appointment_data->>'createdAt', ''), p_timestamp),
     'updatedAt', p_timestamp
   );

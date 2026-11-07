@@ -351,56 +351,8 @@ export const INITIAL_LAB_TESTS: LabTest[] = [
 
 // 14. Lab Orders (labOrders/{labOrderId})
 // Applied status: ORDERED [طلب] | RESULT [نتيجة] | REPORT [تقرير]
-export const INITIAL_LAB_ORDERS: LabOrder[] = [
-  {
-    labOrderId: 'lo-prev-101',
-    patientId: 'pat-1',
-    visitId: 'vis-prev-101',
-    testId: 'lab-1',
-    testName: 'صوره الدم',
-    status: 'RESULT',
-    result: '12',
-    notes: 'تحليل دم كامل',
-    orderedAt: '2026-08-28T19:49:00Z',
-    updatedAt: '2026-08-28T20:10:00Z',
-  },
-  {
-    labOrderId: 'lo-1',
-    patientId: 'pat-1',
-    visitId: 'vis-101',
-    testId: 'lab-2',
-    testName: 'السكر التراكمي (HbA1c)',
-    status: 'ORDERED',
-    result: '',
-    notes: 'مطلوب إجراؤه قبل موعد الاستشارة القادم',
-    orderedAt: '2026-09-05T17:00:00Z',
-    updatedAt: '2026-09-05T17:00:00Z',
-  },
-  {
-    labOrderId: 'lo-2',
-    patientId: 'pat-1',
-    visitId: 'vis-101',
-    testId: 'lab-3',
-    testName: 'وظائف كلى (Creatinine & eGFR)',
-    status: 'ORDERED',
-    result: '',
-    notes: 'للاطمئنان على كفاءة الكليتين مع أدوية الضغط',
-    orderedAt: '2026-09-05T17:00:00Z',
-    updatedAt: '2026-09-05T17:00:00Z',
-  },
-  {
-    labOrderId: 'lo-3',
-    patientId: 'pat-2',
-    visitId: 'vis-102',
-    testId: 'lab-5',
-    testName: 'جرثومة المعدة في البراز (H. Pylori Stool Ag)',
-    status: 'RESULT',
-    result: 'Negative (سلبي) - تم القضاء على الجرثومة بنجاح',
-    notes: 'تحليل المتابعة بعد انتهاء العلاج الثلاثي',
-    orderedAt: '2026-08-25T14:00:00Z',
-    updatedAt: '2026-09-05T17:15:00Z',
-  },
-];
+// Separated from medical catalogs: no pre-populated patient orders in initial catalog state
+export const INITIAL_LAB_ORDERS: LabOrder[] = [];
 
 // 15. Master Radiology Types Catalog (radiologyTypes/{radiologyId})
 export const INITIAL_RADIOLOGY_TYPES: RadiologyType[] = [
@@ -453,48 +405,8 @@ export const INITIAL_RADIOLOGY_TYPES: RadiologyType[] = [
 
 // 16. Radiology Orders (radiologyOrders/{radiologyOrderId})
 // Applied status: ORDERED [طلب] | RESULT [نتيجة] | REPORT [تقرير]
-export const INITIAL_RADIOLOGY_ORDERS: RadiologyOrder[] = [
-  {
-    radiologyOrderId: 'ro-prev-101',
-    patientId: 'pat-1',
-    visitId: 'vis-prev-101',
-    radiologyTypeId: 'rad-3',
-    radiologyName: 'اشعه ايكو',
-    status: 'ORDERED',
-    result: '',
-    report: '',
-    notes: 'مطلوب إيكو على القلب',
-    orderedAt: '2026-08-28T19:49:00Z',
-    updatedAt: '2026-08-28T19:49:00Z',
-  },
-  {
-    radiologyOrderId: 'ro-1',
-    patientId: 'pat-1',
-    visitId: 'vis-101',
-    radiologyTypeId: 'rad-2',
-    radiologyName: 'موجات صوتية على البطن والحوض (Abdominal US)',
-    status: 'ORDERED',
-    result: '',
-    report: 'مطلوب صيام 6 ساعات قبل موعد الفحص التلفزيوني',
-    notes: 'فحص الكبد والمرارة والمسالك البولية',
-    orderedAt: '2026-09-05T17:00:00Z',
-    updatedAt: '2026-09-05T17:00:00Z',
-  },
-  {
-    radiologyOrderId: 'ro-2',
-    patientId: 'pat-3',
-    visitId: 'vis-prev-09',
-    radiologyTypeId: 'rad-3',
-    radiologyName: 'إيكو على القلب (Echocardiography)',
-    status: 'REPORT',
-    result: 'EF 56% - تضخم طفيف بجدار البطين الأيسر LVH',
-    report:
-      'تقرير الإيكو: الصمام الأورطي والميترالي بحالة جيدة، لا يوجد ارتجاع مؤثر، كفاءة انقباضية مقبولة مع ارتخاء بطيني مبكر من الدرجة الأولى',
-    notes: 'فحص دوري لتقييم كفاءة القلب بعد القسطرة',
-    orderedAt: '2026-08-28T19:00:00Z',
-    updatedAt: '2026-09-01T11:00:00Z',
-  },
-];
+// Separated from medical catalogs: no pre-populated patient orders in initial catalog state
+export const INITIAL_RADIOLOGY_ORDERS: RadiologyOrder[] = [];
 
 // 17. Diagnoses Catalog (diagnoses/{diagnosisId})
 export const INITIAL_DIAGNOSES: Diagnosis[] = [
@@ -597,9 +509,9 @@ export const INITIAL_SYSTEM_SETTINGS: SystemSettings = {
   clinic: {
     nameAr: 'سولي ميديكال كلينيك',
     nameEn: 'Soli Medical Clinic',
-    phone: '01092847162',
+    phone: '00000000000',
     currency: 'ج.م',
-    taxNumber: 'EG-TAX-39182',
+    taxNumber: 'EG-TAX-00000',
   },
   financial: {
     consultationFee: 300,

@@ -1,5 +1,5 @@
 import { supabase, clinicId } from './supabase';
-import { notifyTableMutated } from './offlineSync';
+import { notifyTableMutated, markTombstone } from './offlineSync';
 import type {
   Appointment,
   Patient,
@@ -357,13 +357,17 @@ export async function completeVisitTransaction(params: {
       })()
     : null;
 
-  // Clean up any previous clinical records linked to this visit before upserting updated records
-  await Promise.all([
-    client.from('prescriptions').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
-    client.from('lab_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
-    client.from('radiology_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
-    client.from('follow_ups').delete().eq('clinic_id', clinicId).eq('data->>sourceVisitId', resolvedVisitId),
-  ]);
+  // Note: complete_visit RPC (SECURITY DEFINER) atomically cleans up previous visit clinical records
+  try {
+    await Promise.all([
+      client.from('prescriptions').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+      client.from('lab_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+      client.from('radiology_orders').delete().eq('clinic_id', clinicId).eq('data->>visitId', resolvedVisitId),
+      client.from('follow_ups').delete().eq('clinic_id', clinicId).eq('data->>sourceVisitId', resolvedVisitId),
+    ]);
+  } catch {
+    // Handled inside complete_visit RPC
+  }
 
   const { error } = await client.rpc('complete_visit', {
     p_clinic_id: clinicId,
@@ -445,6 +449,7 @@ export async function deleteAppointmentTransaction(_db: Firestore, appointmentId
   if (error) {
     throw toArabicError(error, 'تعذر حذف الموعد من قاعدة البيانات');
   }
+  await markTombstone('appointments', appointmentId, clinicId);
   notifyTableMutated(['appointments'], true);
 }
 
@@ -459,5 +464,7 @@ export async function deletePatientTransaction(_db: Firestore, patientId: string
   if (error) {
     throw toArabicError(error, 'تعذر حذف ملف المريض من قاعدة البيانات');
   }
+  await markTombstone('patients', patientId, clinicId);
   notifyTableMutated(['patients'], true);
 }
+

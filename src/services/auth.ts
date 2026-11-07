@@ -1,7 +1,8 @@
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { requireSupabase, clinicId } from './supabase';
 import type { UserRole } from '../types/database';
-import type { CustomPermissionsMap } from '../permissions';
+import type { CustomPermissionsMap, SpecialPermissionsMap } from '../permissions';
+import { recordAuditLog } from './auditLog';
 
 export type AuthUser = SupabaseUser & {
   uid: string;
@@ -205,6 +206,7 @@ export async function createManagedUser(params: {
   role: UserRole;
   allowedScreens?: string[];
   customPermissions?: CustomPermissionsMap;
+  specialPermissions?: SpecialPermissionsMap;
 }): Promise<void> {
   const supabase = requireSupabase();
   const username = normalizeUsername(params.username);
@@ -237,6 +239,7 @@ export async function createManagedUser(params: {
         role: params.role,
         allowedScreens: params.allowedScreens,
         customPermissions: params.customPermissions,
+        specialPermissions: params.specialPermissions,
         clinicId,
       }),
     });
@@ -270,6 +273,7 @@ export async function updateManagedUser(
     active?: boolean;
     allowedScreens?: string[];
     customPermissions?: CustomPermissionsMap;
+    specialPermissions?: SpecialPermissionsMap;
   }
 ): Promise<void> {
   const supabase = requireSupabase();
@@ -304,6 +308,9 @@ export async function updateManagedUser(
   if (updates.customPermissions !== undefined) {
     nextPermissions.customPermissions = updates.customPermissions;
   }
+  if (updates.specialPermissions !== undefined) {
+    nextPermissions.specialPermissions = updates.specialPermissions;
+  }
 
   const rowUpdates: Record<string, unknown> = {
     permissions: nextPermissions,
@@ -324,6 +331,28 @@ export async function updateManagedUser(
 
   if (updateErr) {
     throw new Error(updateErr.message || 'تعذر تحديث بيانات المستخدم.');
+  }
+
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const actorUid = sessionData.session?.user?.id || 'unknown';
+    await recordAuditLog({
+      actorUid,
+      actorUsername: String(sessionData.session?.user?.email || 'manager'),
+      action: 'UPDATE_USER_PERMISSIONS',
+      permissionUsed: 'users.manage',
+      targetId: uid,
+      affectedTables: ['clinic_members'],
+      status: 'SUCCESS',
+      details: `Updated permissions/profile for user ${uid}`,
+    });
+  } catch {}
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('soli_permissions_updated', { detail: { uid } }));
+    window.dispatchEvent(
+      new CustomEvent('soli_supabase_mutated', { detail: { tables: ['clinic_members'] } })
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 -- Soli Medical: Atomic Register Walk-In Transaction
 -- Tables affected atomically: counters, patients, invoices, payments, visits
--- Do NOT execute automatically; review and run in Supabase SQL Editor.
+-- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
 create or replace function public.register_walk_in(
   p_clinic_id text,
@@ -35,12 +35,31 @@ declare
   v_payment jsonb;
   v_visit jsonb;
 begin
-  -- 1. Enforce multi-clinic membership guard
+  -- 1. Enforce multi-clinic membership and custom permission guard
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
 
-  -- 2. Ensure daily queue counter row exists, then lock it with FOR UPDATE
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'patient-intake', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'waiting-queue', 'create')
+  ) then
+    raise exception 'Unauthorized: missing permission patients.create / patient-intake.create';
+  end if;
+
+  -- 2. Input validation
+  if p_patient_id is null or btrim(p_patient_id) = '' then
+    raise exception 'Invalid input: p_patient_id is required';
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+  if p_payment_amount is null or p_payment_amount < 0 then
+    raise exception 'Invalid input: p_payment_amount cannot be negative';
+  end if;
+
+  -- 3. Ensure daily queue counter row exists, then lock it with FOR UPDATE
   insert into public.counters (clinic_id, id, data)
   values (
     p_clinic_id,
@@ -62,7 +81,7 @@ begin
     v_assigned_queue := coalesce((v_counter_data->>'lastNumber')::integer, 0) + 1;
   end if;
 
-  -- 3. Update daily queue counter
+  -- 4. Update daily queue counter
   update public.counters
      set data = coalesce(v_counter_data, '{}'::jsonb) || jsonb_build_object(
        'lastNumber', v_assigned_queue,
@@ -72,7 +91,7 @@ begin
    where clinic_id = p_clinic_id
      and id = ('queue_' || p_today);
 
-  -- 4. Upsert patient with merge semantics
+  -- 5. Upsert patient with merge semantics (prevent overwriting immutable createdAt/patientId)
   select data
     into v_existing_patient
     from public.patients
@@ -82,7 +101,11 @@ begin
 
   v_merged_patient := coalesce(v_existing_patient, '{}'::jsonb)
     || coalesce(p_patient_data, '{}'::jsonb)
-    || jsonb_build_object('updatedAt', p_timestamp);
+    || jsonb_build_object(
+      'patientId', p_patient_id,
+      'createdAt', coalesce(nullif(v_existing_patient->>'createdAt', ''), nullif(p_patient_data->>'createdAt', ''), p_timestamp),
+      'updatedAt', p_timestamp
+    );
 
   insert into public.patients (clinic_id, id, data)
   values (p_clinic_id, p_patient_id, v_merged_patient)
@@ -90,7 +113,7 @@ begin
     set data = excluded.data,
         updated_at = now();
 
-  -- 5. Build and insert invoice
+  -- 6. Build and insert invoice
   v_invoice := jsonb_build_object(
     'invoiceId', p_invoice_id,
     'patientId', p_patient_id,
@@ -114,7 +137,7 @@ begin
     set data = excluded.data,
         updated_at = now();
 
-  -- 6. Build and insert payment
+  -- 7. Build and insert payment
   v_payment := jsonb_build_object(
     'paymentId', p_payment_id,
     'patientId', p_patient_id,
@@ -136,7 +159,7 @@ begin
     set data = excluded.data,
         updated_at = now();
 
-  -- 7. Build and insert visit
+  -- 8. Build and insert visit
   v_visit_type := case when p_payment_amount = 0 then 'FOLLOW_UP' else 'NEW' end;
 
   v_visit := jsonb_build_object(

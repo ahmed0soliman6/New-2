@@ -6,12 +6,14 @@ import {
   Permission,
   ScreenAction,
   CustomPermissionsMap,
+  SpecialPermissionsMap,
   normalizeRole,
   hasPermission as checkHasPermission,
   canAccessRoute as checkCanAccessRoute,
   assertPermission as checkAssertPermission,
   checkScreenPermission,
   getDefaultRolePermissions,
+  getDefaultSpecialPermissions,
   ALL_SYSTEM_SCREENS,
 } from '../permissions';
 
@@ -24,6 +26,7 @@ export interface UserProfile {
   active: boolean;
   allowedScreens?: string[];
   customPermissions?: CustomPermissionsMap;
+  specialPermissions?: SpecialPermissionsMap;
 }
 
 interface AuthContextValue {
@@ -32,6 +35,7 @@ interface AuthContextValue {
   role: Role;
   allowedScreens: string[];
   customPermissions: CustomPermissionsMap;
+  specialPermissions: SpecialPermissionsMap;
   loading: boolean;
   hasPermission: (permission: Permission) => boolean;
   canAccess: (screenId: string) => boolean;
@@ -41,6 +45,7 @@ interface AuthContextValue {
   canUpdate: (screenId: string) => boolean;
   canDelete: (screenId: string) => boolean;
   assertPermission: (permission: Permission, actionDescription?: string) => void;
+  refreshPermissions: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -51,153 +56,177 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const fetchAndSyncMemberProfile = async (sbUser: any | null, isMountedRef?: { current: boolean }) => {
     if (!supabase) {
       setLoading(false);
       return;
     }
 
-    let isMounted = true;
+    if (!sbUser) {
+      setCurrentUser(null);
+      setUserProfile(null);
+      setLoading(false);
+      return;
+    }
 
-    const handleSessionUser = async (sbUser: any | null) => {
-      if (!isMounted) return;
+    const meta = (sbUser.user_metadata || {}) as Record<string, any>;
+    const authUser: AuthUser = Object.assign(sbUser, {
+      uid: sbUser.id,
+      displayName: typeof meta.displayName === 'string' ? meta.displayName : null,
+    });
+    setCurrentUser(authUser);
 
-      if (!sbUser) {
+    const cacheKey = `soli_cached_profile_${clinicId}_${sbUser.id}`;
+    try {
+      const cachedRaw = localStorage.getItem(cacheKey);
+      if (cachedRaw && !userProfile) {
+        const cachedProfile = JSON.parse(cachedRaw) as UserProfile;
+        if (cachedProfile && cachedProfile.uid === sbUser.id && cachedProfile.active !== false) {
+          const safeRole = normalizeRole(cachedProfile.role);
+          setUserProfile({
+            ...cachedProfile,
+            role: safeRole,
+          });
+        }
+      }
+    } catch {}
+
+    try {
+      const { data: member, error } = await supabase
+        .from('clinic_members')
+        .select('role, is_active, permissions')
+        .eq('clinic_id', clinicId)
+        .eq('user_id', sbUser.id)
+        .maybeSingle();
+
+      if (isMountedRef && !isMountedRef.current) return;
+
+      if (error || !member) {
+        try {
+          localStorage.removeItem(cacheKey);
+        } catch {}
+        console.warn('[AuthContext] User membership not found in clinic_members for UID:', sbUser.id);
+        await supabase.auth.signOut();
         setCurrentUser(null);
         setUserProfile(null);
         setLoading(false);
         return;
       }
 
-      const meta = (sbUser.user_metadata || {}) as Record<string, any>;
-      const authUser: AuthUser = Object.assign(sbUser, {
-        uid: sbUser.id,
-        displayName: typeof meta.displayName === 'string' ? meta.displayName : null,
-      });
-      setCurrentUser(authUser);
-
-      // Optimistic hydration from localStorage if available (never grant unverified admin privileges before server verification)
-      const cacheKey = `soli_cached_profile_${sbUser.id}`;
-      try {
-        const cachedRaw = localStorage.getItem(cacheKey);
-        if (cachedRaw) {
-          const cachedProfile = JSON.parse(cachedRaw) as UserProfile;
-          if (cachedProfile && cachedProfile.uid === sbUser.id && cachedProfile.active !== false) {
-            const safeRole = normalizeRole(cachedProfile.role);
-            setUserProfile({
-              ...cachedProfile,
-              role: safeRole,
-            });
-          }
-        }
-      } catch {}
-
-      try {
-        const { data: member, error } = await supabase
-          .from('clinic_members')
-          .select('role, is_active, permissions')
-          .eq('clinic_id', clinicId)
-          .eq('user_id', sbUser.id)
-          .maybeSingle();
-
-        if (!isMounted) return;
-
-        if (error || !member) {
-          try {
-            localStorage.removeItem(cacheKey);
-          } catch {}
-          console.warn('[AuthContext] User membership not found in clinic_members for UID:', sbUser.id);
-          await supabase.auth.signOut();
-          setCurrentUser(null);
-          setUserProfile(null);
-          setLoading(false);
-          return;
-        }
-
-        const isActive = member.is_active !== false;
-        if (!isActive) {
-          try {
-            localStorage.removeItem(cacheKey);
-          } catch {}
-          alert('تم تعطيل حسابك من قِبل إدارة العيادة. يرجى التواصل مع الإدارة.');
-          await supabase.auth.signOut();
-          setCurrentUser(null);
-          setUserProfile(null);
-          setLoading(false);
-          return;
-        }
-
-        const permsObj =
-          member.permissions && typeof member.permissions === 'object'
-            ? (member.permissions as Record<string, any>)
-            : {};
-
-        const parsedRole = normalizeRole(member.role);
-        const rawAllowedScreens = permsObj.allowedScreens;
-        const customScreens = Array.isArray(rawAllowedScreens)
-          ? (rawAllowedScreens as string[])
-          : undefined;
-        const rawCustomPermissions = permsObj.customPermissions;
-        const customPermissions =
-          rawCustomPermissions && typeof rawCustomPermissions === 'object'
-            ? (rawCustomPermissions as CustomPermissionsMap)
-            : undefined;
-
-        const usernameFromEmail = sbUser.email ? String(sbUser.email).split('@')[0] : 'user';
-        const resolvedUsername =
-          (typeof permsObj.username === 'string' && permsObj.username) ||
-          (typeof meta.username === 'string' && meta.username) ||
-          usernameFromEmail;
-
-        const resolvedDisplayName =
-          (typeof permsObj.displayName === 'string' && permsObj.displayName) ||
-          (typeof meta.displayName === 'string' && meta.displayName) ||
-          resolvedUsername ||
-          'مستخدم';
-
-        const nextProfile: UserProfile = {
-          uid: sbUser.id,
-          username: resolvedUsername,
-          displayName: resolvedDisplayName,
-          email: sbUser.email || '',
-          role: parsedRole,
-          active: true,
-          allowedScreens: customScreens,
-          customPermissions,
-        };
-
-        setUserProfile(nextProfile);
+      const isActive = member.is_active !== false;
+      if (!isActive) {
         try {
-          localStorage.setItem(cacheKey, JSON.stringify(nextProfile));
+          localStorage.removeItem(cacheKey);
         } catch {}
-      } catch (err) {
-        console.warn('[AuthContext] Error fetching profile from Supabase:', err);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        await supabase.auth.signOut();
+        setCurrentUser(null);
+        setUserProfile(null);
+        setLoading(false);
+        return;
       }
+
+      const permsObj =
+        member.permissions && typeof member.permissions === 'object'
+          ? (member.permissions as Record<string, any>)
+          : {};
+
+      const parsedRole = normalizeRole(member.role);
+      const rawAllowedScreens = permsObj.allowedScreens;
+      const customScreens = Array.isArray(rawAllowedScreens)
+        ? (rawAllowedScreens as string[])
+        : undefined;
+      const rawCustomPermissions = permsObj.customPermissions;
+      const customPermissions =
+        rawCustomPermissions && typeof rawCustomPermissions === 'object'
+          ? (rawCustomPermissions as CustomPermissionsMap)
+          : undefined;
+      const rawSpecialPermissions = permsObj.specialPermissions;
+      const specialPermissions =
+        rawSpecialPermissions && typeof rawSpecialPermissions === 'object'
+          ? (rawSpecialPermissions as SpecialPermissionsMap)
+          : undefined;
+
+      const usernameFromEmail = sbUser.email ? String(sbUser.email).split('@')[0] : 'user';
+      const resolvedUsername =
+        (typeof permsObj.username === 'string' && permsObj.username) ||
+        (typeof meta.username === 'string' && meta.username) ||
+        usernameFromEmail;
+
+      const resolvedDisplayName =
+        (typeof permsObj.displayName === 'string' && permsObj.displayName) ||
+        (typeof meta.displayName === 'string' && meta.displayName) ||
+        resolvedUsername ||
+        'مستخدم';
+
+      const nextProfile: UserProfile = {
+        uid: sbUser.id,
+        username: resolvedUsername,
+        displayName: resolvedDisplayName,
+        email: sbUser.email || '',
+        role: parsedRole,
+        active: true,
+        allowedScreens: customScreens,
+        customPermissions,
+        specialPermissions,
+      };
+
+      setUserProfile(nextProfile);
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(nextProfile));
+      } catch {}
+    } catch (err) {
+      console.warn('[AuthContext] Error fetching profile from Supabase:', err);
+    } finally {
+      if (!isMountedRef || isMountedRef.current) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const refreshPermissions = async () => {
+    if (!supabase) return;
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.user) {
+      await fetchAndSyncMemberProfile(data.session.user);
+    }
+  };
+
+  useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
+    const isMountedRef = { current: true };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      void fetchAndSyncMemberProfile(data.session?.user ?? null, isMountedRef);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      void fetchAndSyncMemberProfile(session?.user ?? null, isMountedRef);
+    });
+
+    const handlePermissionsUpdated = () => {
+      void refreshPermissions();
     };
 
-    // Initial session check
-    void supabase.auth.getSession().then(({ data }) => {
-      void handleSessionUser(data.session?.user ?? null);
-    });
-
-    // Subscribe to auth state changes
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      void handleSessionUser(session?.user ?? null);
-    });
+    window.addEventListener('soli_permissions_updated', handlePermissionsUpdated);
+    window.addEventListener('focus', handlePermissionsUpdated);
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
       authListener.subscription.unsubscribe();
+      window.removeEventListener('soli_permissions_updated', handlePermissionsUpdated);
+      window.removeEventListener('focus', handlePermissionsUpdated);
     };
   }, []);
 
   const activeRole: Role = userProfile?.role || 'secretary';
   const effectiveCustomPermissions: CustomPermissionsMap =
     userProfile?.customPermissions || getDefaultRolePermissions(activeRole);
+  const effectiveSpecialPermissions: SpecialPermissionsMap =
+    userProfile?.specialPermissions || getDefaultSpecialPermissions(activeRole);
 
   const effectiveAllowedScreens: string[] =
     userProfile?.allowedScreens && userProfile.allowedScreens.length > 0
@@ -211,7 +240,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       activeRole,
       permission,
       userProfile?.customPermissions,
-      userProfile?.allowedScreens
+      userProfile?.allowedScreens,
+      userProfile?.specialPermissions
     );
   };
 
@@ -220,7 +250,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       activeRole,
       screenId,
       userProfile?.allowedScreens,
-      userProfile?.customPermissions
+      userProfile?.customPermissions,
+      userProfile?.specialPermissions
     );
   };
 
@@ -230,7 +261,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       screenId,
       action,
       userProfile?.customPermissions,
-      userProfile?.allowedScreens
+      userProfile?.allowedScreens,
+      userProfile?.specialPermissions
     );
   };
 
@@ -240,7 +272,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canDelete = (screenId: string) => canPerform(screenId, 'delete');
 
   const assertPermission = (permission: Permission, actionDescription?: string) => {
-    checkAssertPermission(activeRole, permission, actionDescription, userProfile?.customPermissions);
+    checkAssertPermission(
+      activeRole,
+      permission,
+      actionDescription,
+      userProfile?.customPermissions,
+      userProfile?.allowedScreens,
+      userProfile?.specialPermissions
+    );
   };
 
   const logout = async () => {
@@ -259,6 +298,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: activeRole,
         allowedScreens: effectiveAllowedScreens,
         customPermissions: effectiveCustomPermissions,
+        specialPermissions: effectiveSpecialPermissions,
         loading,
         hasPermission,
         canAccess,
@@ -268,6 +308,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         canUpdate,
         canDelete,
         assertPermission,
+        refreshPermissions,
         logout,
       }}
     >
@@ -281,6 +322,7 @@ export const useAuth = (): AuthContextValue => {
   if (!context) {
     console.warn('[useAuth] called outside of AuthProvider. Using fallback admin context.');
     const adminPerms = getDefaultRolePermissions('admin');
+    const adminSpecial = getDefaultSpecialPermissions('admin');
     return {
       currentUser: null,
       userProfile: {
@@ -291,10 +333,12 @@ export const useAuth = (): AuthContextValue => {
         role: 'admin',
         active: true,
         customPermissions: adminPerms,
+        specialPermissions: adminSpecial,
       },
       role: 'admin',
       allowedScreens: ALL_SYSTEM_SCREENS.map((s) => s.id),
       customPermissions: adminPerms,
+      specialPermissions: adminSpecial,
       loading: false,
       hasPermission: () => true,
       canAccess: () => true,
@@ -304,6 +348,7 @@ export const useAuth = (): AuthContextValue => {
       canUpdate: () => true,
       canDelete: () => true,
       assertPermission: () => {},
+      refreshPermissions: async () => {},
       logout: async () => {},
     };
   }

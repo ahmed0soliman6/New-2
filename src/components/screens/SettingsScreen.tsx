@@ -34,10 +34,23 @@ import {
   MedicalServiceItem,
   ExpenseCategoryItem,
 } from '../../utils/financeManager';
-import { supabase } from '../../services/supabase';
+import { supabase, clinicId } from '../../services/supabase';
 import { safeStorage, StorageKeys } from '../../services/storage';
-import { subscribeToServices, subscribeToExpenseCategories, saveCatalogItem } from '../../services/repositories';
+import { subscribeToServices, subscribeToExpenseCategories } from '../../services/repositories';
 import { toEnglishDigits } from '../../utils/numberUtils';
+import {
+  createBackupPayload,
+  validateBackupPayload,
+  restoreBackupWithRollback,
+  BackupValidationResult,
+} from '../../utils/backupManager';
+import {
+  REQUIRED_CLEAR_CONFIRMATION_PHRASE,
+  previewDatabaseCollectionsCounts,
+  PRESERVED_SYSTEM_TABLES,
+  TRANSACTIONAL_TABLES_TO_CLEAR,
+} from '../../utils/demoDataGenerator';
+import { recordAuditLog } from '../../services/auditLog';
 
 interface ChronicItem {
   id: string;
@@ -148,10 +161,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   radiologyOrders = [],
   followUps = [],
 }) => {
-  const { hasPermission, assertPermission, role, canDelete, canPerform } = usePermissions();
+  const { hasPermission, assertPermission, role, userProfile, canDelete, canPerform } = usePermissions();
   const { language, setLanguage, t, isRTL } = useLanguage();
-  const isAdmin = role === 'admin';
-  const canDeleteSettings = isAdmin || canDelete('system-settings') || canPerform('system-settings', 'delete');
+  const canManageUsers = hasPermission('users.view') || hasPermission('users.manage');
+  const canClearAllData = hasPermission('system.clear_all_data');
+  const canManageDemo = hasPermission('demo.manage');
+  const canExportBackup = hasPermission('backup.export');
+  const canRestoreBackup = hasPermission('backup.restore');
+  const canDeleteSettings = canClearAllData || canDelete('system-settings') || canPerform('system-settings', 'delete');
   const [activeSettingsSection, setActiveSettingsSection] = useState<
     'general' | 'catalogs' | 'users'
   >('general');
@@ -173,6 +190,24 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [isClearingAll, setIsClearingAll] = useState(false);
   const [isClearingBrowserOnly, setIsClearingBrowserOnly] = useState(false);
   const [isClearingBrowserCloud, setIsClearingBrowserCloud] = useState(false);
+
+  // Cloud Clear Confirmation Modal State
+  const [showCloudClearModal, setShowCloudClearModal] = useState(false);
+  const [clearConfirmationInput, setClearConfirmationInput] = useState('');
+  const [clearPreviewCounts, setClearPreviewCounts] = useState<Record<string, number>>({});
+  const [clearPreviewTotal, setClearPreviewTotal] = useState(0);
+  const [clearResultSummary, setClearResultSummary] = useState<{
+    totalDeleted: number;
+    succeededTables: string[];
+    preservedTables: string[];
+  } | null>(null);
+
+  // Backup Restore Preview Modal State
+  const [pendingRestoreValidation, setPendingRestoreValidation] = useState<
+    (BackupValidationResult & { fileName: string }) | null
+  >(null);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [backupErrorBanner, setBackupErrorBanner] = useState<string | null>(null);
 
   const toggleCard = (key: string) => {
     setOpenCards((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -215,7 +250,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             setMedicalServicesList(srvs as MedicalServiceItem[]);
           }
         },
-        (err) => console.warn('Services sync in SettingsScreen:', err)
+        () => {}
       );
 
       unsubExpCats = subscribeToExpenseCategories(
@@ -225,7 +260,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             setExpenseCategoriesList(cats as ExpenseCategoryItem[]);
           }
         },
-        (err) => console.warn('Exp cats sync in SettingsScreen:', err)
+        () => {}
       );
     }
 
@@ -248,12 +283,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     };
   }, []);
 
-  // If user cannot view users or is not admin, fallback to general
+  // If user cannot view/manage users, fallback to general
   useEffect(() => {
-    if (activeSettingsSection === 'users' && (!isAdmin || !hasPermission('users.view'))) {
+    if (activeSettingsSection === 'users' && !canManageUsers) {
       setActiveSettingsSection('general');
     }
-  }, [activeSettingsSection, isAdmin, hasPermission]);
+  }, [activeSettingsSection, canManageUsers]);
 
   const [freeFollowupDays, setFreeFollowupDays] = useState<number>(() => {
     const saved = safeStorage.getItem(StorageKeys.FREE_FOLLOWUP_DAYS);
@@ -314,21 +349,50 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setTimeout(() => setSavedToast(null), 2500);
   };
 
-  const handleExportBackup = () => {
+  const handleOpenCloudClearModal = async () => {
+    if (!canClearAllData) {
+      alert('غير مصرح: ليس لديك صلاحية مسح بيانات العيادة (system.clear_all_data).');
+      return;
+    }
+    setClearConfirmationInput('');
+    setClearResultSummary(null);
+    const localCounts: Record<string, number> = {
+      patients: (patients || []).length,
+      appointments: (appointments || []).length,
+      visits: (visits || []).length,
+      invoices: (invoices || []).length,
+      payments: (payments || []).length,
+      prescriptions: (prescriptions || []).length,
+      lab_orders: (labOrders || []).length,
+      radiology_orders: (radiologyOrders || []).length,
+      follow_ups: (followUps || []).length,
+    };
+    const localTotal = Object.values(localCounts).reduce((a, b) => a + b, 0);
+    setClearPreviewCounts(localCounts);
+    setClearPreviewTotal(localTotal);
+    setShowCloudClearModal(true);
+
     try {
-      const backupData = {
-        exportedAt: new Date().toISOString(),
-        appName: 'Soli Medical Clinic System',
-        version: APP_VERSION || 'v2.6.0',
-        summary: {
-          patientsCount: (patients || []).length,
-          appointmentsCount: (appointments || []).length,
-          visitsCount: (visits || []).length,
-          invoicesCount: (invoices || []).length,
-          paymentsCount: (payments || []).length,
-          prescriptionsCount: (prescriptions || []).length,
-          catalogsCount: (drugCatalog || []).length + (radiologyCatalog || []).length + (labCatalog || []).length,
-        },
+      const preview = await previewDatabaseCollectionsCounts();
+      if (preview.totalRecords > 0) {
+        setClearPreviewCounts(preview.counts);
+        setClearPreviewTotal(preview.totalRecords);
+      }
+    } catch {
+      // Keep local counts fallback
+    }
+  };
+
+  const handleExportBackup = async () => {
+    setBackupErrorBanner(null);
+    if (!canExportBackup) {
+      setBackupErrorBanner('غير مصرح: ليس لديك صلاحية تصدير النسخة الاحتياطية (backup.export).');
+      return;
+    }
+    try {
+      const backupData = await createBackupPayload({
+        clinicId,
+        hasExportPermission: canExportBackup,
         patients: patients || [],
         appointments: appointments || [],
         visits: visits || [],
@@ -351,168 +415,161 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         diagnosesCatalog,
         symptomsCatalog,
         chronicConditions: presetChronicConditions,
-      };
+      });
 
       const jsonString = JSON.stringify(backupData, null, 2);
       const blob = new Blob([jsonString], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const downloadAnchor = document.createElement('a');
       downloadAnchor.href = url;
-      downloadAnchor.download = `soli_clinic_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      downloadAnchor.download = `soli_clinic_backup_${clinicId}_${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
       URL.revokeObjectURL(url);
 
-      setSavedToast('تم تحميل وتصدير ملف النسخة الاحتياطية JSON بنجاح ✓');
+      void recordAuditLog({
+        action: 'backup.export',
+        actorUid: userProfile?.uid,
+        actorUsername: userProfile?.username,
+        actorRole: role,
+        targetType: 'clinic_backup',
+        targetId: clinicId,
+        summary: `تم تصدير نسخة احتياطية كاملة (schemaVersion: ${backupData.schemaVersion}, ${backupData.manifest.totalRecords} سجل).`,
+      });
+
+      setSavedToast('تم تحميل وتصدير ملف النسخة الاحتياطية المؤمنة (SHA-256) بنجاح ✓');
       setTimeout(() => setSavedToast(null), 3000);
     } catch (e) {
-      console.error(e);
-      alert('حدث خطأ أثناء تصدير ملف النسخة الاحتياطية.');
+      setBackupErrorBanner(
+        e instanceof Error ? e.message : 'حدث خطأ أثناء تصدير ملف النسخة الاحتياطية.'
+      );
     }
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImportBackupFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setBackupErrorBanner(null);
+    if (!canRestoreBackup) {
+      setBackupErrorBanner('غير مصرح: ليس لديك صلاحية استعادة النسخة الاحتياطية (backup.restore).');
+      e.target.value = '';
+      return;
+    }
+
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const content = event.target?.result as string;
-        const data = JSON.parse(content);
-
-        if (!data || typeof data !== 'object') {
-          throw new Error('ملف JSON غير صالح.');
+        const content = String(event.target?.result || '');
+        const validation = await validateBackupPayload(content, clinicId);
+        if (!validation.valid) {
+          setBackupErrorBanner(validation.errors.join(' — '));
+          return;
         }
-
-        if (Array.isArray(data.visitTypes) && data.visitTypes.length > 0) {
-          data.visitTypes.forEach((vt: VisitTypeItem) => {
-            if (vt.name) onAddVisitType(vt);
-          });
-        }
-
-        if (typeof data.freeFollowupDays === 'number') {
-          setFreeFollowupDays(data.freeFollowupDays);
-          safeStorage.setItem(StorageKeys.FREE_FOLLOWUP_DAYS, String(data.freeFollowupDays));
-        }
-
-        if (Array.isArray(data.medicalServices) && data.medicalServices.length > 0) {
-          saveMedicalServices(data.medicalServices);
-          setMedicalServicesList(data.medicalServices);
-        }
-
-        if (Array.isArray(data.expenseCategories) && data.expenseCategories.length > 0) {
-          saveExpenseCategories(data.expenseCategories);
-          setExpenseCategoriesList(data.expenseCategories);
-        }
-
-        if (data.alertConfig && typeof data.alertConfig === 'object') {
-          setAlertConfig(data.alertConfig);
-          saveAlertSettings(data.alertConfig);
-        }
-
-        if (data.examDisplayConfig && typeof data.examDisplayConfig === 'object') {
-          setExamDisplayConfig(data.examDisplayConfig);
-          saveExamDisplaySettings(data.examDisplayConfig);
-        }
-
-        if (Array.isArray(data.recurringTemplates) && data.recurringTemplates.length > 0) {
-          safeStorage.setJSON(StorageKeys.RECURRING_TEMPLATES, data.recurringTemplates);
-          setSavedTemplates(data.recurringTemplates);
-          window.dispatchEvent(new Event('soli_templates_updated'));
-        }
-
-        if (Array.isArray(data.radiologyCatalog) && data.radiologyCatalog.length > 0) {
-          data.radiologyCatalog.forEach((item: RadiologyCatalogItem) => onAddRadiology(item));
-        }
-
-        if (Array.isArray(data.labCatalog) && data.labCatalog.length > 0) {
-          data.labCatalog.forEach((item: LabCatalogItem) => onAddLab(item));
-        }
-
-        if (Array.isArray(data.drugCatalog) && data.drugCatalog.length > 0) {
-          data.drugCatalog.forEach((item: DrugCatalogItem) => onAddDrug(item));
-        }
-
-        if (Array.isArray(data.diagnosesCatalog) && data.diagnosesCatalog.length > 0) {
-          data.diagnosesCatalog.forEach((item: DiagnosisCatalogItem) => onAddDiagnosis(item));
-        }
-
-        if (Array.isArray(data.symptomsCatalog) && data.symptomsCatalog.length > 0) {
-          data.symptomsCatalog.forEach((item: SymptomCatalogItem) => onAddSymptom(item));
-        }
-
-        let restoredRecordsCount = 0;
-        if (supabase && (Array.isArray(data.patients) || Array.isArray(data.visits) || Array.isArray(data.appointments))) {
-          const ops: Promise<void>[] = [];
-          if (Array.isArray(data.patients)) {
-            data.patients.forEach((p: any) => {
-              if (p.patientId) {
-                ops.push(saveCatalogItem(supabase, 'patients', p.patientId, p));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          if (Array.isArray(data.appointments)) {
-            data.appointments.forEach((a: any) => {
-              if (a.appointmentId) {
-                ops.push(saveCatalogItem(supabase, 'appointments', a.appointmentId, a));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          if (Array.isArray(data.visits)) {
-            data.visits.forEach((v: any) => {
-              if (v.visitId) {
-                ops.push(saveCatalogItem(supabase, 'visits', v.visitId, v));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          if (Array.isArray(data.invoices)) {
-            data.invoices.forEach((inv: any) => {
-              if (inv.invoiceId) {
-                ops.push(saveCatalogItem(supabase, 'invoices', inv.invoiceId, inv));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          if (Array.isArray(data.payments)) {
-            data.payments.forEach((pay: any) => {
-              if (pay.paymentId) {
-                ops.push(saveCatalogItem(supabase, 'payments', pay.paymentId, pay));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          if (Array.isArray(data.prescriptions)) {
-            data.prescriptions.forEach((rx: any) => {
-              if (rx.prescriptionId) {
-                ops.push(saveCatalogItem(supabase, 'prescriptions', rx.prescriptionId, rx));
-                restoredRecordsCount++;
-              }
-            });
-          }
-          await Promise.all(ops);
-        }
-
-        const successMsg = restoredRecordsCount > 0
-          ? `تم استيراد واستعادة بيانات العيادة (${file.name}) مع ${restoredRecordsCount} سجل بنجاح ✓`
-          : `تم استيراد واستعادة إعدادات وأدلة العيادة من (${file.name}) بنجاح ✓`;
-
-        setSavedToast(successMsg);
-        setTimeout(() => setSavedToast(null), 3500);
-      } catch (err) {
-        console.error(err);
-        alert('حدث خطأ أثناء استيراد الملف. يرجى التأكد من اختيار ملف JSON صحيح مسبق تصديره.');
+        setPendingRestoreValidation({
+          ...validation,
+          fileName: file.name,
+        });
+      } catch {
+        setBackupErrorBanner('حدث خطأ أثناء فحص ملف النسخة الاحتياطية.');
       } finally {
         e.target.value = '';
       }
     };
     reader.readAsText(file);
+  };
+
+  const handleConfirmRestoreBackup = async () => {
+    if (!pendingRestoreValidation?.payload || !canRestoreBackup) return;
+    setIsRestoringBackup(true);
+    setBackupErrorBanner(null);
+    try {
+      const data = pendingRestoreValidation.payload;
+
+      const { totalRestored } = await restoreBackupWithRollback(data as unknown as Record<string, unknown>, {
+        hasRestorePermission: canRestoreBackup,
+        expectedClinicId: clinicId,
+        actor: {
+          uid: userProfile?.uid,
+          username: userProfile?.username,
+          role,
+        },
+      });
+
+      if (Array.isArray(data.visitTypes) && data.visitTypes.length > 0) {
+        data.visitTypes.forEach((vt: VisitTypeItem) => {
+          if (vt.name) onAddVisitType(vt);
+        });
+      }
+
+      if (typeof data.freeFollowupDays === 'number') {
+        setFreeFollowupDays(data.freeFollowupDays);
+        safeStorage.setItem(StorageKeys.FREE_FOLLOWUP_DAYS, String(data.freeFollowupDays));
+      }
+
+      if (Array.isArray(data.medicalServices) && data.medicalServices.length > 0) {
+        saveMedicalServices(data.medicalServices);
+        setMedicalServicesList(data.medicalServices);
+      }
+
+      if (Array.isArray(data.expenseCategories) && data.expenseCategories.length > 0) {
+        saveExpenseCategories(data.expenseCategories);
+        setExpenseCategoriesList(data.expenseCategories);
+      }
+
+      if (data.alertConfig && typeof data.alertConfig === 'object') {
+        setAlertConfig(data.alertConfig);
+        saveAlertSettings(data.alertConfig);
+      }
+
+      if (data.examDisplayConfig && typeof data.examDisplayConfig === 'object') {
+        setExamDisplayConfig(data.examDisplayConfig);
+        saveExamDisplaySettings(data.examDisplayConfig);
+      }
+
+      if (Array.isArray(data.recurringTemplates) && data.recurringTemplates.length > 0) {
+        safeStorage.setJSON(StorageKeys.RECURRING_TEMPLATES, data.recurringTemplates);
+        setSavedTemplates(data.recurringTemplates);
+        window.dispatchEvent(new Event('soli_templates_updated'));
+      }
+
+      if (Array.isArray(data.radiologyCatalog) && data.radiologyCatalog.length > 0) {
+        data.radiologyCatalog.forEach((item: RadiologyCatalogItem) => onAddRadiology(item));
+      }
+
+      if (Array.isArray(data.labCatalog) && data.labCatalog.length > 0) {
+        data.labCatalog.forEach((item: LabCatalogItem) => onAddLab(item));
+      }
+
+      if (Array.isArray(data.drugCatalog) && data.drugCatalog.length > 0) {
+        data.drugCatalog.forEach((item: DrugCatalogItem) => onAddDrug(item));
+      }
+
+      if (Array.isArray(data.diagnosesCatalog) && data.diagnosesCatalog.length > 0) {
+        data.diagnosesCatalog.forEach((item: DiagnosisCatalogItem) => onAddDiagnosis(item));
+      }
+
+      if (Array.isArray(data.symptomsCatalog) && data.symptomsCatalog.length > 0) {
+        data.symptomsCatalog.forEach((item: SymptomCatalogItem) => onAddSymptom(item));
+      }
+
+      setPendingRestoreValidation(null);
+      setSavedToast(
+        `تم التحقق واستعادة النسخة الاحتياطية (${pendingRestoreValidation.fileName}) بإجمالي ${totalRestored} سجل بنجاح ✓`
+      );
+      setTimeout(() => setSavedToast(null), 4000);
+    } catch (err) {
+      setBackupErrorBanner(
+        err instanceof Error
+          ? err.message
+          : 'فشلت عملية الاستعادة وتم التراجع التلقائي (Rollback) لحماية البيانات.'
+      );
+    } finally {
+      setIsRestoringBackup(false);
+    }
   };
 
   const handleTestAlertSound = (type: 'new_visit' | 'call' | 'finish' = 'new_visit') => {
@@ -587,39 +644,39 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <span>{language === 'en' ? 'Medical Catalogs' : 'الأدلة والكتالوجات الطبية'}</span>
             </button>
 
-            {isAdmin && (
-              <PermissionGate permission="users.view">
-                <button
-                  type="button"
-                  onClick={() => setActiveSettingsSection('users')}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    activeSettingsSection === 'users'
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : 'text-slate-600 dark:text-[#859394] hover:bg-slate-100 dark:hover:bg-white/5'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-base">manage_accounts</span>
-                  <span>{language === 'en' ? 'Users & Permissions' : 'المستخدمون والصلاحيات'}</span>
-                </button>
-              </PermissionGate>
+            {canManageUsers && (
+              <button
+                type="button"
+                onClick={() => setActiveSettingsSection('users')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  activeSettingsSection === 'users'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-[#859394] hover:bg-slate-100 dark:hover:bg-white/5'
+                }`}
+              >
+                <span className="material-symbols-outlined text-base">manage_accounts</span>
+                <span>{language === 'en' ? 'Users & Permissions' : 'المستخدمون والصلاحيات'}</span>
+              </button>
             )}
           </div>
 
           {/* Quick One-Click JSON Backup Button */}
-          <button
-            type="button"
-            onClick={handleExportBackup}
-            className="ms-auto flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 border border-[#00c2cb]/30 transition-all cursor-pointer shadow-2xs active:scale-95"
-            title="تنزيل نسخة احتياطية كاملة من بيانات وإعدادات العيادة بصيغة JSON بضغطة زر واحدة"
-          >
-            <span className="material-symbols-outlined text-base">cloud_download</span>
-            <span>{language === 'en' ? 'Quick Backup (JSON)' : 'تنزيل نسخة احتياطية (JSON)'}</span>
-          </button>
+          {canExportBackup && (
+            <button
+              type="button"
+              onClick={handleExportBackup}
+              className="ms-auto flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 border border-[#00c2cb]/30 transition-all cursor-pointer shadow-2xs active:scale-95"
+              title="تنزيل نسخة احتياطية كاملة من بيانات وإعدادات العيادة بصيغة JSON بضغطة زر واحدة"
+            >
+              <span className="material-symbols-outlined text-base">cloud_download</span>
+              <span>{language === 'en' ? 'Quick Backup (JSON)' : 'تنزيل نسخة احتياطية (JSON)'}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* USER MANAGEMENT TAB (ADMIN ONLY) */}
-      {isAdmin && activeSettingsSection === 'users' && <UserManagementPanel />}
+      {/* USER MANAGEMENT TAB */}
+      {canManageUsers && activeSettingsSection === 'users' && <UserManagementPanel />}
 
       {/* MEDICAL CATALOGS TAB */}
       {activeSettingsSection === 'catalogs' && (
@@ -1624,9 +1681,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex gap-3">
                     <span className="material-symbols-outlined text-amber-600 dark:text-[#F59E0B] shrink-0 text-xl">info</span>
                     <div className="space-y-1">
-                      <span className="font-bold text-slate-800 dark:text-amber-200 block text-xs">بيانات تجريبية للتوضيح:</span>
+                      <span className="font-bold text-slate-800 dark:text-amber-200 block text-xs">بيانات تجريبية معزولة (isDemo: true):</span>
                       <p className="text-[11px] text-slate-600 dark:text-[#bbc9ca] leading-relaxed">
-                        الزيارات والوارد والمنصرف المعروضة الآن أمثلة توضيحية — احذفها قبل الاستخدام الفعلي. يمكنك توليد بيانات لسنة كاملة لتجربة الرسوم البيانية أو مسحها نهائياً.
+                        جميع البيانات التجريبية تستخدم أسماء وأرقام هواتف افتراضية غير حقيقية (مريض تجريبي 001..008 — هاتف 00000000000) ومميزة بحقل <code>isDemo: true</code> ومفصولة بالكامل عن الكتالوجات الطبية.
                       </p>
                     </div>
                   </div>
@@ -1638,49 +1695,40 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                       <span>توليد ومسح البيانات التوضيحية:</span>
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <button
-                        type="button"
-                        disabled={isGeneratingDemo}
-                        onClick={async () => {
-                          setIsGeneratingDemo(true);
-                          try {
-                            await onGenerateYearlyDemoData();
-                          } catch (e) {
-                            console.error(e);
-                          } finally {
-                            setIsGeneratingDemo(false);
-                          }
-                        }}
-                        className="p-3.5 rounded-xl border border-[#00c2cb]/30 bg-[#00c2cb]/10 hover:bg-[#00c2cb]/20 text-[#00c2cb] hover:text-[#45dee7] font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-lg">auto_awesome</span>
-                        <span>{isGeneratingDemo ? 'جاري التوليد...' : 'توليد بيانات تجريبيه سنه كاملة'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={isClearingAll}
-                        onClick={async () => {
-                          if (window.confirm('هل أنت متأكد من رغبتك في مسح كافة البيانات التجريبية والبدء من جديد بالكامل؟')) {
-                            setIsClearingAll(true);
+                      {canManageDemo && (
+                        <button
+                          type="button"
+                          disabled={isGeneratingDemo}
+                          onClick={async () => {
+                            setIsGeneratingDemo(true);
                             try {
-                              await onClearAllData();
-                            } catch (e) {
-                              console.error(e);
+                              await onGenerateYearlyDemoData();
                             } finally {
-                              setIsClearingAll(false);
+                              setIsGeneratingDemo(false);
                             }
-                          }
-                        }}
-                        className="p-3.5 rounded-xl border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-lg">restart_alt</span>
-                        <span>{isClearingAll ? 'جاري المسح...' : 'مسح كل البيانات والبدء من جديد'}</span>
-                      </button>
+                          }}
+                          className="p-3.5 rounded-xl border border-[#00c2cb]/30 bg-[#00c2cb]/10 hover:bg-[#00c2cb]/20 text-[#00c2cb] hover:text-[#45dee7] font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          <span className="material-symbols-outlined text-lg">auto_awesome</span>
+                          <span>{isGeneratingDemo ? 'جاري التوليد...' : 'توليد بيانات تجريبيه سنه كاملة'}</span>
+                        </button>
+                      )}
+
+                      {canClearAllData && (
+                        <button
+                          type="button"
+                          disabled={isClearingAll || isClearingBrowserCloud}
+                          onClick={() => void handleOpenCloudClearModal()}
+                          className="p-3.5 rounded-xl border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          <span className="material-symbols-outlined text-lg">restart_alt</span>
+                          <span>{isClearingAll ? 'جاري المسح...' : 'مسح كل البيانات والبدء من جديد'}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  {/* Reset & Wipe Data Blocks (Admin or Delete Permission Only) */}
+                  {/* Reset & Wipe Data Blocks (Gated by system.clear_all_data / canDeleteSettings) */}
                   {canDeleteSettings && (
                     <>
                       {/* Block 2: Clear Browser Patients, Visits and Invoices */}
@@ -1702,8 +1750,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                               setIsClearingBrowserOnly(true);
                               try {
                                 await onClearBrowserVisitsOnly();
-                              } catch (e) {
-                                console.error(e);
                               } finally {
                                 setIsClearingBrowserOnly(false);
                               }
@@ -1716,42 +1762,29 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                         </button>
                       </div>
 
-                      {/* Block 3: Complete Wipe with Heavy Warning */}
-                      <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-3">
-                        <div className="space-y-1">
-                          <h4 className="font-bold text-rose-600 dark:text-rose-400 text-xs flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-lg">warning</span>
-                            <span>حذف بيانات المرضى والزيارات من السحابة نهائياً</span>
-                          </h4>
-                          <p className="text-[11px] text-slate-600 dark:text-[#bbc9ca] leading-relaxed">
-                            تحذير هام: سيؤدي هذا الإجراء إلى مسح كافة ملفات وسجلات المرضى، الزيارات، الحجوزات، الفواتير، والمدفوعات بشكل نهائي من المتصفح ومن قاعدة البيانات السحابية (Supabase). سيتم الإبقاء على البيانات الثابتة من الأدلة الطبية (الأدوية، التشخيصات، الفحوصات) وتنسيقات وإعدادات صفحة الروشتة وصفحة الإعدادات لتجنب إعادة ضبط البنية التحتية للعيادة.
-                          </p>
+                      {/* Block 3: Complete Wipe with Protected Summary Modal */}
+                      {canClearAllData && (
+                        <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-3">
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-rose-600 dark:text-rose-400 text-xs flex items-center gap-1.5">
+                              <span className="material-symbols-outlined text-lg">warning</span>
+                              <span>حذف بيانات المرضى والزيارات من السحابة نهائياً (محمي بـ system.clear_all_data)</span>
+                            </h4>
+                            <p className="text-[11px] text-slate-600 dark:text-[#bbc9ca] leading-relaxed">
+                              تحذير هام: سيؤدي هذا الإجراء إلى مسح كافة ملفات وسجلات المرضى، الزيارات، الحجوزات، الفواتير، والمدفوعات بشكل نهائي من المتصفح ومن قاعدة البيانات السحابية (Supabase). سيتم الإبقاء على الإعدادات والكتالوجات الطبية والمستخدمين والصلاحيات، وتسجيل العملية في سجل المراجعة الأمني.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isClearingBrowserCloud}
+                            onClick={() => void handleOpenCloudClearModal()}
+                            className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                          >
+                            <span className="material-symbols-outlined text-base">delete_forever</span>
+                            <span>{isClearingBrowserCloud ? 'جاري مسح المرضى والزيارات من السحابة...' : 'فتح نافذة التأكيد لحذف بيانات العيادة من السحابة'}</span>
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          disabled={isClearingBrowserCloud}
-                          onClick={async () => {
-                            const code = 'حذف المرضى والزيارات';
-                            const confirmCode = window.prompt(`تحذير أمني هام! هذا الإجراء سيمسح سجلات المرضى والزيارات والفواتير من السحابة والمحلي بالكامل ولن تتمكن من استعادتها.\nلتأكيد الحذف النهائي، اكتب العبارة التالية بدقة في المربع: (${code})`);
-                            if (confirmCode === code) {
-                              setIsClearingBrowserCloud(true);
-                              try {
-                                await onClearAllBrowserAndCloud();
-                              } catch (e) {
-                                console.error(e);
-                              } finally {
-                                setIsClearingBrowserCloud(false);
-                              }
-                            } else if (confirmCode !== null) {
-                              alert('العبارة التي أدخلتها غير صحيحة. تم إلغاء العملية.');
-                            }
-                          }}
-                          className="w-full py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
-                        >
-                          <span className="material-symbols-outlined text-base">delete_forever</span>
-                          <span>{isClearingBrowserCloud ? 'جاري مسح المرضى والزيارات من السحابة...' : 'حذف بيانات المرضى والزيارات من السحابة نهائياً'}</span>
-                        </button>
-                      </div>
+                      )}
                     </>
                   )}
 
@@ -1774,11 +1807,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     <h2 className="text-sm font-bold text-slate-900 dark:text-[#dde2f5] flex items-center gap-2">
                       <span>9. النسخ الاحتياطي السحابي وتصدير واستيراد البيانات</span>
                       <span className="text-[10px] bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 px-2 py-0.5 rounded-full border border-cyan-500/20 font-bold">
-                        Supabase Cloud Sync
+                        Schema v3 • SHA-256
                       </span>
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-[#859394] mt-0.5">
-                      تصدير وحفظ أو استيراد واستعادة نسخة احتياطية كاملة من قاعدة بيانات العيادة والإعدادات بصيغة JSON
+                      تصدير وحفظ أو استيراد واستعادة نسخة احتياطية كاملة مع فحص البصمة الرقمية (Checksum) ومعرف العيادة
                     </p>
                   </div>
                 </div>
@@ -1792,34 +1825,54 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
               {openCards.backup && (
                 <div className="p-5 pt-0 border-t border-slate-100 dark:border-white/5 space-y-4 text-xs pt-4">
+                  {/* Sensitive Medical Data Warning Banner */}
+                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-200 flex items-start gap-2.5">
+                    <span className="material-symbols-outlined text-xl text-amber-500 shrink-0">shield_lock</span>
+                    <div className="leading-relaxed text-[11px]">
+                      <strong className="font-bold block text-xs mb-0.5">تحذير خصوصية البيانات الطبية:</strong>
+                      يحتوي ملف النسخة الاحتياطية المُصدَّر على بيانات طبية وشخصية حساسة للمرضى وسجلات مالية. يرجى حفظ الملف في وسيط تخزين آمن ومشفر وعدم مشاركته عبر قنوات غير مؤمنة.
+                    </div>
+                  </div>
+
+                  {backupErrorBanner && (
+                    <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-600 dark:text-rose-400 font-bold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-lg">error</span>
+                      <span>{backupErrorBanner}</span>
+                    </div>
+                  )}
+
                   <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#080e1b] border border-slate-200 dark:border-white/5 space-y-3">
                     <div className="flex items-center gap-2">
                       <span className="material-symbols-outlined text-emerald-500 text-xl">verified</span>
                       <span className="font-bold text-slate-800 dark:text-[#dde2f5]">
-                        المزامنة السحابية الحية (Supabase Cloud Sync) نشطة
+                        المزامنة السحابية الحية (Supabase Cloud Sync) نشطة — الإصدار {APP_VERSION}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 dark:text-[#859394] leading-relaxed">
-                      يتم حفظ وتحديث كافة بيانات العيادة والمرضى والزيارات والأدلة الطبية لحظياً بالسحابة المشفرة، مع إمكانية تصدير أو استيراد نسخة احتياطية محلية بصيغة JSON في أي وقت.
+                      يتم تضمين معلومات البيان (Manifest) ورقم الإصدار ({APP_VERSION}) ومعرف العيادة ({clinicId}) وبصمة التحقق الرقمية (SHA-256 Checksum) في كل نسخة احتياطية لضمان عدم التلاعب أو استعادة بيانات عيادة خاطئة.
                     </p>
                     <div className="flex flex-wrap items-center gap-3 pt-1">
-                      <button
-                        type="button"
-                        onClick={handleExportBackup}
-                        className="px-4 py-2.5 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95"
-                      >
-                        <span className="material-symbols-outlined text-base">download</span>
-                        <span>تصدير وتحميل نسخة احتياطية JSON</span>
-                      </button>
+                      {canExportBackup && (
+                        <button
+                          type="button"
+                          onClick={() => void handleExportBackup()}
+                          className="px-4 py-2.5 rounded-xl bg-[#00c2cb] hover:bg-[#45dee7] text-slate-950 font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95"
+                        >
+                          <span className="material-symbols-outlined text-base">download</span>
+                          <span>تصدير وتحميل نسخة احتياطية JSON (backup.export)</span>
+                        </button>
+                      )}
 
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95"
-                      >
-                        <span className="material-symbols-outlined text-base">upload_file</span>
-                        <span>استيراد واستعادة ملف نسخة احتياطية JSON</span>
-                      </button>
+                      {canRestoreBackup && (
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95"
+                        >
+                          <span className="material-symbols-outlined text-base">upload_file</span>
+                          <span>فحص واستعادة ملف نسخة احتياطية JSON (backup.restore)</span>
+                        </button>
+                      )}
 
                       <input
                         type="file"
@@ -1836,6 +1889,237 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
           </div>
         )}
+
+      {/* MODAL: Cloud Clear Confirmation & Summary */}
+      {showCloudClearModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in" dir="rtl">
+          <div className="bg-white dark:bg-[#111A2E] border border-rose-500/40 rounded-2xl p-6 max-w-xl w-full shadow-2xl space-y-4 text-right max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/10 pb-3">
+              <div className="flex items-center gap-2.5 text-rose-600 dark:text-rose-400">
+                <span className="material-symbols-outlined text-2xl">report</span>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                  تأكيد الحذف الجماعي لبيانات تشغيل العيادة
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={isClearingBrowserCloud}
+                onClick={() => setShowCloudClearModal(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {clearResultSummary ? (
+              <div className="space-y-4 text-xs">
+                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 space-y-2">
+                  <div className="font-bold text-sm flex items-center gap-2">
+                    <span className="material-symbols-outlined">check_circle</span>
+                    <span>اكتملت عملية مسح بيانات التشغيل بنجاح</span>
+                  </div>
+                  <p>إجمالي السجلات التي تم حذفها: <strong>{clearResultSummary.totalDeleted}</strong> سجل</p>
+                  <p>الجداول التي تم تفريغها ({clearResultSummary.succeededTables.length}): {clearResultSummary.succeededTables.join('، ')}</p>
+                  <p>الجداول المحفوظة دون مساس: {clearResultSummary.preservedTables.join('، ')}</p>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowCloudClearModal(false)}
+                    className="px-5 py-2 rounded-xl bg-[#00c2cb] text-slate-950 font-bold text-xs cursor-pointer"
+                  >
+                    إغلاق
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 text-xs">
+                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-700 dark:text-rose-300 leading-relaxed">
+                  <strong>تحذير نهائي:</strong> هذه العملية نهائية ولا يمكن التراجع عنها بعد التنفيذ. سيتم مسح سجلات المرضى والزيارات والفواتير من السحابة والمتصفح، مع تسجيل العملية في سجل المراجعة الأمني.
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1322] border border-slate-200 dark:border-white/10">
+                    <span className="text-[11px] text-slate-400 block">اسم ومعرف العيادة:</span>
+                    <strong className="text-slate-900 dark:text-white font-bold">
+                      سولي ميديكال كلينيك ({clinicId})
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0c1322] border border-slate-200 dark:border-white/10">
+                    <span className="text-[11px] text-slate-400 block">إجمالي السجلات المتوقع حذفها:</span>
+                    <strong className="text-rose-600 dark:text-rose-400 font-bold text-sm">
+                      {clearPreviewTotal} سجل
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0c1322] border border-slate-200 dark:border-white/10 space-y-2">
+                  <div className="font-bold text-slate-800 dark:text-slate-200">
+                    الجداول التي سيتم حذف بياناتها ({TRANSACTIONAL_TABLES_TO_CLEAR.length} جدول):
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                    {Object.entries(clearPreviewCounts).map(([tbl, cnt]) => (
+                      <div key={tbl} className="flex items-center justify-between px-2.5 py-1.5 rounded bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-white/5">
+                        <span className="font-mono">{tbl}</span>
+                        <span className="font-bold text-rose-500">{cnt}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-[11px] text-emerald-700 dark:text-emerald-300">
+                  <strong>الجداول المحمية التي لن يتم المساس بها:</strong> الإعدادات العامة، الكتالوجات الطبية ({PRESERVED_SYSTEM_TABLES.join(', ')})، حسابات المستخدمين والصلاحيات، وسجل المراجعة الأمني.
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="font-bold text-slate-800 dark:text-slate-200 block">
+                    لتأكيد الحذف النهائي، اكتب العبارة التالية بدقة:{' '}
+                    <code className="px-2 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-300 font-bold">
+                      {REQUIRED_CLEAR_CONFIRMATION_PHRASE}
+                    </code>
+                  </label>
+                  <input
+                    type="text"
+                    value={clearConfirmationInput}
+                    disabled={isClearingBrowserCloud}
+                    onChange={(e) => setClearConfirmationInput(e.target.value)}
+                    placeholder={REQUIRED_CLEAR_CONFIRMATION_PHRASE}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#18233C] border border-slate-300 dark:border-white/15 text-slate-900 dark:text-white font-bold focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-white/10">
+                  <button
+                    type="button"
+                    disabled={isClearingBrowserCloud}
+                    onClick={() => setShowCloudClearModal(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 font-bold cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      isClearingBrowserCloud ||
+                      clearConfirmationInput.trim() !== REQUIRED_CLEAR_CONFIRMATION_PHRASE
+                    }
+                    onClick={async () => {
+                      if (isClearingBrowserCloud) return;
+                      setIsClearingBrowserCloud(true);
+                      try {
+                        await onClearAllBrowserAndCloud();
+                        setClearResultSummary({
+                          totalDeleted: clearPreviewTotal,
+                          succeededTables: TRANSACTIONAL_TABLES_TO_CLEAR,
+                          preservedTables: PRESERVED_SYSTEM_TABLES,
+                        });
+                      } finally {
+                        setIsClearingBrowserCloud(false);
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    <span className="material-symbols-outlined text-base">delete_forever</span>
+                    <span>{isClearingBrowserCloud ? 'جاري المسح النهائي...' : 'تأكيد وحذف بيانات العيادة نهائياً'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Backup Restore Preview before applying */}
+      {pendingRestoreValidation && pendingRestoreValidation.preview && (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in" dir="rtl">
+          <div className="bg-white dark:bg-[#111A2E] border border-[#00c2cb]/40 rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 text-right">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-[#008f97] dark:text-[#45dee7]">
+                <span className="material-symbols-outlined text-2xl">fact_check</span>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                  معاينة وفحص ملف النسخة الاحتياطية قبل الاستعادة
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={isRestoringBackup}
+                onClick={() => setPendingRestoreValidation(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 flex items-center gap-2 font-bold">
+                <span className="material-symbols-outlined text-lg">verified</span>
+                <span>تم التحقق من سلامة البصمة الرقمية (SHA-256 Checksum) ومطابقة معرف العيادة بنجاح</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 bg-slate-50 dark:bg-[#0c1322] p-3.5 rounded-xl border border-slate-200 dark:border-white/10">
+                <div>
+                  <span className="text-[10px] text-slate-400 block">اسم الملف:</span>
+                  <strong className="font-mono text-[11px]">{pendingRestoreValidation.fileName}</strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">إصدار التطبيق والهيكل:</span>
+                  <strong className="font-mono text-[11px]">
+                    {pendingRestoreValidation.preview.appVersion} (Schema v{pendingRestoreValidation.preview.schemaVersion})
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">معرف العيادة:</span>
+                  <strong className="font-mono text-[11px]">{pendingRestoreValidation.preview.clinicId}</strong>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">تاريخ التصدير:</span>
+                  <strong className="font-mono text-[11px]" dir="ltr">
+                    {pendingRestoreValidation.preview.exportedAt.slice(0, 19).replace('T', ' ')}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#0c1322] border border-slate-200 dark:border-white/10 space-y-2">
+                <div className="font-bold text-slate-800 dark:text-slate-200">
+                  ملخص السجلات التي ستتم استعادتها ({pendingRestoreValidation.preview.totalRecords} سجل):
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                  {Object.entries(pendingRestoreValidation.preview.tableCounts).map(([tbl, count]) => (
+                    <div key={tbl} className="flex items-center justify-between px-2.5 py-1.5 rounded bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-white/5">
+                      <span className="font-mono">{tbl}</span>
+                      <strong className="text-[#008f97] dark:text-[#45dee7]">{count}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                ملاحظة أمان: يتم أخذ لقطة احتياطية فورية قبل الاستعادة، وفي حال فشل أي جدول يتم التراجع التلقائي (Atomic Rollback) لحماية بيانات العيادة من التلف الجزئي.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-white/10">
+              <button
+                type="button"
+                disabled={isRestoringBackup}
+                onClick={() => setPendingRestoreValidation(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isRestoringBackup}
+                onClick={() => void handleConfirmRestoreBackup()}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer disabled:opacity-50 flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-base">restore</span>
+                <span>{isRestoringBackup ? 'جاري الاستعادة الآمنة...' : 'تأكيد واستعادة النسخة الاحتياطية الآن'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: Add New Visit Type */}
       {showAddVisitModal && (
