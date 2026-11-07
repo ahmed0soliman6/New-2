@@ -154,6 +154,7 @@ begin
     when 'settings.view', 'settings.read' then v_screen_id := 'system-settings'; v_mapped_action := 'view';
     when 'settings.update', 'settings.manage' then v_screen_id := 'system-settings'; v_mapped_action := 'update';
     when 'users.manage' then v_screen_id := 'system-settings'; v_mapped_action := 'update'; v_special_key := 'users.manage';
+    when 'audit.view' then v_screen_id := 'system-settings'; v_mapped_action := 'view'; v_special_key := 'audit.view';
     when 'backup.export' then v_screen_id := 'system-settings'; v_mapped_action := 'view'; v_special_key := 'backup.export';
     when 'backup.restore' then v_screen_id := 'system-settings'; v_mapped_action := 'update'; v_special_key := 'backup.restore';
     when 'system.clear_all_data' then v_screen_id := 'system-settings'; v_mapped_action := 'delete'; v_special_key := 'system.clear_all_data';
@@ -195,7 +196,7 @@ begin
   if v_role = 'admin' then
     return true;
   elsif v_role = 'doctor' then
-    if v_special_key in ('patients.delete', 'billing.delete', 'payments.delete', 'system.clear_all_data', 'backup.restore', 'users.manage', 'demo.manage') then
+    if v_special_key in ('patients.delete', 'billing.delete', 'payments.delete', 'system.clear_all_data', 'backup.restore', 'users.manage', 'demo.manage', 'audit.view') then
       return false;
     end if;
     if v_screen_id in ('system-settings', 'daily-expenses') and v_mapped_action <> 'view' then
@@ -1751,7 +1752,60 @@ $$;
 revoke execute on function public.admin_delete_clinic_user(text, uuid) from public, anon;
 grant execute on function public.admin_delete_clinic_user(text, uuid) to authenticated;
 
--- 6.10 append_audit_log (Append-Only Security Audit Log RPC)
+-- 6.10 audit_events Table, RLS, Immutability Trigger & append_audit_log RPC
+create table if not exists public.audit_events (
+  id uuid primary key default gen_random_uuid(),
+  clinic_id text not null references public.clinics(id) on delete cascade,
+  actor_uid uuid not null,
+  action text not null,
+  entity_type text,
+  entity_id text,
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default clock_timestamp()
+);
+
+create index if not exists audit_events_clinic_created_idx
+  on public.audit_events (clinic_id, created_at desc);
+
+create index if not exists audit_events_rate_limit_idx
+  on public.audit_events (clinic_id, actor_uid, created_at desc);
+
+alter table public.audit_events enable row level security;
+
+drop policy if exists "audit_events_select" on public.audit_events;
+drop policy if exists "audit_events_insert" on public.audit_events;
+drop policy if exists "audit_events_update" on public.audit_events;
+drop policy if exists "audit_events_delete" on public.audit_events;
+
+create policy "audit_events_select" on public.audit_events for select to authenticated
+  using (
+    public.is_clinic_member(clinic_id)
+    and (
+      public.has_clinic_permission(clinic_id, 'audit.view', 'view')
+      or public.has_clinic_permission(clinic_id, 'users.manage', 'view')
+      or public.has_clinic_permission(clinic_id, 'users.manage', 'update')
+    )
+  );
+
+revoke insert, update, delete on public.audit_events from public, anon, authenticated;
+grant select on public.audit_events to authenticated;
+
+create or replace function public.prevent_audit_events_mutation()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  raise exception 'Security violation: audit_events table is append-only (UPDATE and DELETE are strictly prohibited)';
+end;
+$$;
+
+drop trigger if exists trg_audit_events_immutable on public.audit_events;
+create trigger trg_audit_events_immutable
+  before update or delete on public.audit_events
+  for each row
+  execute function public.prevent_audit_events_mutation();
+
 create or replace function public.append_audit_log(
   p_clinic_id text,
   p_entry jsonb
@@ -1762,13 +1816,86 @@ security definer
 set search_path = public
 as $$
 declare
-  v_current_data jsonb;
-  v_prev_entries jsonb;
-  v_sanitized_entry jsonb;
-  v_next_entries jsonb;
-  v_now_iso text;
+  v_actor_uid uuid;
+  v_action text;
+  v_entity_type text;
+  v_entity_id text;
+  v_raw_details jsonb;
+  v_details jsonb := '{}'::jsonb;
+  v_now timestamptz;
+  v_recent_count integer;
+  v_inserted_id uuid;
+  v_key text;
+  v_val jsonb;
+  v_allowed_actions constant text[] := array[
+    'patient.create',
+    'patient.update',
+    'patient.delete',
+    'visit.create',
+    'visit.complete',
+    'visit.delete',
+    'appointment.create',
+    'appointment.update',
+    'appointment.delete',
+    'appointment.checkin',
+    'invoice.create',
+    'invoice.update',
+    'invoice.delete',
+    'payment.create',
+    'payment.update',
+    'payment.delete',
+    'expense.create',
+    'expense.update',
+    'expense.delete',
+    'user.create',
+    'user.update',
+    'user.delete',
+    'user.permissions.update',
+    'user.password.reset',
+    'UPDATE_USER_PERMISSIONS',
+    'settings.update',
+    'backup.export',
+    'backup.restore',
+    'backup.restore.rollback',
+    'system.clear_all_data',
+    'system.clear_all_data.failed',
+    'demo.generate_data'
+  ];
+  v_known_detail_keys constant text[] := array[
+    'summary',
+    'status',
+    'permissionUsed',
+    'affectedTables',
+    'recordCounts',
+    'metadata',
+    'changedFields',
+    'mode',
+    'patientId',
+    'totalDeleted',
+    'deletedCounts',
+    'succeededTables',
+    'failedTables',
+    'preservedTables',
+    'restoredCounts',
+    'totalRestored',
+    'backupExportedAt',
+    'backupAppVersion',
+    'patientsCount',
+    'visitsCount',
+    'error',
+    'touchedTables',
+    'rev',
+    'note',
+    'message',
+    'reason',
+    'field',
+    'oldValue',
+    'newValue',
+    'count'
+  ];
 begin
-  if not public.is_clinic_member(p_clinic_id) then
+  v_actor_uid := auth.uid();
+  if v_actor_uid is null or not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
 
@@ -1776,63 +1903,127 @@ begin
     raise exception 'Invalid input: p_entry must be a JSON object';
   end if;
 
-  if coalesce(btrim(p_entry->>'action'), '') = '' then
-    raise exception 'Invalid input: audit log action is required';
+  if octet_length(p_entry::text) > 8192 then
+    raise exception 'Payload too large: audit log entry exceeds maximum allowed size of 8KB (8192 bytes)';
   end if;
 
-  v_now_iso := to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  v_action := btrim(coalesce(p_entry->>'action', ''));
+  if v_action = '' or not (v_action = any(v_allowed_actions)) then
+    raise exception 'Invalid audit action: "%" is not in the allowed actions whitelist', v_action;
+  end if;
 
-  v_sanitized_entry := p_entry || jsonb_build_object(
-    'clinicId', p_clinic_id,
-    'actorUid', coalesce(auth.uid()::text, p_entry->>'actorUid', 'unknown'),
-    'recordedAt', v_now_iso
+  v_entity_type := left(nullif(btrim(coalesce(p_entry->>'entity_type', p_entry->>'entityType', p_entry->>'targetType', '')), ''), 120);
+  v_entity_id := left(nullif(btrim(coalesce(p_entry->>'entity_id', p_entry->>'entityId', p_entry->>'targetId', '')), ''), 255);
+
+  if p_entry ? 'details' then
+    if jsonb_typeof(p_entry->'details') = 'object' then
+      v_raw_details := p_entry->'details';
+      for v_key, v_val in select * from jsonb_each(v_raw_details) loop
+        if v_key = any(v_known_detail_keys) then
+          v_details := v_details || jsonb_build_object(v_key, v_val);
+        end if;
+      end loop;
+    elsif jsonb_typeof(p_entry->'details') = 'string' then
+      v_details := v_details || jsonb_build_object('message', p_entry->'details');
+    end if;
+  end if;
+
+  for v_key in select unnest(v_known_detail_keys) loop
+    if p_entry ? v_key and not (v_details ? v_key) then
+      if v_key = 'metadata' and jsonb_typeof(p_entry->'metadata') = 'object' then
+        v_details := v_details || jsonb_build_object(
+          'metadata',
+          (p_entry->'metadata') - 'actorName' - 'actorUid' - 'actor_uid' - 'actorUsername' - 'actorRole' - 'clinicId' - 'clinic_id'
+        );
+      elsif v_key <> 'metadata' then
+        v_details := v_details || jsonb_build_object(v_key, p_entry->v_key);
+      end if;
+    end if;
+  end loop;
+
+  if octet_length(v_details::text) > 8192 then
+    raise exception 'Payload too large: audit log details exceed maximum allowed size of 8KB (8192 bytes)';
+  end if;
+
+  v_now := clock_timestamp() + (
+    coalesce(nullif(current_setting('soli.audit_clock_offset_minutes', true), '')::integer, 0) * interval '1 minute'
   );
 
-  insert into public.settings (clinic_id, id, data)
-  values (
-    p_clinic_id,
-    '_audit_log',
-    jsonb_build_object('entries', '[]'::jsonb, 'updatedAt', v_now_iso)
-  )
-  on conflict (clinic_id, id) do nothing;
-
-  select data
-    into v_current_data
-    from public.settings
+  select count(*)::integer
+    into v_recent_count
+    from public.audit_events
    where clinic_id = p_clinic_id
-     and id = '_audit_log'
-   for update;
+     and actor_uid = v_actor_uid
+     and created_at >= (v_now - interval '1 minute')
+     and created_at <= (v_now + interval '1 second');
 
-  if v_current_data is not null and jsonb_typeof(v_current_data->'entries') = 'array' then
-    v_prev_entries := v_current_data->'entries';
-  else
-    v_prev_entries := '[]'::jsonb;
+  if v_recent_count >= 60 then
+    raise exception 'Rate limit exceeded: maximum 60 audit log entries per minute allowed per user in clinic %', p_clinic_id;
   end if;
 
-  select coalesce(jsonb_agg(elem), '[]'::jsonb)
-    into v_next_entries
-    from (
-      select elem
-        from jsonb_array_elements(jsonb_build_array(v_sanitized_entry) || v_prev_entries) with ordinality as t(elem, ord)
-       where ord <= 250
-       order by ord
-    ) sub;
+  insert into public.audit_events (
+    clinic_id,
+    actor_uid,
+    action,
+    entity_type,
+    entity_id,
+    details,
+    created_at
+  )
+  values (
+    p_clinic_id,
+    v_actor_uid,
+    v_action,
+    v_entity_type,
+    v_entity_id,
+    v_details,
+    v_now
+  )
+  returning id into v_inserted_id;
 
-  update public.settings
-     set data = jsonb_build_object(
-       'entries', v_next_entries,
-       'updatedAt', v_now_iso
-     ),
-     updated_at = now()
-   where clinic_id = p_clinic_id
-     and id = '_audit_log';
+  return jsonb_build_object(
+    'id', v_inserted_id,
+    'clinic_id', p_clinic_id,
+    'actor_uid', v_actor_uid,
+    'action', v_action,
+    'entity_type', v_entity_type,
+    'entity_id', v_entity_id,
+    'details', v_details,
+    'created_at', v_now
+  );
+end;
+$$;
 
-  return v_sanitized_entry;
+create or replace function public.append_audit_log(
+  p_clinic_id text,
+  p_action text,
+  p_entity_type text default null,
+  p_entity_id text default null,
+  p_details jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return public.append_audit_log(
+    p_clinic_id,
+    jsonb_build_object(
+      'action', p_action,
+      'entity_type', p_entity_type,
+      'entity_id', p_entity_id,
+      'details', coalesce(p_details, '{}'::jsonb)
+    )
+  );
 end;
 $$;
 
 revoke execute on function public.append_audit_log(text, jsonb) from public, anon;
 grant execute on function public.append_audit_log(text, jsonb) to authenticated;
+
+revoke execute on function public.append_audit_log(text, text, text, text, jsonb) from public, anon;
+grant execute on function public.append_audit_log(text, text, text, text, jsonb) to authenticated;
 
 -- =============================================================================
 -- 7. تفعيل البث اللحظي (Supabase Realtime Publication)
@@ -1870,13 +2061,5 @@ end $$;
 insert into public.clinics (id, name)
 values ('clinic_main', 'عيادة سولي الطبية - Soli Medical Clinic')
 on conflict (id) do nothing;
-
-insert into public.settings (clinic_id, id, data)
-values (
-  'clinic_main',
-  '_audit_log',
-  jsonb_build_object('entries', '[]'::jsonb, 'updatedAt', now())
-)
-on conflict (clinic_id, id) do nothing;
 
 commit;

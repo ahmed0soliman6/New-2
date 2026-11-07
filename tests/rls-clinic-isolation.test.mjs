@@ -94,10 +94,31 @@ test('1. فحص سياسات العزل (RLS) وإلغاء member_all وإزال
     );
     assert.match(
       content,
+      /create\s+table\s+if\s+not\s+exists\s+public\.audit_events/i,
+      `ملف ${label} يجب أن ينشئ جدول public.audit_events`
+    );
+    assert.match(
+      content,
+      /create\s+trigger\s+trg_audit_events_immutable/i,
+      `ملف ${label} يجب أن ينشئ الـ trigger المانع للتعديل والحذف trg_audit_events_immutable`
+    );
+    assert.match(
+      content,
       /create\s+or\s+replace\s+function\s+public\.append_audit_log/i,
       `ملف ${label} يجب أن يعرّف الدالة public.append_audit_log`
     );
   }
+
+  // التحقق من وجود @electric-sql/pglite في devDependencies وليس في dependencies
+  const pkgJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'));
+  assert.ok(
+    pkgJson.devDependencies && pkgJson.devDependencies['@electric-sql/pglite'],
+    'يجب وضع @electric-sql/pglite في devDependencies'
+  );
+  assert.ok(
+    !pkgJson.dependencies || !pkgJson.dependencies['@electric-sql/pglite'],
+    'يجب عدم وضع @electric-sql/pglite في dependencies الخاصة بالإنتاج'
+  );
 
   // التحقق من إزالة القيمة الافتراضية المكتوبة صراحة solimedical-new2 من الكود
   for (const relFile of [
@@ -141,7 +162,7 @@ test('2. التحقق من تأمين جميع دوال RPC العشر في supa
   }
 });
 
-test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل الترحيل مرتين، الصلاحيات، delete_patient، العزل، العضو غير النشط، وحماية _audit_log', async () => {
+test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل الترحيل مرتين، الصلاحيات، delete_patient، العزل، واختبارات audit_events السبعة (أ - ز)', async () => {
   const db = new PGlite();
 
   try {
@@ -189,9 +210,10 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
     await db.exec(migrationSql);
     await db.exec(migrationSql);
 
-    // منح صلاحيات الجداول لدور authenticated ليتم تقييم سياسات RLS الفعلية
+    // منح صلاحيات الجداول لدور authenticated ليتم تقييم سياسات RLS الفعلية، مع الحفاظ على سحب صلاحيات التعديل على audit_events
     await db.exec(`
       grant select, insert, update, delete on all tables in schema public to authenticated;
+      revoke insert, update, delete on public.audit_events from anon, authenticated;
     `);
 
     // 4. تجهيز بيانات الاختبار: عيادتين (clinic_a, clinic_b) ومستخدمين بأدوار وصلاحيات مختلفة
@@ -264,16 +286,15 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
         await db.exec(`
           reset role;
           select set_config('request.jwt.claim.sub', '', false);
+          select set_config('soli.audit_clock_offset_minutes', '0', false);
         `);
       }
     };
 
     // 5. اختبار: السكرتير الافتراضي لا يحذف مريضاً مباشرة ولا عبر RPC
     await runAsUser(secretaryDefaultUid, async () => {
-      // محاولة حذف مباشر عبر جدول patients
       await db.exec(`delete from public.patients where clinic_id = 'clinic_a' and id = 'pat_a_1';`);
 
-      // محاولة حذف عبر دالة RPC delete_patient
       await assert.rejects(
         () => db.query(`select public.delete_patient('clinic_a', 'pat_a_1', 'file_only');`),
         /Unauthorized: caller lacks patients\.delete permission/i,
@@ -286,24 +307,20 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
 
     // 6. اختبار: سكرتير يملك patients.delete يحذف file_only بنجاح ويُرفض في everything
     await runAsUser(secretaryWithDeleteUid, async () => {
-      // يُرفض في وضع everything لأنه لا يملك billing.delete
       await assert.rejects(
         () => db.query(`select public.delete_patient('clinic_a', 'pat_a_1', 'everything');`),
         /Unauthorized: caller lacks billing\.delete permission required for full deletion/i,
         'يجب رفض الحذف الكامل (everything) إذا كان المستخدم لا يملك صلاحية billing.delete'
       );
 
-      // يُرفض إذا كان p_mode غير صالح
       await assert.rejects(
         () => db.query(`select public.delete_patient('clinic_a', 'pat_a_1', 'invalid_mode');`),
         /Invalid input: p_mode must be file_only or everything/i,
         'يجب التحقق من أن p_mode إما file_only أو everything'
       );
 
-      // ينجح في وضع file_only
       await db.query(`select public.delete_patient('clinic_a', 'pat_a_1', 'file_only');`);
 
-      // يُرفض إذا لم يُوجد المريض (بعد حذفه أو لمعرّف غير موجود)
       await assert.rejects(
         () => db.query(`select public.delete_patient('clinic_a', 'pat_a_1', 'file_only');`),
         /Patient not found: pat_a_1 in clinic clinic_a/i,
@@ -357,7 +374,6 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
     });
 
     await runAsUser(restrictedViewerUid, async () => {
-      // أعد إدراج موعد وزيارة وروشتة للمريض الثاني للتحقق من المنع
       await db.exec(`reset role;`);
       await db.exec(`
         insert into public.appointments (clinic_id, id, data) values ('clinic_a', 'apt_a_2', '{"appointmentId":"apt_a_2"}'::jsonb) on conflict do nothing;
@@ -374,55 +390,216 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
       assert.equal(rxs.rows.length, 0, 'المستخدم المسحوبة منه صلاحيات العرض لا يقرأ الروشتات');
     });
 
-    // 10. اختبار: حماية سجل المراجعة (_audit_log) — إضافة فقط عبر RPC ولا أحد يعدّله أو يحذفه مباشرة
+    // =========================================================================
+    // 10. اختبارات جدول audit_events ودالة append_audit_log السبعة (أ - ز)
+    // =========================================================================
+
+    // (أ) سكرتير يدرج 260 حدثاً ولا يُفقد الحدث الأول (لا يوجد قص عند 250)
     await runAsUser(secretaryDefaultUid, async () => {
-      // الإضافة عبر دالة RPC append_audit_log مسموحة لأي عضو نشط
-      await db.query(
-        `select public.append_audit_log('clinic_a', '{"eventId": "evt_1", "action": "PATIENT_CREATED", "summary": "إضافة مريض"}'::jsonb);`
+      for (let i = 1; i <= 260; i++) {
+        // التقدم دقيقتين كل 50 إدخالاً لاحترام حد المعدل (60 في الدقيقة) أثناء إدراج 260 حدثاً
+        const offsetMinutes = Math.floor((i - 1) / 50) * 2;
+        await db.query(`select set_config('soli.audit_clock_offset_minutes', $1, false);`, [String(offsetMinutes)]);
+        await db.query(
+          `select public.append_audit_log('clinic_a', $1::jsonb);`,
+          [
+            JSON.stringify({
+              action: 'patient.create',
+              entity_type: 'patient',
+              entity_id: `pat_seq_${i}`,
+              details: { count: i, note: `حدث رقم ${i}` },
+            }),
+          ]
+        );
+      }
+    });
+
+    const countAfter260 = await db.query(
+      `select count(*)::int as cnt from public.audit_events where clinic_id = 'clinic_a'`
+    );
+    assert.equal(countAfter260.rows[0].cnt, 260, '(أ) يجب حفظ جميع الـ 260 حدثاً بالكامل في جدول audit_events دون قص');
+
+    const firstEventCheck = await db.query(
+      `select entity_id, details->>'count' as cnt, details->>'note' as note from public.audit_events where clinic_id = 'clinic_a' and entity_id = 'pat_seq_1'`
+    );
+    assert.equal(firstEventCheck.rows.length, 1, '(أ) الحدث الأول رقم 1 يجب أن يظل موجوداً ولا يُطرد بعد 260 إدخالاً');
+    assert.equal(firstEventCheck.rows[0].cnt, '1');
+    assert.equal(firstEventCheck.rows[0].note, 'حدث رقم 1');
+
+    // (ب) إدخال أكبر من 8KB يُرفض
+    await runAsUser(secretaryDefaultUid, async () => {
+      const oversizedText = 'x'.repeat(8500);
+      await assert.rejects(
+        () =>
+          db.query(`select public.append_audit_log('clinic_a', $1::jsonb);`, [
+            JSON.stringify({
+              action: 'patient.update',
+              entity_type: 'patient',
+              entity_id: 'pat_a_2',
+              details: { note: oversizedText },
+            }),
+          ]),
+        /Payload too large/i,
+        '(ب) يجب رفض أي إدخال يتجاوز حجم details فيه 8KB'
       );
     });
 
+    // (ج) action غير معروف (خارج القائمة البيضاء) يُرفض
+    await runAsUser(secretaryDefaultUid, async () => {
+      await assert.rejects(
+        () =>
+          db.query(`select public.append_audit_log('clinic_a', $1::jsonb);`, [
+            JSON.stringify({
+              action: 'hacker.unknown_action',
+              entity_type: 'system',
+              entity_id: 'sys_1',
+              details: {},
+            }),
+          ]),
+        /Invalid audit action/i,
+        '(ج) يجب رفض أي action غير موجود في القائمة البيضاء'
+      );
+    });
+
+    // (د) actor_uid مزوّر يُستبدل بـ auth.uid() وتُتجاهل الحقول غير المعروفة مثل actorName
+    await runAsUser(secretaryDefaultUid, async () => {
+      await db.query(`select set_config('soli.audit_clock_offset_minutes', '20', false);`);
+      const res = await db.query(`select public.append_audit_log('clinic_a', $1::jsonb) as id;`, [
+        JSON.stringify({
+          action: 'patient.update',
+          entity_type: 'patient',
+          entity_id: 'pat_forged_test',
+          actor_uid: adminAUid,
+          actorUid: adminAUid,
+          actorName: 'مدير مزوّر',
+          actorRole: 'admin',
+          unknownTopLevelField: 'should_be_ignored',
+          details: {
+            field: 'phone',
+            actorName: 'اسم مزوّر داخل التفاصيل',
+            actor_uid: adminAUid,
+            actorUid: adminAUid,
+            unknownInnerField: 'ignored',
+          },
+        }),
+      ]);
+      const insertedId = res.rows[0].id;
+      assert.ok(insertedId, '(د) يجب أن تُرجع الدالة معرّف الصف المدرج');
+    });
+
+    const forgedRowCheck = await db.query(
+      `select actor_uid, action, entity_type, entity_id, details from public.audit_events where clinic_id = 'clinic_a' and entity_id = 'pat_forged_test'`
+    );
+    assert.equal(forgedRowCheck.rows.length, 1);
+    assert.equal(
+      forgedRowCheck.rows[0].actor_uid,
+      secretaryDefaultUid,
+      '(د) يجب أن يكون actor_uid مساوياً لـ auth.uid() دائماً وتجاهل أي actor_uid مرسل من العميل'
+    );
+    assert.equal(forgedRowCheck.rows[0].action, 'patient.update');
+    assert.equal(forgedRowCheck.rows[0].details.field, 'phone');
+    assert.equal(forgedRowCheck.rows[0].details.actorName, undefined, '(د) يجب تجاهل وحذف حقل actorName المزوّر');
+    assert.equal(forgedRowCheck.rows[0].details.actor_uid, undefined, '(د) يجب تجاهل وحذف حقل actor_uid المزوّر من details');
+    assert.equal(forgedRowCheck.rows[0].details.unknownTopLevelField, undefined, '(د) يجب تجاهل الحقول غير المعروفة');
+    assert.equal(forgedRowCheck.rows[0].details.unknownInnerField, undefined, '(د) يجب تجاهل الحقول غير المعروفة داخل details');
+
+    // (هـ) UPDATE وDELETE المباشران على audit_events يفشلان حتى للمدير وحتى لمالك القاعدة (بسبب الـ trigger)
     await runAsUser(adminAUid, async () => {
-      // إضافة سجل ثانٍ من المدير عبر RPC
-      await db.query(
-        `select public.append_audit_log('clinic_a', '{"eventId": "evt_2", "action": "SETTINGS_UPDATED", "summary": "تحديث إعدادات"}'::jsonb);`
-      );
-
-      // محاولة تعديل _audit_log مباشرة (حتى من المدير!) يجب ألا تغير أي صف
-      await db.query(
-        `update public.settings set data = '{"entries": []}'::jsonb where clinic_id = 'clinic_a' and id = '_audit_log';`
-      );
-
-      // محاولة حذف _audit_log مباشرة (حتى من المدير!) يجب ألا تحذف أي صف
-      await db.query(
-        `delete from public.settings where clinic_id = 'clinic_a' and id = '_audit_log';`
-      );
-
-      // محاولة INSERT / UPSERT مباشر على _audit_log يجب أن تُرفض بواسطة RLS
       await assert.rejects(
         () =>
           db.query(`
-            insert into public.settings (clinic_id, id, data)
-            values ('clinic_a', '_audit_log', '{"entries": []}'::jsonb)
-            on conflict (clinic_id, id) do update set data = excluded.data;
+            update public.audit_events set action = 'backup.restore' where clinic_id = 'clinic_a';
           `),
-        /row-level security policy/i,
-        'يجب منع أي INSERT/UPSERT مباشر على _audit_log حتى للمدير'
+        /(permission denied|audit_events table is append-only)/i,
+        '(هـ) يجب أن يفشل UPDATE المباشر على audit_events حتى للمدير'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(`
+            delete from public.audit_events where clinic_id = 'clinic_a';
+          `),
+        /(permission denied|audit_events table is append-only)/i,
+        '(هـ) يجب أن يفشل DELETE المباشر على audit_events حتى للمدير'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(`
+            insert into public.audit_events (clinic_id, actor_uid, action, details)
+            values ('clinic_a', '${adminAUid}', 'patient.create', '{}'::jsonb);
+          `),
+        /(permission denied|row-level security policy)/i,
+        '(هـ) يجب أن يفشل INSERT المباشر على audit_events بدون الدالة'
       );
     });
 
-    // التحقق من بقاء سجل المراجعة سليماً ومحتفظاً بالسجلين
-    const auditRow = await db.query(
-      `select data from public.settings where clinic_id = 'clinic_a' and id = '_audit_log'`
+    // حتى بصلاحية superuser يفشل التعديل والحذف بسبب الـ trigger المانع للتعديل والحذف
+    await assert.rejects(
+      () => db.query(`update public.audit_events set action = 'backup.restore' where clinic_id = 'clinic_a';`),
+      /audit_events table is append-only/i,
+      '(هـ) يجب أن يمنع الـ trigger أي UPDATE على جدول audit_events حتى من الدالة أو المالك'
     );
-    assert.equal(auditRow.rows.length, 1, 'وثيقة _audit_log يجب أن تظل موجودة ولم تُحذف');
-    const entries = auditRow.rows[0].data.entries;
-    assert.equal(entries.length, 2, 'يجب الاحتفاظ بكلا الحدثين في _audit_log دون تأثر بمحاولات المسح أو التعديل');
-    assert.equal(entries[0].eventId, 'evt_2');
-    assert.equal(entries[0].actorUid, adminAUid);
-    assert.equal(entries[1].eventId, 'evt_1');
-    assert.equal(entries[1].actorUid, secretaryDefaultUid);
+    await assert.rejects(
+      () => db.query(`delete from public.audit_events where clinic_id = 'clinic_a';`),
+      /audit_events table is append-only/i,
+      '(هـ) يجب أن يمنع الـ trigger أي DELETE على جدول audit_events حتى من الدالة أو المالك'
+    );
+
+    // (و) عيادة أخرى لا ترى سجلات هذه العيادة، والسكرتير العادي لا يقرأ سجل المراجعة، بينما مدير العيادة يراه
+    await runAsUser(adminBUid, async () => {
+      const otherClinicRows = await db.query(
+        `select * from public.audit_events where clinic_id = 'clinic_a'`
+      );
+      assert.equal(otherClinicRows.rows.length, 0, '(و) مدير العيادة ب لا يجوز أن يرى سجلات مراجعة العيادة أ');
+    });
+
+    await runAsUser(secretaryDefaultUid, async () => {
+      const secRows = await db.query(
+        `select * from public.audit_events where clinic_id = 'clinic_a'`
+      );
+      assert.equal(secRows.rows.length, 0, '(و) السكرتير الذي لا يملك صلاحية audit.view أو users.manage لا يقرأ سجل المراجعة');
+    });
+
+    await runAsUser(adminAUid, async () => {
+      const adminRows = await db.query(
+        `select count(*)::int as cnt from public.audit_events where clinic_id = 'clinic_a'`
+      );
+      assert.equal(adminRows.rows[0].cnt, 261, '(و) مدير العيادة أ يرى جميع سجلات مراجعة عيادته');
+    });
+
+    // (ز) تجاوز 60 إدخالاً في الدقيقة لكل (clinic_id, actor_uid) يُرفض بخطأ واضح
+    await runAsUser(secretaryDefaultUid, async () => {
+      // ننتقل إلى نافذة زمنية جديدة (مثلاً بعد 60 دقيقة) وندرج 60 حدثاً في نفس الدقيقة
+      await db.query(`select set_config('soli.audit_clock_offset_minutes', '60', false);`);
+      for (let i = 1; i <= 60; i++) {
+        await db.query(`select public.append_audit_log('clinic_a', $1::jsonb);`, [
+          JSON.stringify({
+            action: 'patient.update',
+            entity_type: 'patient',
+            entity_id: `pat_rl_${i}`,
+            details: { count: i },
+          }),
+        ]);
+      }
+
+      // الإدخال رقم 61 في نفس الدقيقة يجب أن يُرفض
+      await assert.rejects(
+        () =>
+          db.query(`select public.append_audit_log('clinic_a', $1::jsonb);`, [
+            JSON.stringify({
+              action: 'patient.update',
+              entity_type: 'patient',
+              entity_id: 'pat_rl_61',
+              details: { count: 61 },
+            }),
+          ]),
+        /Rate limit exceeded: maximum 60 audit log entries per minute allowed per user/i,
+        '(ز) يجب رفض الإدخال رقم 61 في نفس الدقيقة لنفس المستخدم والعيادة'
+      );
+    });
   } finally {
     await db.close();
   }
 });
+

@@ -338,13 +338,13 @@ export async function updateManagedUser(
     const actorUid = sessionData.session?.user?.id || 'unknown';
     await recordAuditLog({
       actorUid,
-      actorUsername: String(sessionData.session?.user?.email || 'manager'),
-      action: 'UPDATE_USER_PERMISSIONS',
+      action: 'user.permissions.update',
       permissionUsed: 'users.manage',
+      targetType: 'clinic_member',
       targetId: uid,
       affectedTables: ['clinic_members'],
       status: 'SUCCESS',
-      details: `Updated permissions/profile for user ${uid}`,
+      details: { message: `Updated permissions/profile for user ${uid}` },
     });
   } catch {}
 

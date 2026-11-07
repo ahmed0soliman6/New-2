@@ -9,7 +9,7 @@
 1. افتح لوحة تحكم مشروعك في [Supabase Dashboard](https://supabase.com/dashboard).
 2. انتقل إلى **SQL Editor** واضغط **New query**.
 3. افتح الملف `supabase/full_setup.sql` من المشروع، انسخ محتواه بالكامل، والصقه في المحرر ثم اضغط **Run**.
-   *(ملاحظة: إذا كانت الجداول موجودة مسبقاً وتريد فقط تحديث الصلاحيات المخصصة وسياسات RLS ودوال RPC، شغّل الملف `supabase/migrations/20261107_fix_custom_permissions_rls.sql`).*
+   *(ملاحظة: إذا كانت الجداول موجودة مسبقاً وتريد فقط تحديث الصلاحيات المخصصة وسياسات RLS وجدول `audit_events` ودوال RPC، شغّل الملف `supabase/migrations/20261107_fix_custom_permissions_rls.sql`).*
 
 ---
 
@@ -84,3 +84,24 @@ end $$;
 ```
 
 3. افتح التطبيق وسجّل الدخول باسم المستخدم `admin` وكلمة المرور التي اخترتها، ومن شاشة **الإعدادات > إدارة المستخدمين والصلاحيات** يمكنك إضافة الأطباء والسكرتارية وتخصيص صلاحيات كل مستخدم بدقة.
+
+---
+
+### 🛡️ الخطوة 5: الصيانة والتنظيف الدوري لسجل المراجعة الأمني (`audit_events`)
+جدول `public.audit_events` محمي بـ Trigger (`trg_audit_events_immutable`) يمنع أي عملية `UPDATE` أو `DELETE` حتى من دوال `SECURITY DEFINER` أو حسابات المديرين لضمان عدم التلاعب بالسجل الجنائي.
+
+عند رغبة مالك قاعدة البيانات (Database Owner) في أرشفة أو حذف السجلات الأقدم من سنة واحدة يدوياً، يمكنه تشغيل الأمر التالي من داخل **Supabase SQL Editor** فقط:
+
+```sql
+begin;
+-- 1. إيقاف الـ Trigger مؤقتاً داخل المعاملة الحالية فقط (صلاحية مالك القاعدة)
+alter table public.audit_events disable trigger trg_audit_events_immutable;
+
+-- 2. حذف سجلات المراجعة الأقدم من 365 يوماً
+delete from public.audit_events
+ where created_at < now() - interval '365 days';
+
+-- 3. إعادة تفعيل الـ Trigger فوراً قبل إنهاء المعاملة
+alter table public.audit_events enable trigger trg_audit_events_immutable;
+commit;
+```
