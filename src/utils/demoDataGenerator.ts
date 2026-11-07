@@ -462,12 +462,37 @@ export async function clearAllDatabaseCollections(
         failedTables.push(tableName);
       }
     }
+
+    // Record new database epoch generation marker in settings so all other clients detect the cloud purge
+    const newDbEpoch = Date.now();
+    try {
+      await supabase.from('settings').upsert({
+        clinic_id: clinicId,
+        id: '_database_generation',
+        data: {
+          dbEpoch: newDbEpoch,
+          clearedAt: timestamp,
+          clearedBy: options?.actor?.username || options?.actor?.uid || 'admin',
+        },
+      }, { onConflict: 'clinic_id,id' });
+
+      // Import and broadcast realtime clear to other clients
+      const { broadcastRealtimeDatabaseClear } = await import('../services/realtimeSync');
+      await broadcastRealtimeDatabaseClear(newDbEpoch);
+    } catch {}
   } else {
     for (const tableName of resolvedTables) {
       deletedCounts[tableName] = 0;
       succeededTables.push(tableName);
     }
   }
+
+  // Clear local IndexedDB cached tables immediately
+  try {
+    const { clearCachedTables, notifyTableMutated } = await import('../services/offlineSync');
+    await clearCachedTables(resolvedTables);
+    notifyTableMutated(resolvedTables, true);
+  } catch {}
 
   if (failedTables.length > 0) {
     await recordAuditLog({

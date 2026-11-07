@@ -52,7 +52,7 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !phone.trim()) {
       alert('يرجى إدخال اسم المريض ورقم الهاتف');
@@ -87,8 +87,15 @@ export const NewAppointmentModal: React.FC<NewAppointmentModalProps> = ({
       status: 'مجدول',
     };
 
-    onAddAppointment(newApp);
-    onClose();
+    try {
+      const result = await Promise.resolve(onAddAppointment(newApp) as unknown);
+      if (result === false) {
+        return;
+      }
+      onClose();
+    } catch {
+      // Error handled by onAddAppointment alert
+    }
   };
 
   return (

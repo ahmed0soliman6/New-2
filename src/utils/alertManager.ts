@@ -21,6 +21,7 @@ export interface ClinicAlertPayload {
   timestamp: string;
   patientId?: string;
   visitId?: string;
+  senderId?: string;
 }
 
 const STORAGE_KEY = 'soli_clinic_alert_settings';
@@ -108,3 +109,56 @@ export const playSingleAlertSound = (type: 'new_visit' | 'call' | 'finish' = 'ne
     // Audio policy safe
   }
 };
+
+const SEEN_ALERTS_KEY = 'soli_seen_clinic_alerts_v1';
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+interface SeenAlertEntry {
+  ts: number;
+}
+
+function getSeenAlertsMap(): Record<string, SeenAlertEntry> {
+  if (typeof window === 'undefined' || !window.localStorage) return {};
+  try {
+    const raw = localStorage.getItem(SEEN_ALERTS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSeenAlertsMap(map: Record<string, SeenAlertEntry>): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    localStorage.setItem(SEEN_ALERTS_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+export function isAlertAlreadySeen(alertId: string): boolean {
+  if (!alertId) return false;
+  const map = getSeenAlertsMap();
+  const entry = map[alertId];
+  if (!entry) return false;
+  // If entry is older than 24h, it's expired
+  if (Date.now() - entry.ts > TWENTY_FOUR_HOURS_MS) {
+    return false;
+  }
+  return true;
+}
+
+export function markAlertAsSeen(alertId: string, timestamp = Date.now()): void {
+  if (!alertId) return;
+  const map = getSeenAlertsMap();
+  map[alertId] = { ts: timestamp };
+
+  // Prune any entries older than 24 hours
+  const now = Date.now();
+  for (const [k, v] of Object.entries(map)) {
+    if (now - v.ts > TWENTY_FOUR_HOURS_MS) {
+      delete map[k];
+    }
+  }
+  saveSeenAlertsMap(map);
+}

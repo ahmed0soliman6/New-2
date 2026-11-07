@@ -172,7 +172,14 @@ import {
   setCachedAlertSettings,
   playSingleAlertSound,
   ClinicAlertPayload,
+  isAlertAlreadySeen,
+  markAlertAsSeen,
 } from './utils/alertManager';
+import {
+  initClinicRealtime,
+  broadcastRealtimeAlert,
+  broadcastRealtimeDoctorStatus,
+} from './services/realtimeSync';
 import { safeStorage, StorageKeys } from './services/storage';
 import { setCachedRecurringTemplates } from './utils/recurringTemplatesManager';
 import { toEnglishDigits, formatAppDate, formatAppTime } from './utils/numberUtils';
@@ -1269,6 +1276,10 @@ function ClinicApp() {
   };
 
   const registerAlert = (alertItem: ClinicAlertPayload, options?: { skipPublish?: boolean }) => {
+    // 1. Persistent 24h deduplication check
+    if (isAlertAlreadySeen(alertItem.id)) return;
+    markAlertAsSeen(alertItem.id);
+
     const now = Date.now();
     const seen = recentAlertIdsRef.current;
     for (const [k, t] of seen) if (now - t > 60_000) seen.delete(k);
@@ -1290,7 +1301,10 @@ function ClinicApp() {
         alertChannel.close();
       } catch {}
 
-      // 2. Real-time multi-device Firestore synchronization for secretary/doctor
+      // 2. Real-time multi-device broadcast via Supabase Realtime
+      void broadcastRealtimeAlert(alertItem);
+
+      // 3. Fallback Firestore synchronization if db is active
       if (db) {
         publishAlert(db, {
           id: alertItem.id,
@@ -1436,8 +1450,43 @@ function ClinicApp() {
 
     if (isInitialVisitsLoadRef.current) {
       if (firstLoadDone) {
+        const now = Date.now();
+        const alertConfig = loadAlertSettings();
         visitsCanonical.forEach((v) => {
           previousVisitsMapRef.current.set(v.visitId, v.status);
+          const visitTs = v.createdAt ? new Date(v.createdAt).getTime() : 0;
+          const isFresh = visitTs > 0 && now - visitTs <= 300_000;
+          const newAlertId = `new-${v.visitId}`;
+
+          if (isFresh && v.status === 'WAITING' && !isAlertAlreadySeen(newAlertId)) {
+            const patient = patientsCanonical.find((p) => p.patientId === v.patientId);
+            const patientName = patient?.fullName || 'المريض';
+            const ticket = String(v.queueNumber || '');
+            if (alertConfig.audioEnabled && alertConfig.newVisitAudio) {
+              playSingleAlertSound('new_visit');
+            }
+            if (alertConfig.visualEnabled && alertConfig.newVisitVisual) {
+              registerAlert({
+                id: newAlertId,
+                type: 'new_visit',
+                title: 'تسجيل كشف وزيارة جديدة',
+                message: `تم تسجيل المريض (${patientName}) في قائمة الانتظار بنجاح.`,
+                ticket,
+                timestamp: formatAppTime(new Date(v.createdAt || Date.now())),
+                visitId: v.visitId,
+                patientId: v.patientId,
+              }, { skipPublish: true });
+              scheduleBannerDismiss(5000, newAlertId);
+            }
+          } else {
+            markAlertAsSeen(newAlertId);
+            if (v.status === 'IN_PROGRESS' || v.status === 'COMPLETED') {
+              markAlertAsSeen(`call-${v.visitId}`);
+            }
+            if (v.status === 'COMPLETED') {
+              markAlertAsSeen(`finish-${v.visitId}`);
+            }
+          }
         });
         isInitialVisitsLoadRef.current = false;
       }
@@ -1631,7 +1680,14 @@ function ClinicApp() {
     // 2. LocalStorage cross-tab sync
     safeStorage.setJSON(StorageKeys.CLINIC_STATUS_EVENT, { status: nextStatus, updatedBy, statusKey, timestamp: Date.now() });
 
-    // 3. Sync to Firestore immediately so all other connected accounts & devices receive the status update in real-time
+    // 3. Sync via Supabase Realtime broadcast and settings persistence
+    try {
+      await broadcastRealtimeDoctorStatus(nextStatus, updatedBy);
+    } catch (err) {
+      console.warn('Realtime doctor status broadcast error:', err);
+    }
+
+    // 4. Sync to Firestore immediately so all other connected accounts & devices receive the status update in real-time
     if (db) {
       try {
         await updateClinicStatusInFirestore(db, nextStatus, updatedBy);
@@ -1640,6 +1696,62 @@ function ClinicApp() {
       }
     }
   };
+
+  // 4. Supabase Realtime multi-client synchronization (postgres_changes and broadcast)
+  useEffect(() => {
+    if (!supabase || !clinicId) return;
+
+    const unsubRealtime = initClinicRealtime(clinicId, {
+      onClinicStatusChange: (status, updatedBy, updatedAt) => {
+        if (lastClinicStatusRef.current !== status) {
+          setDoctorStatus(status);
+          lastClinicStatusRef.current = status;
+          triggerDoctorStatusAlert(status, updatedBy, updatedAt || status, { skipPublish: true });
+        }
+      },
+      onLatestAlert: (alertPayload) => {
+        if (!alertPayload || !alertPayload.id) return;
+        if (alertPayload.senderId && alertPayload.senderId === (userProfile?.username || 'user')) {
+          return;
+        }
+        if (isAlertAlreadySeen(alertPayload.id)) return;
+
+        const alertConfig = loadAlertSettings();
+        if (alertConfig.audioEnabled) {
+          if (
+            (alertPayload.type === 'finish' && alertConfig.finishExamAudio) ||
+            (alertPayload.type === 'call' && alertConfig.callPatientAudio) ||
+            (alertPayload.type === 'new_visit' && alertConfig.newVisitAudio)
+          ) {
+            playSingleAlertSound(alertPayload.type);
+          }
+        }
+
+        if (alertConfig.visualEnabled) {
+          registerAlert(alertPayload, { skipPublish: true });
+          scheduleBannerDismiss(6000, alertPayload.id);
+        }
+      },
+      onDatabaseGenerationReset: () => {
+        console.info('[Realtime] Database cleared in cloud. Resetting local canonical state.');
+        setPatientsCanonical([]);
+        setAppointmentsCanonical([]);
+        setVisitsCanonical([]);
+        setInvoicesCanonical([]);
+        setPaymentsCanonical([]);
+        setFollowUpsCanonical([]);
+        setPrescriptionsCanonical([]);
+        setLabOrdersCanonical([]);
+        setRadiologyOrdersCanonical([]);
+        setAlertHistory([]);
+        setCallingBanner(null);
+      },
+    });
+
+    return () => {
+      unsubRealtime();
+    };
+  }, [clinicId, userProfile?.username]);
 
   // Doctor-determined Follow-ups only (from followUps collection & doctor examination schedules)
   const doctorFollowUpsList = useMemo(() => {
@@ -2820,15 +2932,15 @@ function ClinicApp() {
   };
 
   // Add scheduled appointment: Patient first, then Appointment in one Supabase RPC transaction
-  const handleAddAppointment = async (app: AppointmentListItem) => {
+  const handleAddAppointment = async (app: AppointmentListItem): Promise<boolean> => {
     const apptId = app.appointmentId || app.id;
     if (apptId && appointmentsCanonical.some((a) => a.appointmentId === apptId)) {
-      return;
+      return true;
     }
     const cleanPhone = (app.phone || '').trim();
     const cleanName = (app.patientName || '').trim();
     const lockKey = `appt:${apptId || normalizePhoneDigits(cleanPhone) || normalizeArabicName(cleanName)}-${app.date || ''}`;
-    if (inFlightActionsRef.current.has(lockKey)) return;
+    if (inFlightActionsRef.current.has(lockKey)) return false;
     inFlightActionsRef.current.add(lockKey);
 
     try {
@@ -2875,8 +2987,10 @@ function ClinicApp() {
       };
       try {
         await createAppointmentTransaction({ db, patient: patientToSave, appointment: newApp });
+        return true;
       } catch (error) {
         alert(error instanceof Error ? error.message : 'تعذر حفظ الموعد في قاعدة البيانات');
+        return false;
       }
     } finally {
       inFlightActionsRef.current.delete(lockKey);

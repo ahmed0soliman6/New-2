@@ -761,20 +761,29 @@ create policy "settings_insert" on public.settings for insert to authenticated
     public.is_clinic_member(clinic_id)
     and id <> '_audit_log'
     and id not like '_audit_log:%'
-    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    and (
+      public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or id in ('clinic_status', 'latest_alert')
+    )
   );
 create policy "settings_update" on public.settings for update to authenticated
   using (
     public.is_clinic_member(clinic_id)
     and id <> '_audit_log'
     and id not like '_audit_log:%'
-    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    and (
+      public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or id in ('clinic_status', 'latest_alert')
+    )
   )
   with check (
     public.is_clinic_member(clinic_id)
     and id <> '_audit_log'
     and id not like '_audit_log:%'
-    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+    and (
+      public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or id in ('clinic_status', 'latest_alert')
+    )
   );
 create policy "settings_delete" on public.settings for delete to authenticated
   using (

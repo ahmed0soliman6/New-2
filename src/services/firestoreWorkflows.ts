@@ -24,17 +24,35 @@ function requireDb() {
 
 function toArabicError(error: unknown, fallbackMessage: string): Error {
   const raw = error instanceof Error ? error.message : String((error as any)?.message || error || '');
+  if (typeof console !== 'undefined' && console.warn) {
+    console.warn('[DB Operation Notice]', raw.replace(/'[A-Za-z0-9_-]{20,}'/g, "'***'"));
+  }
   if (raw.includes('Appointment not found')) {
     return new Error('الموعد غير موجود في قاعدة البيانات.');
   }
   if (raw.includes('Only scheduled appointments can be checked in')) {
     return new Error('لا يمكن تسجيل الحضور إلا للمواعيد المجدولة فقط.');
   }
-  if (raw.includes('Unauthorized') || raw.includes('caller must be an active doctor or admin')) {
-    return new Error('غير مصرح لحسابك بتنفيذ هذه العملية الطبية.');
+  if (raw.includes('appointments.create permission')) {
+    return new Error('غير مصرح لحسابك بإنشاء أو حجز المواعيد (appointments.create).');
+  }
+  if (raw.includes('patients.create permission')) {
+    return new Error('غير مصرح لحسابك بإنشاء أو تسجيل ملفات المرضى (patients.create).');
+  }
+  if (raw.includes('clinical.complete permission')) {
+    return new Error('غير مصرح لحسابك باعتماد أو إنهاء الكشف والروشتة (clinical.complete).');
+  }
+  if (raw.includes('JWT') || raw.includes('session expired') || raw.includes('claim.sub')) {
+    return new Error('انتهت جلسة تسجيل الدخول. يرجى إعادة تسجيل الدخول مرة أخرى.');
+  }
+  if (raw.includes('caller is not an active member')) {
+    return new Error('الحساب غير نشط أو ليس عضواً معتمداً في هذه العيادة.');
+  }
+  if (raw.includes('Unauthorized') || raw.includes('lacks') || raw.includes('permission')) {
+    return new Error('ليس لديك الصلاحية المطلوبة لتنفيذ هذا الإجراء.');
   }
   if (raw.includes('violates row-level security policy') || raw.includes('row-level security')) {
-    return new Error('غير مصرح لحسابك بتعديل أو حذف هذه السجلات.');
+    return new Error('غير مصرح لحسابك بحفظ أو تعديل هذه السجلات (سياسة الأمان RLS).');
   }
   return new Error(fallbackMessage);
 }

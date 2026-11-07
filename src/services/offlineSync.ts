@@ -1014,6 +1014,29 @@ export async function syncTableIncremental(
     await replaceCachedTableRows(table, merged);
   }
 
+  if (table === 'settings') {
+    const dbGenRow = incomingRows.find((r) => r.id === '_database_generation');
+    if (dbGenRow?.data && typeof dbGenRow.data === 'object') {
+      const remoteGen = String((dbGenRow.data as { generation?: string }).generation || '');
+      if (remoteGen) {
+        const localGen = typeof localStorage !== 'undefined' ? localStorage.getItem('soli_last_db_generation') : null;
+        if (localGen && localGen !== remoteGen) {
+          if (typeof localStorage !== 'undefined') localStorage.setItem('soli_last_db_generation', remoteGen);
+          void clearCachedTables([
+            'patients', 'appointments', 'visits', 'invoices', 'payments', 'transactions',
+            'expenses', 'expense_categories', 'prescriptions', 'follow_ups', 'lab_orders',
+            'radiology_orders', 'medications', 'lab_tests', 'radiology_types', 'diagnoses',
+            'symptoms', 'chronic_diseases', 'services', 'backups', 'counters'
+          ]).then(() => {
+            notifyTableMutated(['*'], true);
+          });
+        } else if (!localGen && typeof localStorage !== 'undefined') {
+          localStorage.setItem('soli_last_db_generation', remoteGen);
+        }
+      }
+    }
+  }
+
   let maxTs = lastSyncedAt || new Date(0).toISOString();
   for (const r of incomingRows) {
     if (r.updated_at && r.updated_at > maxTs) {

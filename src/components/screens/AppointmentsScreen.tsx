@@ -413,7 +413,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   };
 
   // Save new appointment handler
-  const handleSaveNewAppointment = (e: React.FormEvent) => {
+  const handleSaveNewAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!patientName.trim()) {
       setFormFeedback('يرجى كتابة اسم المريض');
@@ -444,10 +444,19 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
     };
 
     if (onAddAppointment) {
-      onAddAppointment(newApp);
+      try {
+        const result = await onAddAppointment(newApp);
+        if (result === false) {
+          // Saving failed; error is already shown to user, do not clear form
+          return;
+        }
+      } catch (err) {
+        setFormFeedback(err instanceof Error ? err.message : 'تعذر حفظ الموعد في قاعدة البيانات.');
+        return;
+      }
     }
 
-    // Reset Form
+    // Reset Form only after confirmed success
     setPatientName('');
     setPhone('');
     setAppointmentNotes('');
