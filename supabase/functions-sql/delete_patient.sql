@@ -23,6 +23,10 @@ begin
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
 
+  if p_mode is null or p_mode not in ('file_only', 'everything') then
+    raise exception 'Invalid input: p_mode must be file_only or everything';
+  end if;
+
   if not (
     public.has_clinic_permission(p_clinic_id, 'patients.delete', 'delete')
     or public.has_clinic_permission(p_clinic_id, 'patient-records', 'delete')
@@ -47,6 +51,10 @@ begin
    where clinic_id = p_clinic_id
      and id = p_patient_id
    for update;
+
+  if not found or v_pat is null then
+    raise exception 'Patient not found: % in clinic %', p_patient_id, p_clinic_id;
+  end if;
 
   v_patient_name := coalesce(v_pat->>'fullName', v_pat->>'name', '');
 

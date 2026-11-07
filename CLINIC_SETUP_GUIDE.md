@@ -1,65 +1,86 @@
-# 🏥 دليل تشغيل وبيع النظام لعيادة جديدة في 3 دقائق
-## (White-Label Quick Deployment Guide)
+# 🏥 دليل تأسيس وتشغيل عيادة جديدة على Supabase
+## (Soli Medical v3.0.0 — Multi-Clinic Deployment Guide)
 
-تم تصميم هذا النظام ليكون **مستقلاً تماماً وبدون أي قيم ثابتة مشفرة في الكود (Zero Hardcoded Secrets)**.
-كل ما تحتاجه لتشغيل نسخة جديدة لعيادة جديدة هو **إنشاء مشروع Firebase جديد ووضع متغيرات الربط في Vercel**.
-
----
-
-### 📋 الخطوة 1: إنشاء مشروع Firebase جديد للعيادة (دقيقة واحدة)
-1. افتح [Firebase Console](https://console.firebase.google.com/) واضغط **Add project** واكتب اسم العيادة الجديدة (مثلاً: `clinic-nour`).
-2. **تفعيل المصادقة (Authentication)**:
-   - اذهب إلى **Build > Authentication** واضغط **Get started**.
-   - من تبويب **Sign-in method**، فعّل خيار **Email/Password** واحفظ.
-3. **تفعيل قاعدة البيانات (Cloud Firestore)**:
-   - اذهب إلى **Build > Firestore Database** واضغط **Create database**.
-   - اختر المنطقة (مثلاً: `europe-west3` أو أقرب منطقة للعيادة).
-   - ابدأ بوضع **Production mode**.
-4. **نسخ قواعد الحماية (Firestore Rules)**:
-   - افتح ملف `firestore.rules` الموجود في المشروع وانسخ محتواه بالكامل.
-   - في Firebase Console > **Firestore Database** > تبويب **Rules**، الصق الكود واضغط **Publish**.
+تم تصميم النظام ليعمل بعزل كامل بين العيادات (`clinic_id`) وبدون أي معرّف عيادة افتراضي مكتوب صراحة في الكود (`Zero Hardcoded Clinic Slug`).
 
 ---
 
-### 🔑 الخطوة 2: نسخ بيانات الربط إلى Vercel (دقيقة واحدة)
-1. في Firebase Console، اضغط على أيقونة الترس ⚙️ بجانب **Project Overview** واختر **Project settings**.
-2. في تبويب **General** تحت قسم **Your apps**، اضغط على أيقونة الويب `</>` وسجل تطبيق ويب.
-3. ستظهر لك القيم المخصصة للعيادة، انسخها إلى **Vercel > Settings > Environment Variables** (مع تحديد كل البيئات: **Production** و **Preview** و **Development**):
-   ```env
-   VITE_FIREBASE_API_KEY="AIzaSy..."
-   VITE_FIREBASE_AUTH_DOMAIN="clinic-nour.firebaseapp.com"
-   VITE_FIREBASE_PROJECT_ID="clinic-nour"
-   VITE_FIREBASE_STORAGE_BUCKET="clinic-nour.firebasestorage.app"
-   VITE_FIREBASE_MESSAGING_SENDER_ID="123456789"
-   VITE_FIREBASE_APP_ID="1:123456789:web:abcdef"
-   ```
+### 📋 الخطوة 1: تأسيس الجداول والسياسات والدوال في Supabase
+1. افتح لوحة تحكم مشروعك في [Supabase Dashboard](https://supabase.com/dashboard).
+2. انتقل إلى **SQL Editor** واضغط **New query**.
+3. افتح الملف `supabase/full_setup.sql` من المشروع، انسخ محتواه بالكامل، والصقه في المحرر ثم اضغط **Run**.
+   *(ملاحظة: إذا كانت الجداول موجودة مسبقاً وتريد فقط تحديث الصلاحيات المخصصة وسياسات RLS ودوال RPC، شغّل الملف `supabase/migrations/20261107_fix_custom_permissions_rls.sql`).*
 
 ---
 
-### 🛡️ الخطوة 3: تفعيل الحذف التلقائي للمستخدمين (اختياري - 30 ثانية)
-لحذف المستخدمين من صفحة Authentication تلقائياً عند حذفهم من لوحة إدارة المستخدمين:
-1. في Firebase Console > **Project settings** > تبويب **Service accounts**.
-2. اضغط **Generate new private key** (سيتم تحميل ملف JSON).
-3. في Vercel، أضف متغيرين (مع تحديد Production و Preview):
-   - `FIREBASE_CLIENT_EMAIL`: الإيميل الموجود في الملف (ينتهي بـ `iam.gserviceaccount.com`).
-   - `FIREBASE_PRIVATE_KEY`: المفتاح الخاص الموجود في الملف (بين علامتي تنصيص).
-   *(أو يمكنك ببساطة نسخ كود ملف JSON بالكامل ووضعه في متغير واحد اسمه `FIREBASE_SERVICE_ACCOUNT`)*.
+### 🏷️ الخطوة 2: تسجيل العيادة الجديدة في جدول `clinics`
+في **SQL Editor**، نفّذ الأمر التالي لإنشاء سجل العيادة الجديدة باختيار معرّف فريد (`slug`) خاص بها (مثلاً `al-nour-clinic`):
+
+```sql
+insert into public.clinics (id, name)
+values ('al-nour-clinic', 'عيادة النور التخصصية')
+on conflict (id) do update
+  set name = excluded.name;
+```
 
 ---
 
-### 🚀 الخطوة 4: تشغيل النظام وتسجيل الدخول الأولي (Auto-Provisioning)
-1. افتح رابط المشروع في المتصفح.
-2. سجّل الدخول بالحساب الافتراضي المبرمج في النظام:
-   - **اسم المستخدم**: `admin`
-   - **كلمة المرور**: `admin1234`
-3. يقوم النظام تلقائياً في أول تسجيل دخول بإنشاء حساب المدير في Firebase Authentication وتثبيت صلاحيات الإدارة الكاملة في Firestore!
-4. من داخل النظام:
-   - اذهب إلى **الإعدادات (Settings)** لتغيير كلمة مرور المدير وتعيين أسئلة الاسترداد.
-   - خصص اسم الطبيب، التخصص، الفروع، الخدمات، والأسعار الخاصة بالعيادة مباشرة من الواجهة ودون الحاجة لتعديل أي سطر برمجي.
+### ⚙️ الخطوة 3: ضبط متغيرات البيئة (`VITE_CLINIC_SLUG` و `CLINIC_SLUG`)
+في ملف `.env.local` (أثناء التطوير) وفي إعدادات البيئة على الخادم (**Vercel > Settings > Environment Variables**)، أضف المتغيرات التالية:
+
+```env
+# إعدادات الواجهة الأمامية (Client & Server)
+VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+VITE_SUPABASE_ANON_KEY="YOUR_SUPABASE_ANON_KEY"
+VITE_CLINIC_SLUG="al-nour-clinic"
+CLINIC_SLUG="al-nour-clinic"
+VITE_INTERNAL_EMAIL_DOMAIN="auth.solimedical.local"
+
+# إعدادات الخادم فقط (Server-Only — لا تضف بادئة VITE_ أبداً)
+SUPABASE_SERVICE_ROLE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY"
+```
+
+> ⚠️ **تنبيه هام**: لن يعمل الاتصال بقاعدة البيانات أو مسارات إدارة المستخدمين (`/api/users/*`) إذا لم يتم ضبط `VITE_CLINIC_SLUG` (أو `CLINIC_SLUG`)، وسيُظهر النظام رسالة خطأ واضحة بالعربية تطالب بضبطه.
 
 ---
 
-### 💡 ملخص التكرار للعيادات القادمة:
-- انسخ الكود (أو اربط نفس مستودع GitHub بمشروع جديد في Vercel).
-- ضع المتغيرات الـ 6 الخاصة بالعيادة.
-- انشر المشروع (`Redeploy`) — سيعمل النظام بقاعدة بيانات منفصلة تماماً ومستقلة 100%!
+### 👤 الخطوة 4: إنشاء أول حساب مدير (`admin`) للعيادة
+1. من لوحة تحكم Supabase، اذهب إلى **Authentication > Users** واضغط **Add user > Create new user**:
+   - **Email**: `admin@auth.solimedical.local` (أو أي اسم مستخدم متبوع بنطاق `VITE_INTERNAL_EMAIL_DOMAIN`).
+   - **Password**: اختر كلمة مرور قوية (8 خانات على الأقل).
+   - فعّل خيار **Auto Confirm User** ثم اضغط **Create user**.
+2. انسخ معرّف المستخدم (`User UID`) الذي تم إنشاؤه، ثم نفّذ الاستعلام التالي في **SQL Editor** لربطه كمدير (`admin`) للعيادة:
+
+```sql
+-- استبدل القيم التالية بمعرّف المستخدم (UUID) ومعرّف العيادة (slug)
+do $$
+declare
+  v_admin_uid uuid := '00000000-0000-0000-0000-000000000000'; -- ضع User UID هنا
+  v_clinic_id text := 'al-nour-clinic';                        -- ضع VITE_CLINIC_SLUG هنا
+  v_username  text := 'admin';
+begin
+  insert into public.usernames (username_lower, user_id)
+  values (lower(v_username), v_admin_uid)
+  on conflict (username_lower) do update
+    set user_id = excluded.user_id;
+
+  insert into public.clinic_members (clinic_id, user_id, role, is_active, permissions)
+  values (
+    v_clinic_id,
+    v_admin_uid,
+    'admin',
+    true,
+    jsonb_build_object(
+      'username', lower(v_username),
+      'displayName', 'مدير النظام',
+      'email', lower(v_username) || '@auth.solimedical.local',
+      'updatedAt', now()
+    )
+  )
+  on conflict (clinic_id, user_id) do update
+    set role = 'admin',
+        is_active = true;
+end $$;
+```
+
+3. افتح التطبيق وسجّل الدخول باسم المستخدم `admin` وكلمة المرور التي اخترتها، ومن شاشة **الإعدادات > إدارة المستخدمين والصلاحيات** يمكنك إضافة الأطباء والسكرتارية وتخصيص صلاحيات كل مستخدم بدقة.

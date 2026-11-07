@@ -88,8 +88,7 @@ export default async function handler(req: any, res: any) {
     const internalDomain =
       (process.env.VITE_INTERNAL_EMAIL_DOMAIN || process.env.INTERNAL_EMAIL_DOMAIN || '').trim() ||
       'auth.solimedical.local';
-    const defaultClinicId =
-      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'solimedical-new2';
+    const defaultClinicId = (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim();
 
     if (!supabaseUrl || !serviceRoleKey) {
       return sendResponse(res, 500, {
@@ -111,6 +110,11 @@ export default async function handler(req: any, res: any) {
     // 2. Parse request body
     const body = (await parseBody(req)) as CreateUserRequest;
     const targetClinicId = (body.clinicId || defaultClinicId).trim();
+    if (!targetClinicId) {
+      return sendResponse(res, 400, {
+        error: 'معرّف العيادة غير مضبوط. يرجى ضبط متغير البيئة VITE_CLINIC_SLUG أو CLINIC_SLUG قبل المتابعة.',
+      });
+    }
     const usernameLower = (body.username || '').trim().toLowerCase();
     const displayName = (body.displayName || '').trim();
     const password = body.password || '';

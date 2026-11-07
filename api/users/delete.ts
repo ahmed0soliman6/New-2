@@ -80,8 +80,7 @@ export default async function handler(req: any, res: any) {
 
     const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
     const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
-    const defaultClinicId =
-      (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim() || 'solimedical-new2';
+    const defaultClinicId = (process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim();
 
     if (!supabaseUrl || !serviceRoleKey) {
       return sendResponse(res, 500, {
@@ -101,6 +100,11 @@ export default async function handler(req: any, res: any) {
 
     const body = (await parseBody(req)) as DeleteUserRequest;
     const targetClinicId = (body.clinicId || defaultClinicId).trim();
+    if (!targetClinicId) {
+      return sendResponse(res, 400, {
+        error: 'معرّف العيادة غير مضبوط. يرجى ضبط متغير البيئة VITE_CLINIC_SLUG أو CLINIC_SLUG قبل المتابعة.',
+      });
+    }
     const targetUid = (body.uid || '').trim();
     const usernameLower = (body.username || '').trim().toLowerCase();
 

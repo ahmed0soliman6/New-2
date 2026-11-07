@@ -11,18 +11,20 @@ export const supabaseConfig = {
 };
 
 /**
- * معرّف العيادة الحالي (يُقرأ من VITE_CLINIC_SLUG مع قيمة افتراضية آمنة لعدم انهيار التطبيق)
+ * معرّف العيادة الحالي (يُقرأ حصرياً من VITE_CLINIC_SLUG دون أي قيمة افتراضية مكتوبة صراحة)
  */
-export const clinicSlug: string = supabaseConfig.clinicSlug || 'solimedical-new2';
+export const clinicSlug: string = supabaseConfig.clinicSlug || '';
 export const clinicId: string = clinicSlug;
 
 export const supabaseConfigured = Boolean(
-  supabaseConfig.url && supabaseConfig.anonKey
+  supabaseConfig.url && supabaseConfig.anonKey && supabaseConfig.clinicSlug
 );
 
 export const supabaseConfigError: string | null = supabaseConfigured
   ? null
-  : 'تنبيه: متغيرات الاتصال بـ Supabase ناقصة (VITE_SUPABASE_URL أو VITE_SUPABASE_ANON_KEY). يعمل التطبيق حالياً بدون اتصال سحابي بـ Supabase حتى تتم إضافتها في إعدادات البيئة.';
+  : !supabaseConfig.clinicSlug
+  ? 'خطأ في الإعدادات: لم يتم ضبط معرّف العيادة (VITE_CLINIC_SLUG) في متغيرات البيئة. يرجى ضبط VITE_CLINIC_SLUG قبل المتابعة.'
+  : 'تنبيه: متغيرات الاتصال بـ Supabase ناقصة (VITE_SUPABASE_URL أو VITE_SUPABASE_ANON_KEY أو VITE_CLINIC_SLUG). يعمل التطبيق حالياً بدون اتصال سحابي بـ Supabase حتى تتم إضافتها في إعدادات البيئة.';
 
 if (!supabaseConfigured && typeof console !== 'undefined') {
   console.warn(`[Soli Medical - Supabase] ${supabaseConfigError}`);
@@ -30,7 +32,7 @@ if (!supabaseConfigured && typeof console !== 'undefined') {
 
 let supabaseInstance: SupabaseClient | null = null;
 
-if (supabaseConfigured && supabaseConfig.url && supabaseConfig.anonKey) {
+if (supabaseConfigured && supabaseConfig.url && supabaseConfig.anonKey && supabaseConfig.clinicSlug) {
   try {
     supabaseInstance = createClient(supabaseConfig.url, supabaseConfig.anonKey, {
       auth: {
@@ -53,10 +55,20 @@ if (supabaseConfigured && supabaseConfig.url && supabaseConfig.anonKey) {
  */
 export const supabase: SupabaseClient | null = supabaseInstance;
 
+export function requireClinicSlug(): string {
+  if (!clinicSlug) {
+    throw new Error(
+      'خطأ في الإعدادات: لم يتم ضبط معرّف العيادة (VITE_CLINIC_SLUG) في متغيرات البيئة. يرجى ضبط VITE_CLINIC_SLUG قبل المتابعة.'
+    );
+  }
+  return clinicSlug;
+}
+
 export function requireSupabase(): SupabaseClient {
+  requireClinicSlug();
   if (!supabase) {
     throw new Error(
-      supabaseConfigError ?? 'أضف إعدادات Supabase في متغيرات VITE_SUPABASE_* قبل المتابعة.'
+      supabaseConfigError ?? 'أضف إعدادات Supabase (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_CLINIC_SLUG) قبل المتابعة.'
     );
   }
   return supabase;

@@ -274,7 +274,13 @@ create policy "patients_delete" on public.patients for delete to authenticated
 
 -- 4.2 APPOINTMENTS
 create policy "appointments_select" on public.appointments for select to authenticated
-  using (public.is_clinic_member(clinic_id));
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'appointments.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'queue.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'patients.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'clinical.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'dashboard', 'view')
+  ));
 create policy "appointments_insert" on public.appointments for insert to authenticated
   with check (public.is_clinic_member(clinic_id) and public.has_clinic_permission(clinic_id, 'appointments.create', 'create'));
 create policy "appointments_update" on public.appointments for update to authenticated
@@ -295,7 +301,13 @@ create policy "appointments_delete" on public.appointments for delete to authent
 
 -- 4.3 VISITS
 create policy "visits_select" on public.visits for select to authenticated
-  using (public.is_clinic_member(clinic_id));
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'queue.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'clinical.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'patients.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'billing.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'dashboard', 'view')
+  ));
 create policy "visits_insert" on public.visits for insert to authenticated
   with check (public.is_clinic_member(clinic_id) and (
     public.has_clinic_permission(clinic_id, 'queue.create', 'create')
@@ -323,7 +335,11 @@ create policy "visits_delete" on public.visits for delete to authenticated
 
 -- 4.4 PRESCRIPTIONS
 create policy "prescriptions_select" on public.prescriptions for select to authenticated
-  using (public.is_clinic_member(clinic_id));
+  using (public.is_clinic_member(clinic_id) and (
+    public.has_clinic_permission(clinic_id, 'prescriptions.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'clinical.view', 'view')
+    or public.has_clinic_permission(clinic_id, 'patients.view', 'view')
+  ));
 create policy "prescriptions_insert" on public.prescriptions for insert to authenticated
   with check (public.is_clinic_member(clinic_id) and (
     public.has_clinic_permission(clinic_id, 'prescriptions.create', 'create')
@@ -539,7 +555,7 @@ begin
   end loop;
 end $$;
 
--- 4.9 SETTINGS (with protection for _system_recovery and _audit_log)
+-- 4.9 SETTINGS (with protection for _system_recovery and append-only _audit_log)
 create policy "settings_select" on public.settings for select to authenticated
   using (
     public.is_clinic_member(clinic_id)
@@ -551,30 +567,28 @@ create policy "settings_select" on public.settings for select to authenticated
 create policy "settings_insert" on public.settings for insert to authenticated
   with check (
     public.is_clinic_member(clinic_id)
-    and (
-      id = '_audit_log'
-      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
-    )
+    and id <> '_audit_log'
+    and id not like '_audit_log:%'
+    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
   );
 create policy "settings_update" on public.settings for update to authenticated
   using (
     public.is_clinic_member(clinic_id)
-    and (
-      id = '_audit_log'
-      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
-    )
+    and id <> '_audit_log'
+    and id not like '_audit_log:%'
+    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
   )
   with check (
     public.is_clinic_member(clinic_id)
-    and (
-      id = '_audit_log'
-      or public.has_clinic_permission(clinic_id, 'settings.update', 'update')
-    )
+    and id <> '_audit_log'
+    and id not like '_audit_log:%'
+    and public.has_clinic_permission(clinic_id, 'settings.update', 'update')
   );
 create policy "settings_delete" on public.settings for delete to authenticated
   using (
     public.is_clinic_member(clinic_id)
     and id not in ('_system_recovery', '_audit_log')
+    and id not like '_audit_log:%'
     and public.has_clinic_permission(clinic_id, 'settings.update', 'delete')
   );
 
@@ -603,6 +617,10 @@ create policy "counters_delete" on public.counters for delete to authenticated
 -- 4.12 CLINIC_MEMBERS
 drop policy if exists "members_read_own_clinic" on public.clinic_members;
 drop policy if exists "members_admin_write" on public.clinic_members;
+drop policy if exists "members_select" on public.clinic_members;
+drop policy if exists "members_insert" on public.clinic_members;
+drop policy if exists "members_update" on public.clinic_members;
+drop policy if exists "members_delete" on public.clinic_members;
 
 create policy "members_select" on public.clinic_members for select to authenticated
   using (
@@ -649,8 +667,9 @@ drop function if exists public.complete_visit(text, text, text, text, jsonb, jso
 drop function if exists public.check_in_appointment(text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb) cascade;
 drop function if exists public.register_walk_in(text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb) cascade;
 drop function if exists public.create_appointment(text, text, text, jsonb, text, jsonb) cascade;
+drop function if exists public.append_audit_log(text, jsonb) cascade;
 
--- Dynamic cleanup of any other overloaded signatures for these 9 RPC names
+-- Dynamic cleanup of any other overloaded signatures for these 10 RPC names
 do $$
 declare
   r record;
@@ -669,7 +688,8 @@ begin
          'delete_patient',
          'add_transaction',
          'delete_transaction',
-         'admin_delete_clinic_user'
+         'admin_delete_clinic_user',
+         'append_audit_log'
        )
   loop
     execute format('drop function if exists public.%I(%s) cascade', r.proname, r.args);
@@ -1281,6 +1301,9 @@ begin
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
+  if p_mode is null or p_mode not in ('file_only', 'everything') then
+    raise exception 'Invalid input: p_mode must be file_only or everything';
+  end if;
   if not (
     public.has_clinic_permission(p_clinic_id, 'patients.delete', 'delete')
     or public.has_clinic_permission(p_clinic_id, 'patient-records', 'delete')
@@ -1298,6 +1321,9 @@ begin
   end if;
 
   select data into v_pat from public.patients where clinic_id = p_clinic_id and id = p_patient_id for update;
+  if not found or v_pat is null then
+    raise exception 'Patient not found: % in clinic %', p_patient_id, p_clinic_id;
+  end if;
   v_patient_name := coalesce(v_pat->>'fullName', v_pat->>'name', '');
 
   delete from public.prescriptions where clinic_id = p_clinic_id and data->>'patientId' = p_patient_id;
@@ -1517,6 +1543,89 @@ $$;
 
 revoke execute on function public.admin_delete_clinic_user(text, uuid) from public, anon;
 grant execute on function public.admin_delete_clinic_user(text, uuid) to authenticated;
+
+-- 5.10 append_audit_log (Append-Only Security Audit Log RPC)
+create or replace function public.append_audit_log(
+  p_clinic_id text,
+  p_entry jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current_data jsonb;
+  v_prev_entries jsonb;
+  v_sanitized_entry jsonb;
+  v_next_entries jsonb;
+  v_now_iso text;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+
+  if p_entry is null or jsonb_typeof(p_entry) <> 'object' then
+    raise exception 'Invalid input: p_entry must be a JSON object';
+  end if;
+
+  if coalesce(btrim(p_entry->>'action'), '') = '' then
+    raise exception 'Invalid input: audit log action is required';
+  end if;
+
+  v_now_iso := to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+
+  v_sanitized_entry := p_entry || jsonb_build_object(
+    'clinicId', p_clinic_id,
+    'actorUid', coalesce(auth.uid()::text, p_entry->>'actorUid', 'unknown'),
+    'recordedAt', v_now_iso
+  );
+
+  insert into public.settings (clinic_id, id, data)
+  values (
+    p_clinic_id,
+    '_audit_log',
+    jsonb_build_object('entries', '[]'::jsonb, 'updatedAt', v_now_iso)
+  )
+  on conflict (clinic_id, id) do nothing;
+
+  select data
+    into v_current_data
+    from public.settings
+   where clinic_id = p_clinic_id
+     and id = '_audit_log'
+   for update;
+
+  if v_current_data is not null and jsonb_typeof(v_current_data->'entries') = 'array' then
+    v_prev_entries := v_current_data->'entries';
+  else
+    v_prev_entries := '[]'::jsonb;
+  end if;
+
+  select coalesce(jsonb_agg(elem), '[]'::jsonb)
+    into v_next_entries
+    from (
+      select elem
+        from jsonb_array_elements(jsonb_build_array(v_sanitized_entry) || v_prev_entries) with ordinality as t(elem, ord)
+       where ord <= 250
+       order by ord
+    ) sub;
+
+  update public.settings
+     set data = jsonb_build_object(
+       'entries', v_next_entries,
+       'updatedAt', v_now_iso
+     ),
+     updated_at = now()
+   where clinic_id = p_clinic_id
+     and id = '_audit_log';
+
+  return v_sanitized_entry;
+end;
+$$;
+
+revoke execute on function public.append_audit_log(text, jsonb) from public, anon;
+grant execute on function public.append_audit_log(text, jsonb) to authenticated;
 
 commit;
 

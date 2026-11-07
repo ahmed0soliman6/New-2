@@ -46,35 +46,13 @@ export async function recordAuditLog(
   );
   safeStorage.setJSON(LOCAL_AUDIT_KEY, updatedLocal);
 
-  // 2. Persist inside settings document `_audit_log` in Supabase
-  if (supabase) {
+  // 2. Append-only persistence in Supabase via security definer RPC (direct UPDATE/DELETE on _audit_log is blocked by RLS)
+  if (supabase && clinicId) {
     try {
-      const { data: currentDoc } = await supabase
-        .from('settings')
-        .select('data')
-        .eq('clinic_id', clinicId)
-        .eq('id', AUDIT_DOC_ID)
-        .maybeSingle();
-
-      const prevEntries = Array.isArray((currentDoc?.data as any)?.entries)
-        ? ((currentDoc?.data as any).entries as AuditLogEntry[])
-        : [];
-
-      const nextEntries = [fullEntry, ...prevEntries].slice(0, MAX_AUDIT_ENTRIES);
-      const nowIso = new Date().toISOString();
-
-      await supabase.from('settings').upsert(
-        {
-          clinic_id: clinicId,
-          id: AUDIT_DOC_ID,
-          data: {
-            entries: nextEntries,
-            updatedAt: nowIso,
-          },
-          updated_at: nowIso,
-        },
-        { onConflict: 'clinic_id,id' }
-      );
+      await supabase.rpc('append_audit_log', {
+        p_clinic_id: clinicId,
+        p_entry: fullEntry,
+      });
     } catch {
       // Non-blocking if user is offline; local audit log retains the entry
     }

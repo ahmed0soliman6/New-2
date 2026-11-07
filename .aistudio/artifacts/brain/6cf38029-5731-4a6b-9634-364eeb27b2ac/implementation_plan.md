@@ -1,84 +1,66 @@
-# إصلاح تعارض دوال الـ RPC (42P13) وتجهيز ملف التأسيس الشامل لقاعدة البيانات (`v3.0.0`)
+# خطة تنفيذ الإصلاحات الأمنية الخمسة (Soli Medical v3.0.0)
 
-تهدف هذه الخطة إلى حل خطأ PostgreSQL (`ERROR: 42P13: cannot change return type of existing function`) نهائياً عند تشغيل ملف الترحيل على قاعدة البيانات الحالية، مع توفير ملف SQL شامل ومكتفٍ بذاته لتأسيس وتشغيل النظام بالكامل عند نقله إلى أي مشروع Supabase جديد بخطوة واحدة.
-
----
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> تم اعتماد اختياراتك التالية لبناء ملفات قاعدة البيانات:
-> - **Confirmed Decision 1 (تنظيم ملفات التأسيس)**: إنشاء ملف شامل واحد مكتفٍ بذاته (Self-Contained Master Setup) يضم الجداول، الفهارس، الدوال الأمنية، سياسات RLS المنفصلة، دوال الـ RPC التسع، وتفعيل البث اللحظي (Realtime)، مع تحديث ملف المخطط الأساسي ليبقى متطابقاً معه.
-> - **Confirmed Decision 2 (تهيئة العيادة الافتراضية)**: تضمين أمر التهيئة الآمن (`ON CONFLICT DO NOTHING`) لإدراج سجل العيادة الافتراضية (`clinic_main`) والإعدادات الأولية حتى يعمل التطبيق مباشرة بعد تشغيل السكربت دون الحاجة لإدخال يدوي.
+## 1. ضمان قابلية إعادة تشغيل ملفات SQL (Idempotency)
+* **الملفات المستهدفة**:
+  * `supabase/migrations/20261107_fix_custom_permissions_rls.sql`
+  * `supabase/full_setup.sql`
+  * `supabase/schema.sql`
+* **التعديل**:
+  * إضافة أوامر `DROP POLICY IF EXISTS` الصريحة لسياسات جدول `clinic_members` (`members_select`, `members_insert`, `members_update`, `members_delete`)، وكذلك سياسات جدول `clinics` (`clinics_select`, `clinics_insert`, `clinics_update`, `clinics_delete`) وجدول `usernames` (`usernames_select`, `usernames_insert`, `usernames_update`, `usernames_delete`) قبل إعادة إنشائها، لضمان إمكانية تشغيل أي من الملفات الثلاثة مرتين متتاليتين أو أكثر دون أي خطأ `policy already exists`.
 
 ---
 
-## 1. Overview & Core Concept
-
-- **What It Does**:
-  1. يعالج خطأ `42P13` في PostgreSQL الناتج عن اختلاف نوع الإرجاع (`RETURN TYPE`) للدوال الموجودة مسبقاً في قاعدة البيانات مثل `delete_patient(text, text, text)` و `remove_queue_visit(text, text)` و `add_transaction` و `delete_transaction` و `admin_delete_clinic_user`، وذلك عبر حذف التوقيعات القديمة بأمان (`DROP FUNCTION IF EXISTS ...`) قبل إعادة إنشائها.
-  2. يجمع كل أوامر SQL اللازمة لتشغيل نظام العيادة من الصفر في ملف تأسيس واحد شامل ومرتب، بحيث يمكن نسخ المشروع إلى أي حساب أو مشروع Supabase جديد وتشغيله فوراً.
-- **Target Audience / Persona**: مدير النظام أو المطور عند تحديث قاعدة البيانات الحالية أو نقل النظام إلى بيئة Supabase جديدة.
-- **Key Value**: تشغيل خالٍ من الأخطاء (`Idempotent Execution`) سواء على قاعدة بيانات قديمة تحتوي على دوال سابقة أو على قاعدة بيانات فارغة تماماً.
-
----
-
-## 2. User Experience & Operational Flow
-
-- **مسار تحديث قاعدة البيانات الحالية (الحل الفوري للخطأ الظاهر في الصورة)**:
-  1. يفتح المسؤول محرر SQL في Supabase.
-  2. ينسخ ملف الترحيل المحدّث ويشغله.
-  3. يقوم السكربت تلقائياً بحذف النسخ القديمة من الدوال التسع عبر `DROP FUNCTION IF EXISTS` بالتوقيعات المطابقة، ثم يعيد إنشاءها بنوع الإرجاع الموحد ويمنح صلاحيات التنفيذ (`GRANT EXECUTE ... TO authenticated`).
-- **مسار نقل المشروع إلى قاعدة بيانات Supabase جديدة بالكامل**:
-  1. ينشئ المسؤول مشروع Supabase جديداً ويفتح **SQL Editor**.
-  2. ينسخ محتوى ملف التأسيس الشامل ويشغله مرة واحدة.
-  3. يتم تلقائياً إنشاء الجداول الأساسية + الـ 22 جدولاً تشغيلياً وطبياً + دوال التحقق من الصلاحيات المخصصة + سياسات RLS المنفصلة + دوال الـ RPC التسع + تفعيل `supabase_realtime` + زرع سجل العيادة الافتراضية (`clinic_main`).
+## 2. حماية سجل المراجعة (`_audit_log`) كإضافة فقط (Append-Only)
+* **في طبقة قاعدة البيانات (`supabase/migrations/20261107_fix_custom_permissions_rls.sql` و`supabase/full_setup.sql` و`supabase/schema.sql`)**:
+  * تعديل سياسات جدول `public.settings`:
+    * منع أي `UPDATE` أو `DELETE` أو `INSERT` مباشر من العميل على السجلات التي تحمل `id = '_audit_log'` أو تبدأ بـ `_audit_log:` عبر شرط `id <> '_audit_log' AND id NOT LIKE '_audit_log:%'` في سياسات `settings_insert` و`settings_update` و`settings_delete`.
+  * إنشاء دالة RPC محمية `public.append_audit_log(p_clinic_id text, p_entry jsonb)` من نوع `SECURITY DEFINER SET search_path = public`:
+    * تتحقق من أن المستدعي عضو نشط في العيادة عبر `public.is_clinic_member(p_clinic_id)`.
+    * تتحقق من عدم تزوير حقل `actorUid` (أو تفرضه مساوياً لـ `auth.uid()::text`).
+    * تضيف الحدث الجديد في وثيقة `_audit_log` داخل جدول `public.settings` (إضافة للأعلى مع الاحتفاظ بآخر 250 سجل مراجعة دون السماح بحذف أو تعديل السجلات السابقة من طرف العميل).
+    * منح صلاحية التنفيذ `GRANT EXECUTE ON FUNCTION public.append_audit_log(text, jsonb) TO authenticated;`.
+  * حفظ نسخة مستقلة من الدالة في `supabase/functions-sql/append_audit_log.sql`.
+* **في طبقة التطبيق (`src/services/auditLog.ts`)**:
+  * تحديث `recordAuditLog` لاستدعاء `supabase.rpc('append_audit_log', { p_clinic_id: clinicId, p_entry: fullEntry })` بدلاً من `upsert` المباشر على جدول `settings`.
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
-
-- **Decision 1: إضافة `DROP FUNCTION IF EXISTS` صريحة بالتوقيع الكامل للمعاملات قبل كل `CREATE OR REPLACE FUNCTION`**
-  - *Chosen Approach*: وضع أوامر `DROP FUNCTION IF EXISTS` لكل دالة من دوال الـ RPC التسع (بما فيها التوقيعات ذات المعاملات الافتراضية) داخل كتلة المعاملة (`BEGIN ... COMMIT`).
-  - *Why*: يمنع PostgreSQL تعديل نوع الإرجاع (`void` مقابل `jsonb`) عبر `CREATE OR REPLACE FUNCTION` ويرفع الخطأ `42P13`. حذف الدالة أولاً داخل نفس المعاملة يضمن استبدالها بأمان دون انقطاع الخدمة.
-- **Decision 2: توحيد جميع دوال الـ RPC التسع لتعمل بـ `SECURITY DEFINER` مع `SET search_path = public` وفحص `has_clinic_permission`**
-  - *Chosen Approach*: جعل الدوال التسع تتحقق أولاً من `public.is_clinic_member(p_clinic_id)` ومن الصلاحية الدقيقة عبر `public.has_clinic_permission(...)` ثم تنفذ العمليات المركبة ذرياً.
-  - *Why*: يضمن أن المستخدم الذي منحه المدير صلاحية مخصصة (مثل سكرتير مُنح صلاحية حذف مريض أو إنهاء كشف) لا يتعطل بسبب صلاحيات الجداول الفرعية المرتبطة، مع بقاء الحماية الخادمية صارمة.
+## 3. إزالة القيمة الافتراضية المكتوبة صراحة `'solimedical-new2'`
+* **`src/services/supabase.ts`**:
+  * إزالة القيمة الافتراضية `'solimedical-new2'` تماماً.
+  * قراءة `clinicSlug` من `import.meta.env.VITE_CLINIC_SLUG?.trim() || ''`.
+  * تحديث `supabaseConfigured` ليشترط توفر `VITE_SUPABASE_URL` و`VITE_SUPABASE_ANON_KEY` و`VITE_CLINIC_SLUG` معاً، وإرجاع رسالة خطأ عربية واضحة في `supabaseConfigError` إذا لم يتم ضبط `VITE_CLINIC_SLUG`.
+* **مسارات الـ API الخادمية (`api/users/create.ts`, `api/users/delete.ts`, `api/users/reset-password.ts`, `api/users/recover-admin.ts`)**:
+  * إزالة `'solimedical-new2'` من جميع الملفات الأربعة.
+  * قراءة معرف العيادة من `(body.clinicId || process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim()`.
+  * إذا كان معرف العيادة فارغاً، إرجاع استجابة خطأ `400` أو `500` برسالة عربية واضحة: `"معرّف العيادة غير مضبوط. يرجى ضبط متغير البيئة VITE_CLINIC_SLUG أو CLINIC_SLUG قبل المتابعة."` دون المتابعة بأي قيمة افتراضية.
+* **توثيق التأسيس (`README.md` و`CLINIC_SETUP_GUIDE.md` و`.env.example`)**:
+  * توثيق خطوات إنشاء عيادة جديدة بالترتيب:
+    1. تشغيل `supabase/full_setup.sql`.
+    2. إدراج سجل العيادة في جدول `public.clinics` (`INSERT INTO public.clinics ...`).
+    3. ضبط `VITE_CLINIC_SLUG` و`CLINIC_SLUG` في البيئة.
+    4. إنشاء أول مستخدم مدير (`admin`) وربطه في `public.clinic_members` و`public.usernames`.
 
 ---
 
-## 4. Technical Architecture & Data Strategy *(Technical Reference)*
+## 4. تحسينات التحقق في `delete_patient` وسياسات `SELECT`
+* **دالة `public.delete_patient(p_clinic_id text, p_patient_id text, p_mode text)`**:
+  * التحقق الصارم من قيمة `p_mode`: إذا لم تكن `'file_only'` أو `'everything'` يتم رفع استثناء `Invalid delete mode: %. Allowed values are file_only or everything`.
+  * التحقق من وجود المريض في `public.patients` ضمن نفس `p_clinic_id` قبل الحذف: إذا لم يُوجد المريض يتم رفع استثناء `Patient not found: % in clinic %`.
+* **تشديد سياسات `SELECT` على الجداول السريرية الحساسة دون كسر الشاشات**:
+  * **`appointments`**: اشتراط `public.has_clinic_permission(clinic_id, 'appointments', 'view') OR public.has_clinic_permission(clinic_id, 'queue', 'view') OR public.has_clinic_permission(clinic_id, 'dashboard', 'view')` (جميع الأدوار الافتراضية تمتلكها، ولكن إذا سحب المدير صلاحيات العرض من مستخدم مخصص يمنعه محرك RLS).
+  * **`visits`**: اشتراط `public.has_clinic_permission(clinic_id, 'queue', 'view') OR public.has_clinic_permission(clinic_id, 'examination', 'view') OR public.has_clinic_permission(clinic_id, 'emr', 'view') OR public.has_clinic_permission(clinic_id, 'billing', 'view') OR public.has_clinic_permission(clinic_id, 'dashboard', 'view')`.
+  * **`prescriptions`**: اشتراط `public.has_clinic_permission(clinic_id, 'prescription', 'view') OR public.has_clinic_permission(clinic_id, 'examination', 'view') OR public.has_clinic_permission(clinic_id, 'emr', 'view')`.
 
-### Architecture & SQL Execution Pipeline
+---
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                 Supabase SQL Setup & Migration Pipeline                  │
-└────────────────────────────────────┬─────────────────────────────────────┘
-                                     │
-         ┌───────────────────────────┴───────────────────────────┐
-         ▼                                                       ▼
-┌─────────────────────────────────────┐       ┌─────────────────────────────────────┐
-│   1. Existing Database Migration    │       │    2. New Database Full Bootstrap   │
-│  (Fix 42P13 & Upgrade Permissions)  │       │     (Complete Master SQL Script)    │
-└────────────────┬────────────────────┘       └──────────────────┬──────────────────┘
-                 │                                               │
-                 ├─► DROP FUNCTION IF EXISTS (All 9 RPCs)        ├─► Core Tables (clinics, clinic_members, usernames)
-                 ├─► Create/Update has_clinic_permission()       ├─► 22 Clinic Document Tables + Indexes
-                 ├─► Drop member_all & Create Granular RLS       ├─► Permission Functions (is_clinic_member, has_clinic_permission)
-                 ├─► Recreate 9 Hardened RPC Functions           ├─► Granular RLS Policies (SELECT / INSERT / UPDATE / DELETE)
-                 └─► GRANT EXECUTE TO authenticated              ├─► Drop & Create All 9 Atomic RPCs + Grants
-                                                                 ├─► Enable Realtime Publication (supabase_realtime)
-                                                                 └─► Seed Default Clinic ('clinic_main')
-```
-
-### التوقيعات التي سيتم حذفها وإعادة إنشائها لحل خطأ `42P13`
-1. `public.delete_patient(text, text, text)` و `public.delete_patient(text, text)`
-2. `public.remove_queue_visit(text, text)`
-3. `public.add_transaction(text, text, text, jsonb, text, jsonb, text, jsonb)`
-4. `public.delete_transaction(text, text, text, text)`
-5. `public.admin_delete_clinic_user(text, uuid)`
-6. `public.check_in_appointment(text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb)`
-7. `public.register_walk_in(text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb)`
-8. `public.complete_visit(text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)`
-9. `public.create_appointment(text, text, text, jsonb, text, jsonb)`
+## 5. اختبارات PostgreSQL الفعلية الشاملة
+* إنشاء وتشغيل اختبار تكاملي حقيقي في `tests/postgres-migration-rls.test.mjs` يقوم بتشغيل محرك PostgreSQL مع تهيئة مخطط `auth` (`auth.uid()`, `auth.role()`) والأدوار (`authenticated`, `anon`) وتنفيذ ملف الترحيل `supabase/migrations/20261107_fix_custom_permissions_rls.sql` فعلياً للتحقق من:
+  1. نجاح تشغيل ملف الترحيل **مرتين متتاليتين** دون أي خطأ.
+  2. منع السكرتير الافتراضي من حذف مريض مباشرة (`DELETE FROM public.patients`) أو عبر `public.delete_patient`.
+  3. السماح لسكرتير يملك الصلاحية المخصصة `patients.delete = true` بالحذف في وضع `'file_only'`، ورفضه في وضع `'everything'`.
+  4. رفض `delete_patient` عند تمرير `p_mode` غير صالح أو عند محاولة حذف مريض غير موجود.
+  5. العزل التام بين عيادتين (`clinic_a` و`clinic_b`).
+  6. منع العضو غير النشط (`is_active = false`) من قراءة أي بيانات.
+  7. منع أي مستخدم (حتى المدير) من عمل `UPDATE` أو `DELETE` مباشر على وثيقة `_audit_log` في جدول `public.settings`، والسماح بالإضافة فقط عبر `public.append_audit_log`.
+* التحقق النهائي من نجاح `npm run lint` و`npm run build` و`npm test`.
