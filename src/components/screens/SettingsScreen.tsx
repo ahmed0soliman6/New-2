@@ -51,6 +51,7 @@ import {
   TRANSACTIONAL_TABLES_TO_CLEAR,
 } from '../../utils/demoDataGenerator';
 import { recordAuditLog } from '../../services/auditLog';
+import { DatabaseUsageIndicator, OldDataPurgeCard } from '../settings/DataPurgeAndUsagePanel';
 
 interface ChronicItem {
   id: string;
@@ -165,6 +166,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const { language, setLanguage, t, isRTL } = useLanguage();
   const canManageUsers = hasPermission('users.view') || hasPermission('users.manage');
   const canClearAllData = hasPermission('system.clear_all_data');
+  const canPurgeData = hasPermission('data.purge');
+  const canViewDatabaseUsage = hasPermission('users.manage') || hasPermission('settings.view');
   const canManageDemo = hasPermission('demo.manage');
   const canExportBackup = hasPermission('backup.export');
   const canRestoreBackup = hasPermission('backup.restore');
@@ -184,7 +187,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     templates: false,
     demoData: false,
     backup: false,
+    purge: false,
   });
+  const [usageRefreshTick, setUsageRefreshTick] = useState(0);
+  const [criticalAuditWarning, setCriticalAuditWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleCriticalWarning = (e: Event) => {
+      const customEvent = e as CustomEvent<{ message?: string }>;
+      if (customEvent.detail?.message) {
+        setCriticalAuditWarning(customEvent.detail.message);
+      }
+    };
+    window.addEventListener('soli_audit_critical_warning', handleCriticalWarning);
+    return () => window.removeEventListener('soli_audit_critical_warning', handleCriticalWarning);
+  }, []);
 
   const [isGeneratingDemo, setIsGeneratingDemo] = useState(false);
   const [isClearingAll, setIsClearingAll] = useState(false);
@@ -601,6 +618,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
       )}
 
+      {criticalAuditWarning && (
+        <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-700 dark:text-rose-200 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 font-bold">
+            <span className="material-symbols-outlined text-xl text-rose-500">warning</span>
+            <span>{criticalAuditWarning}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCriticalAuditWarning(null)}
+            className="text-rose-500 hover:text-rose-700 dark:hover:text-white font-bold px-2 py-1 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Header & Navigation Tabs */}
       <div className="min-w-0 max-w-full">
         <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-[#859394] mb-1">
@@ -660,18 +693,30 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             )}
           </div>
 
-          {/* Quick One-Click JSON Backup Button */}
-          {canExportBackup && (
-            <button
-              type="button"
-              onClick={handleExportBackup}
-              className="ms-auto flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 border border-[#00c2cb]/30 transition-all cursor-pointer shadow-2xs active:scale-95"
-              title="تنزيل نسخة احتياطية كاملة من بيانات وإعدادات العيادة بصيغة JSON بضغطة زر واحدة"
-            >
-              <span className="material-symbols-outlined text-base">cloud_download</span>
-              <span>{language === 'en' ? 'Quick Backup (JSON)' : 'تنزيل نسخة احتياطية (JSON)'}</span>
-            </button>
-          )}
+          {/* Database Usage Indicator + Quick One-Click JSON Backup Button */}
+          <div className="ms-auto flex flex-wrap items-center gap-2">
+            <DatabaseUsageIndicator
+              canViewUsage={canViewDatabaseUsage}
+              onExportBackup={handleExportBackup}
+              onOpenPurgeSection={() => {
+                setActiveSettingsSection('general');
+                setOpenCards((prev) => ({ ...prev, purge: true }));
+              }}
+              refreshTrigger={usageRefreshTick}
+            />
+
+            {canExportBackup && (
+              <button
+                type="button"
+                onClick={handleExportBackup}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-[#00c2cb]/15 hover:bg-[#00c2cb] text-[#008f97] dark:text-[#00c2cb] hover:text-slate-950 border border-[#00c2cb]/30 transition-all cursor-pointer shadow-2xs active:scale-95"
+                title="تنزيل نسخة احتياطية كاملة من بيانات وإعدادات العيادة بصيغة JSON بضغطة زر واحدة"
+              >
+                <span className="material-symbols-outlined text-base">cloud_download</span>
+                <span>{language === 'en' ? 'Quick Backup (JSON)' : 'تنزيل نسخة احتياطية (JSON)'}</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1886,6 +1931,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </div>
               )}
             </div>
+
+            {/* ACCORDION CARD 10: Old Data Purge (حذف وأرشفة البيانات القديمة) */}
+            <OldDataPurgeCard
+              canPurgeData={canPurgeData}
+              isOpen={Boolean(openCards.purge)}
+              onToggleOpen={() => toggleCard('purge')}
+              onExportBackup={handleExportBackup}
+              onPurgeCompleted={() => setUsageRefreshTick((t) => t + 1)}
+            />
 
           </div>
         )}

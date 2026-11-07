@@ -95,6 +95,7 @@ export type Permission =
   | 'roles.manage'
   // Special High-Sensitivity Operations
   | 'system.clear_all_data'
+  | 'data.purge'
   | 'backup.export'
   | 'backup.restore'
   | 'demo.manage';
@@ -161,6 +162,14 @@ export const ALL_SPECIAL_PERMISSIONS: SpecialPermissionDef[] = [
     description: 'استيراد واسترجاع بيانات العيادة من ملف نسخة احتياطية (منفصل عن التصدير).',
     category: 'system',
     icon: 'settings_backup_restore',
+    danger: true,
+  },
+  {
+    id: 'data.purge',
+    title: 'حذف وأرشفة البيانات القديمة (data.purge)',
+    description: 'حذف السجلات التشغيلية المنتهية الأقدم من تاريخ محدد (لا يشمل المرضى أو الإعدادات، ومنفصل عن الحذف الجماعي).',
+    category: 'system',
+    icon: 'auto_delete',
     danger: true,
   },
   {
@@ -249,6 +258,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   'users.manage',
   'roles.manage',
   'system.clear_all_data',
+  'data.purge',
   'backup.export',
   'backup.restore',
   'demo.manage',
@@ -529,6 +539,7 @@ export function getDefaultSpecialPermissions(role: Role | string | undefined | n
       'billing.delete': true,
       'backup.export': true,
       'backup.restore': true,
+      'data.purge': true,
       'system.clear_all_data': true,
       'demo.manage': true,
       'users.manage': true,
@@ -543,6 +554,7 @@ export function getDefaultSpecialPermissions(role: Role | string | undefined | n
       'billing.delete': false,
       'backup.export': true,
       'backup.restore': false,
+      'data.purge': false,
       'system.clear_all_data': false,
       'demo.manage': false,
       'users.manage': false,
@@ -556,6 +568,7 @@ export function getDefaultSpecialPermissions(role: Role | string | undefined | n
     'billing.delete': false,
     'backup.export': false,
     'backup.restore': false,
+    'data.purge': false,
     'system.clear_all_data': false,
     'demo.manage': false,
     'users.manage': false,
@@ -695,6 +708,7 @@ export function hasPermission(
   // 2. High-sensitivity standalone permissions require explicit specialPermissions for non-admin
   const standaloneSpecials: Permission[] = [
     'system.clear_all_data',
+    'data.purge',
     'backup.restore',
     'demo.manage',
     'users.manage',

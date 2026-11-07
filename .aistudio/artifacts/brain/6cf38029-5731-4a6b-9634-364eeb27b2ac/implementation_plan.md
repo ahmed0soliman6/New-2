@@ -1,66 +1,122 @@
-# خطة تنفيذ الإصلاحات الأمنية الخمسة (Soli Medical v3.0.0)
+# تعزيز سجل المراجعة ومؤشر مساحة قاعدة البيانات وحذف البيانات القديمة (Purge)
 
-## 1. ضمان قابلية إعادة تشغيل ملفات SQL (Idempotency)
-* **الملفات المستهدفة**:
-  * `supabase/migrations/20261107_fix_custom_permissions_rls.sql`
-  * `supabase/full_setup.sql`
-  * `supabase/schema.sql`
-* **التعديل**:
-  * إضافة أوامر `DROP POLICY IF EXISTS` الصريحة لسياسات جدول `clinic_members` (`members_select`, `members_insert`, `members_update`, `members_delete`)، وكذلك سياسات جدول `clinics` (`clinics_select`, `clinics_insert`, `clinics_update`, `clinics_delete`) وجدول `usernames` (`usernames_select`, `usernames_insert`, `usernames_update`, `usernames_delete`) قبل إعادة إنشائها، لضمان إمكانية تشغيل أي من الملفات الثلاثة مرتين متتاليتين أو أكثر دون أي خطأ `policy already exists`.
+تهدف هذه الترقية إلى إضافة ثلاث ركائز تشغيلية وأمنية لنظام **Soli Medical (الإصدار v3.0.0)** دون المساس بأي ميزة قائمة أو تشغيل أي SQL تلقائياً على قاعدة الإنتاج:
+1. **طابور إعادة محاولة سجل المراجعة السحابي** مع تنبيه فوري باللغة العربية عند فشل توثيق العمليات الحرجة (`system.clear_all_data`، `backup.restore`، `data.purge`).
+2. **مؤشر المساحة المتبقية لقاعدة البيانات** داخل شاشة الإعدادات عبر دالة `public.get_database_usage` مع نافذة تفاصيل دقيقة وتنبيه تلقائي عند تجاوز 90%.
+3. **نظام حذف البيانات القديمة (Data Purge)** المحمي بصلاحية مخصصة جديدة (`data.purge`) ودالتي `public.preview_purge` و`public.purge_old_data` مع حماية صارمة للمرضى والإعدادات والفواتير الحديثة وسجل المراجعة.
 
 ---
 
-## 2. حماية سجل المراجعة (`_audit_log`) كإضافة فقط (Append-Only)
-* **في طبقة قاعدة البيانات (`supabase/migrations/20261107_fix_custom_permissions_rls.sql` و`supabase/full_setup.sql` و`supabase/schema.sql`)**:
-  * تعديل سياسات جدول `public.settings`:
-    * منع أي `UPDATE` أو `DELETE` أو `INSERT` مباشر من العميل على السجلات التي تحمل `id = '_audit_log'` أو تبدأ بـ `_audit_log:` عبر شرط `id <> '_audit_log' AND id NOT LIKE '_audit_log:%'` في سياسات `settings_insert` و`settings_update` و`settings_delete`.
-  * إنشاء دالة RPC محمية `public.append_audit_log(p_clinic_id text, p_entry jsonb)` من نوع `SECURITY DEFINER SET search_path = public`:
-    * تتحقق من أن المستدعي عضو نشط في العيادة عبر `public.is_clinic_member(p_clinic_id)`.
-    * تتحقق من عدم تزوير حقل `actorUid` (أو تفرضه مساوياً لـ `auth.uid()::text`).
-    * تضيف الحدث الجديد في وثيقة `_audit_log` داخل جدول `public.settings` (إضافة للأعلى مع الاحتفاظ بآخر 250 سجل مراجعة دون السماح بحذف أو تعديل السجلات السابقة من طرف العميل).
-    * منح صلاحية التنفيذ `GRANT EXECUTE ON FUNCTION public.append_audit_log(text, jsonb) TO authenticated;`.
-  * حفظ نسخة مستقلة من الدالة في `supabase/functions-sql/append_audit_log.sql`.
-* **في طبقة التطبيق (`src/services/auditLog.ts`)**:
-  * تحديث `recordAuditLog` لاستدعاء `supabase.rpc('append_audit_log', { p_clinic_id: clinicId, p_entry: fullEntry })` بدلاً من `upsert` المباشر على جدول `settings`.
+### مراجعة المستخدم والقرارات المعتمدة
+
+> [!IMPORTANT]
+> تم اعتماد القرارات التصميمية التالية بناءً على إجاباتك:
+
+- **القرار المعتمد 1 (موضع أيقونة المساحة المتبقية)**: عرض أيقونة قرص البيانات والنسبة المئوية والنافذة المنبثقة **داخل شاشة الإعدادات فقط** (في شريط عنوان شاشة الإعدادات لمن يملك صلاحية `users.manage` أو `settings.view`)، مع التحديث عند فتح شاشة الإعدادات وكل 10 دقائق تلقائياً.
+- **القرار المعتمد 2 (سجلات المراجعة الأقدم من 365 يوماً)**: **إبقاء جدول `audit_events` محمياً بالكامل ضد الحذف التلقائي**، والاكتفاء بعرض زر مباشر لنسخ أمر SQL اليدوي الخاص بمالك قاعدة البيانات لتنظيف سجلات المراجعة الأقدم من 365 يوماً متى أراد من داخل SQL Editor.
 
 ---
 
-## 3. إزالة القيمة الافتراضية المكتوبة صراحة `'solimedical-new2'`
-* **`src/services/supabase.ts`**:
-  * إزالة القيمة الافتراضية `'solimedical-new2'` تماماً.
-  * قراءة `clinicSlug` من `import.meta.env.VITE_CLINIC_SLUG?.trim() || ''`.
-  * تحديث `supabaseConfigured` ليشترط توفر `VITE_SUPABASE_URL` و`VITE_SUPABASE_ANON_KEY` و`VITE_CLINIC_SLUG` معاً، وإرجاع رسالة خطأ عربية واضحة في `supabaseConfigError` إذا لم يتم ضبط `VITE_CLINIC_SLUG`.
-* **مسارات الـ API الخادمية (`api/users/create.ts`, `api/users/delete.ts`, `api/users/reset-password.ts`, `api/users/recover-admin.ts`)**:
-  * إزالة `'solimedical-new2'` من جميع الملفات الأربعة.
-  * قراءة معرف العيادة من `(body.clinicId || process.env.VITE_CLINIC_SLUG || process.env.CLINIC_SLUG || '').trim()`.
-  * إذا كان معرف العيادة فارغاً، إرجاع استجابة خطأ `400` أو `500` برسالة عربية واضحة: `"معرّف العيادة غير مضبوط. يرجى ضبط متغير البيئة VITE_CLINIC_SLUG أو CLINIC_SLUG قبل المتابعة."` دون المتابعة بأي قيمة افتراضية.
-* **توثيق التأسيس (`README.md` و`CLINIC_SETUP_GUIDE.md` و`.env.example`)**:
-  * توثيق خطوات إنشاء عيادة جديدة بالترتيب:
-    1. تشغيل `supabase/full_setup.sql`.
-    2. إدراج سجل العيادة في جدول `public.clinics` (`INSERT INTO public.clinics ...`).
-    3. ضبط `VITE_CLINIC_SLUG` و`CLINIC_SLUG` في البيئة.
-    4. إنشاء أول مستخدم مدير (`admin`) وربطه في `public.clinic_members` و`public.usernames`.
+### 1. نظرة عامة والمفهوم الأساسي
+
+- **ماذا يقدم التحديث**:
+  1. **ضمان عدم ضياع أحداث المراجعة**: فحص حقل `error` العائد من `supabase.rpc('append_audit_log')`؛ وفي حال الفشل أو انقطاع الاتصال يُحفظ الحدث في طابور محلي (`localStorage`) لإعادة المحاولة لاحقاً، مع إظهار تنبيه واضح بالعربية إذا كان الحدث حرجاً (`system.clear_all_data`، `backup.restore`، `data.purge`).
+  2. **مراقبة استهلاك مساحة قاعدة البيانات**: دالة `public.get_database_usage(p_clinic_id)` تحسب إجمالي حجم قاعدة البيانات (`pg_database_size`)، وحجم بيانات العيادة الحالية عبر جدول الـ 22 + `audit_events` (`pg_column_size`)، والحد الأقصى (`limit_bytes` من الإعدادات أو افتراضياً `500MB`)، والنسبة المئوية، وعدد الصفوف وحجم كل جدول.
+  3. **تنظيف البيانات التاريخية بأمان (Purge)**: تمكين المدير (أو من يُمنح صلاحية `data.purge`) من معاينة وحذف السجلات التشغيلية المنتهية الأقدم من تاريخ قطع يختاره المستخدم (بحد أدنى أقدم من 90 يوماً، وللفواتير والمدفوعات حد أدنى أقدم من 5 سنوات) بعد تصدير نسخة احتياطية إلزامية وكتابة عبارة التأكيد `'احذف البيانات القديمة'`.
+- **المستخدم المستهدف**: مدير العيادة أو المشرف المخوّل بصلاحيات الإدارة (`users.manage` / `settings.view` لعرض المساحة، و`data.purge` لتنظيف البيانات القديمة).
 
 ---
 
-## 4. تحسينات التحقق في `delete_patient` وسياسات `SELECT`
-* **دالة `public.delete_patient(p_clinic_id text, p_patient_id text, p_mode text)`**:
-  * التحقق الصارم من قيمة `p_mode`: إذا لم تكن `'file_only'` أو `'everything'` يتم رفع استثناء `Invalid delete mode: %. Allowed values are file_only or everything`.
-  * التحقق من وجود المريض في `public.patients` ضمن نفس `p_clinic_id` قبل الحذف: إذا لم يُوجد المريض يتم رفع استثناء `Patient not found: % in clinic %`.
-* **تشديد سياسات `SELECT` على الجداول السريرية الحساسة دون كسر الشاشات**:
-  * **`appointments`**: اشتراط `public.has_clinic_permission(clinic_id, 'appointments', 'view') OR public.has_clinic_permission(clinic_id, 'queue', 'view') OR public.has_clinic_permission(clinic_id, 'dashboard', 'view')` (جميع الأدوار الافتراضية تمتلكها، ولكن إذا سحب المدير صلاحيات العرض من مستخدم مخصص يمنعه محرك RLS).
-  * **`visits`**: اشتراط `public.has_clinic_permission(clinic_id, 'queue', 'view') OR public.has_clinic_permission(clinic_id, 'examination', 'view') OR public.has_clinic_permission(clinic_id, 'emr', 'view') OR public.has_clinic_permission(clinic_id, 'billing', 'view') OR public.has_clinic_permission(clinic_id, 'dashboard', 'view')`.
-  * **`prescriptions`**: اشتراط `public.has_clinic_permission(clinic_id, 'prescription', 'view') OR public.has_clinic_permission(clinic_id, 'examination', 'view') OR public.has_clinic_permission(clinic_id, 'emr', 'view')`.
+### 2. تجربة المستخدم والتصميم البصري
+
+- **تدفقات المستخدم الرئيسية**:
+  1. **مؤشر مساحة قاعدة البيانات في شاشة الإعدادات**:
+     - يظهر في رأس شاشة الإعدادات زر مدمج يحتوي على أيقونة قرص بيانات (`database` / `hard_drive`) وبجانبها النسبة المئوية باستهلاك أحادي المسافة (`tabular-nums font-mono`).
+     - يتغير اللون دلالياً حسب نسبة الاستهلاك:
+       - **أخضر (`emerald`)**: أقل من `70%`.
+       - **أصفر/كهرماني (`amber`)**: من `70%` إلى `90%`.
+       - **أحمر (`rose`)**: أعلى من `90%` مع إظهار شريط تنبيه استباقي يقترح تصدير نسخة احتياطية JSON ثم الانتقال لقسم حذف البيانات القديمة.
+     - عند الضغط على الأيقونة، تُفتح نافذة منبثقة تعرض: المستهلك والمتبقي بالميغابايت (MB)، حجم بيانات العيادة الحالية، وأكبر 5 جداول من حيث الحجم وعدد الصفوف، مع زر لتحديث القراءة.
+  2. **قسم حذف البيانات القديمة (Purge) في شاشة الإعدادات**:
+     - بطاقة أكورديون مخصصة في شاشة الإعدادات (تظهر لمن يملك صلاحية `data.purge`).
+     - اختيار **تاريخ القطع** مع أزرار اختصار سريعة (`أقدم من سنة`، `أقدم من سنتين`، `أقدم من 5 سنوات`) مع منع اختيار تاريخ أحدث من 90 يوماً.
+     - اختيار **النطاقات المسموحة**:
+       - الزيارات المكتملة (`visits_completed`)
+       - المواعيد المنتهية (`appointments_finished`)
+       - الطلبات المعملية والإشعاعية المنتهية (`lab_radiology_finished`)
+       - المتابعات المنتهية (`follow_ups_finished`)
+       - النسخ الاحتياطية السحابية القديمة (`backups_old`)
+       - الفواتير والمدفوعات القديمة (`invoices_payments_old` — يُشترط أن يكون تاريخ القطع أقدم من 5 سنوات وإلا يُرفض).
+     - قسم مستقل لـ **سجلات المراجعة الأقدم من 365 يوماً** يعرض أمر SQL اليدوي للمالك مع زر **"نسخ أمر SQL اليدوي"**.
+     - زر **"معاينة السجلات المتوقع حذفها"** يستدعي `preview_purge` ويعرض جدولاً بالأعداد المتوقعة لكل جدول دون أي حذف.
+     - خطوة أمان إلزامية: زر **"تصدير نسخة احتياطية أولاً (JSON)"** يفعّل حالة إتمام النسخ الاحتياطي في الجلسة الحالية قبل السماح بالحذف.
+     - حقل إدخال عبارة التأكيد المطابقة تماماً: `احذف البيانات القديمة`، مع قفل الأزرار أثناء التنفيذ وعرض ملخص الأعداد الفعلية المحذوفة بعد الانتهاء.
+
+- **الهوية البصرية والتنسيق**:
+  - الالتزام الكامل بنظام تصميم Soli Medical الحالي (دعم الوضعين الفاتح والداكن `dark:bg-[#111A2E]`، خط `tabular-nums font-mono` للأرقام والأحجام، وتباين واضح للتحذيرات).
 
 ---
 
-## 5. اختبارات PostgreSQL الفعلية الشاملة
-* إنشاء وتشغيل اختبار تكاملي حقيقي في `tests/postgres-migration-rls.test.mjs` يقوم بتشغيل محرك PostgreSQL مع تهيئة مخطط `auth` (`auth.uid()`, `auth.role()`) والأدوار (`authenticated`, `anon`) وتنفيذ ملف الترحيل `supabase/migrations/20261107_fix_custom_permissions_rls.sql` فعلياً للتحقق من:
-  1. نجاح تشغيل ملف الترحيل **مرتين متتاليتين** دون أي خطأ.
-  2. منع السكرتير الافتراضي من حذف مريض مباشرة (`DELETE FROM public.patients`) أو عبر `public.delete_patient`.
-  3. السماح لسكرتير يملك الصلاحية المخصصة `patients.delete = true` بالحذف في وضع `'file_only'`، ورفضه في وضع `'everything'`.
-  4. رفض `delete_patient` عند تمرير `p_mode` غير صالح أو عند محاولة حذف مريض غير موجود.
-  5. العزل التام بين عيادتين (`clinic_a` و`clinic_b`).
-  6. منع العضو غير النشط (`is_active = false`) من قراءة أي بيانات.
-  7. منع أي مستخدم (حتى المدير) من عمل `UPDATE` أو `DELETE` مباشر على وثيقة `_audit_log` في جدول `public.settings`، والسماح بالإضافة فقط عبر `public.append_audit_log`.
-* التحقق النهائي من نجاح `npm run lint` و`npm run build` و`npm test`.
+### 3. القرارات الهندسية والمفاضلات التقنية
+
+- **القرار 1: طابور إعادة المحاولة في `auditLog.ts`**
+  - *النهج المختار*: فحص `{ data, error }` من `supabase.rpc('append_audit_log')`. عند وجود `error` أو استثناء، يُحفظ الحدث في قائمة انتظار `soli_clinic_audit_retry_queue` في `localStorage` وتُجدول إعادة المحاولة عند استعادة الاتصال أو مع الحدث التالي. وإذا كان الحدث ضمن القائمة الحرجة (`system.clear_all_data`، `backup.restore`، `data.purge`)، يُطلق حدث تنبيه فوري للواجهة (`soli_audit_critical_error`) ويعرض تنبيهاً عربياً واضحاً للمستخدم بأن تسجيل المراجعة السحابي فشل وتم حفظه في طابور إعادة المحاولة المحلي.
+- **القرار 2: حساب حجم العيادة (`clinic_bytes`) وحجم القاعدة (`used_bytes`)**
+  - *النهج المختار*: داخل `public.get_database_usage(p_clinic_id)`، يتم حساب `used_bytes` عبر `pg_database_size(current_database())`، بينما يُحسب `clinic_bytes` بجمع `coalesce(sum(pg_column_size(t.*)), 0)` وعدد الصفوف `count(*)` لكل جدول من جداول العيادة الـ 22 بالإضافة إلى `audit_events` مقيداً بـ `where clinic_id = p_clinic_id`. كما تقرأ الدالة `limit_bytes` من جدول `settings` (`id = 'database_quota'` أو داخل إعدادات العيادة) وتعتمد القيمة الافتراضية `524288000` بايت (`500 MB`) إن لم تُحدد.
+- **القرار 3: الحماية الخادمية في `preview_purge` و`purge_old_data`**
+  - *النهج المختار*: التحقق خادمياً داخل كلتا الدالتين من:
+    1. العضوية النشطة وصلاحية `data.purge` (`public.has_clinic_permission(p_clinic_id, 'data.purge', 'delete')`).
+    2. أن `p_older_than <= now() - interval '90 days'`، ورفع استثناء واضح إذا كان التاريخ أحدث من 90 يوماً.
+    3. أن كل عنصر في `p_scope` ينتمي حصراً للنطاقات المسموحة، ورفض أي نطاق غير معروف أو محمي (المرضى، الإعدادات، المستخدمين، الأدلة الطبية).
+    4. إذا تضمن `p_scope` نطاق الفواتير والمدفوعات (`invoices` / `payments` / `transactions` / `invoices_payments_old`)، يُشترط أن يكون `p_older_than <= now() - interval '5 years'` وإلا ترفع الدالة خطأً صريحاً.
+    5. في `purge_old_data`: اشتراط تطابق `p_confirm = 'احذف البيانات القديمة'`، وتسجيل العملية تلقائياً في `public.audit_events` بحدث `data.purge` مع تفصيل الأعداد المحذوفة لكل جدول.
+
+---
+
+### 4. البنية التقنية واستراتيجية البيانات
+
+#### مخطط المعمارية وتدفق البيانات
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        شاشة إعدادات النظام (SettingsScreen)                  │
+├──────────────────────────────────────┬───────────────────────────────────────┤
+│   مؤشر مساحة القاعدة (Top Bar Icon)  │     بطاقة حذف البيانات القديمة (Purge) │
+│  - لون دلالي (<70% / 70-90% / >90%) │  - اختيار تاريخ القطع (> 90 يوماً)     │
+│  - تحديث عند الفتح + كل 10 دقائق     │  - اختيار النطاقات المسموحة           │
+│  - نافذة المستهلك والمتبقي وأكبر 5    │  - زر معاينة -> preview_purge         │
+│  - تنبيه استباقي عند >= 90%          │  - إلزام بتصدير نسخة احتياطية أولاً   │
+│                                      │  - تأكيد 'احذف البيانات القديمة'       │
+│                                      │  - زر نسخ SQL اليدوي لـ audit_events   │
+└──────────────────┬───────────────────┴───────────────────┬───────────────────┘
+                   │                                       │
+                   ▼                                       ▼
+┌──────────────────────────────────────┐ ┌─────────────────────────────────────┐
+│  public.get_database_usage(clinic)   │ │  public.preview_purge /             │
+│  (SECURITY DEFINER)                  │ │  public.purge_old_data              │
+│  - التحقق: users.manage/settings.view│ │  (SECURITY DEFINER)                 │
+│  - pg_database_size()                │ │  - التحقق: data.purge               │
+│  - pg_column_size() لـ 22 جدول +     │ │  - التحقق: >= 90 يوماً (5 سنوات     │
+│    audit_events الخاصة بـ clinic_id   │ │    للفواتير والمدفوعات)             │
+└──────────────────────────────────────┘ └─────────────────┬───────────────────┘
+                                                           │
+                                                           ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                 سجل المراجعة الأمني (auditLog.ts + audit_events)             │
+│  - حدث 'data.purge' مضاف للقائمة البيضاء في SQL والعميل                      │
+│  - فحص error من append_audit_log + طابور إعادة محاولة في localStorage         │
+│  - تنبيه عربي واضح عند فشل تسجيل الأحداث الحرجة سحابياً                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### ربط المكونات التفاعلية والحالات
+
+1. **خدمة سجل المراجعة وطابور إعادة المحاولة**:
+   - تحديث القائمة البيضاء للأحداث لتشمل `data.purge`.
+   - فحص `const { data, error } = await supabase.rpc('append_audit_log', ...)`؛ وعند وجود `error` يُضاف الحدث إلى طابور إعادة المحاولة المحلي مع دالة `flushPendingAuditLogs()` تعمل تلقائياً، وإظهار رسالة تحذير عربية عند فشل `system.clear_all_data` أو `backup.restore` أو `data.purge`.
+2. **صلاحية `data.purge`**:
+   - إضافتها في مصفوفة الصلاحيات وواجهة تخصيص الصلاحيات (`ScreenPermissionsModal`) كصلاحية خاصة خطرة (`danger: true`) مفعلة افتراضياً للمدير فقط (`admin`)، وإضافتها في `public.has_clinic_permission` داخل SQL.
+3. **التحقق والاختبارات (`@electric-sql/pglite`)**:
+   - اختبار `get_database_usage`: إرجاع الأرقام الصحيحة ورفض غير المصرح لهم.
+   - اختبار `preview_purge`: إرجاع الأعداد المتوقعة دون حذف أي سجل.
+   - اختبار `purge_old_data`: الحذف يمس العيادة المحددة فقط؛ رفض تاريخ أحدث من 90 يوماً؛ رفض حذف الفواتير الأحدث من 5 سنوات؛ رفض عبارة تأكيد خاطئة؛ رفض سكرتير بدون `data.purge`؛ عدم المساس بالمرضى والإعدادات؛ وتسجيل الحدث `data.purge` في `public.audit_events`.

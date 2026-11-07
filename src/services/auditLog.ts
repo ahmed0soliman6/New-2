@@ -33,8 +33,15 @@ export const ALLOWED_AUDIT_ACTIONS = [
   'backup.restore.rollback',
   'system.clear_all_data',
   'system.clear_all_data.failed',
+  'data.purge',
   'demo.generate_data',
 ] as const;
+
+export const CRITICAL_AUDIT_ACTIONS = new Set<string>([
+  'system.clear_all_data',
+  'backup.restore',
+  'data.purge',
+]);
 
 export interface AuditLogEntry {
   eventId: string;
@@ -55,11 +62,28 @@ export interface AuditLogEntry {
   status?: 'SUCCESS' | 'PARTIAL_FAILURE' | 'REJECTED' | 'ROLLBACK';
   details?: string | Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  cloudSyncWarning?: string;
+}
+
+export interface QueuedAuditRpcItem {
+  id: string;
+  clinicId: string;
+  queuedAt: string;
+  attempts: number;
+  lastError?: string;
+  payload: {
+    action: string;
+    entity_type: string | null;
+    entity_id: string | null;
+    details: Record<string, unknown>;
+  };
 }
 
 const LEGACY_AUDIT_DOC_ID = '_audit_log';
 const LOCAL_AUDIT_KEY = 'soli_clinic_audit_log';
+export const AUDIT_RETRY_QUEUE_KEY = 'soli_clinic_audit_retry_queue';
 const MAX_LOCAL_AUDIT_ENTRIES = 500;
+const MAX_RETRY_QUEUE_ENTRIES = 250;
 const MAX_DETAILS_BYTES = 8192;
 
 function buildSanitizedDetails(entry: Omit<AuditLogEntry, 'eventId' | 'timestamp' | 'clinicId'>): Record<string, unknown> {
@@ -92,6 +116,79 @@ function buildSanitizedDetails(entry: Omit<AuditLogEntry, 'eventId' | 'timestamp
   if (entry.recordCounts && typeof entry.recordCounts === 'object') detailsObj.recordCounts = entry.recordCounts;
 
   return detailsObj;
+}
+
+export function getPendingAuditRetryQueue(): QueuedAuditRpcItem[] {
+  const queue = safeStorage.getJSON<QueuedAuditRpcItem[]>(AUDIT_RETRY_QUEUE_KEY, []);
+  return Array.isArray(queue) ? queue : [];
+}
+
+function enqueueFailedAuditRpc(item: QueuedAuditRpcItem): void {
+  const existing = getPendingAuditRetryQueue().filter((q) => q.id !== item.id);
+  const updated = [...existing, item].slice(-MAX_RETRY_QUEUE_ENTRIES);
+  safeStorage.setJSON(AUDIT_RETRY_QUEUE_KEY, updated);
+}
+
+function notifyCriticalAuditFailure(action: string, errorMessage: string): string {
+  const warningMsg = `تنبيه أمني: فشل تسجيل حدث المراجعة السحابي للعملية الحرجة (${action}). تم الاحتفاظ بالحدث في الطابور المحلي لإعادة المحاولة تلقائياً. السبب: ${errorMessage}`;
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(
+      new CustomEvent('soli_audit_critical_warning', {
+        detail: { action, errorMessage, warning: warningMsg, timestamp: new Date().toISOString() },
+      })
+    );
+  }
+  return warningMsg;
+}
+
+let isFlushingAuditQueue = false;
+
+export async function flushPendingAuditLogs(): Promise<{ succeeded: number; remaining: number }> {
+  const queue = getPendingAuditRetryQueue();
+  if (!supabase || !clinicId || queue.length === 0 || isFlushingAuditQueue) {
+    return { succeeded: 0, remaining: queue.length };
+  }
+
+  isFlushingAuditQueue = true;
+  const remainingQueue: QueuedAuditRpcItem[] = [];
+  let succeeded = 0;
+
+  try {
+    for (const item of queue) {
+      try {
+        const { error } = await supabase.rpc('append_audit_log', {
+          p_clinic_id: item.clinicId || clinicId,
+          p_entry: item.payload,
+        });
+        if (error) {
+          remainingQueue.push({
+            ...item,
+            attempts: (item.attempts || 1) + 1,
+            lastError: error.message || String(error),
+          });
+        } else {
+          succeeded += 1;
+        }
+      } catch (err) {
+        remainingQueue.push({
+          ...item,
+          attempts: (item.attempts || 1) + 1,
+          lastError: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    safeStorage.setJSON(AUDIT_RETRY_QUEUE_KEY, remainingQueue);
+  } finally {
+    isFlushingAuditQueue = false;
+  }
+
+  return { succeeded, remaining: remainingQueue.length };
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('online', () => {
+    void flushPendingAuditLogs();
+  });
 }
 
 export async function recordAuditLog(
@@ -128,21 +225,40 @@ export async function recordAuditLog(
   );
   safeStorage.setJSON(LOCAL_AUDIT_KEY, updatedLocal);
 
+  const rpcPayload = {
+    action: entry.action,
+    entity_type: entityType,
+    entity_id: entityId,
+    details: sanitizedDetails,
+  };
+
   // 2. Append row to public.audit_events via SECURITY DEFINER RPC (append_audit_log)
   if (supabase && clinicId) {
     try {
-      const rpcPayload = {
-        action: entry.action,
-        entity_type: entityType,
-        entity_id: entityId,
-        details: sanitizedDetails,
-      };
       const serialized = JSON.stringify(rpcPayload);
-      if (new TextEncoder().encode(serialized).length <= MAX_DETAILS_BYTES) {
-        const { data } = await supabase.rpc('append_audit_log', {
-          p_clinic_id: clinicId,
-          p_entry: rpcPayload,
+      if (new TextEncoder().encode(serialized).length > MAX_DETAILS_BYTES) {
+        throw new Error('حجم تفاصيل سجل المراجعة يتجاوز الحد المسموح (8KB)');
+      }
+
+      const { data, error } = await supabase.rpc('append_audit_log', {
+        p_clinic_id: clinicId,
+        p_entry: rpcPayload,
+      });
+
+      if (error) {
+        const errMsg = error.message || 'خطأ في استدعاء append_audit_log';
+        enqueueFailedAuditRpc({
+          id: fullEntry.eventId,
+          clinicId,
+          queuedAt: fullEntry.timestamp,
+          attempts: 1,
+          lastError: errMsg,
+          payload: rpcPayload,
         });
+        if (CRITICAL_AUDIT_ACTIONS.has(entry.action)) {
+          fullEntry.cloudSyncWarning = notifyCriticalAuditFailure(entry.action, errMsg);
+        }
+      } else {
         if (data && typeof data === 'object' && (data as any).id) {
           fullEntry.eventId = String((data as any).id);
           if ((data as any).actor_uid) {
@@ -152,9 +268,36 @@ export async function recordAuditLog(
             fullEntry.timestamp = String((data as any).created_at);
           }
         }
+        // Opportunistically flush any previously queued audit logs in the background
+        if (getPendingAuditRetryQueue().length > 0) {
+          void flushPendingAuditLogs();
+        }
       }
-    } catch {
-      // Non-blocking if user is offline or rate-limited; local audit log retains the entry
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'تعذر الاتصال بقاعدة البيانات السحابية';
+      enqueueFailedAuditRpc({
+        id: fullEntry.eventId,
+        clinicId,
+        queuedAt: fullEntry.timestamp,
+        attempts: 1,
+        lastError: errMsg,
+        payload: rpcPayload,
+      });
+      if (CRITICAL_AUDIT_ACTIONS.has(entry.action)) {
+        fullEntry.cloudSyncWarning = notifyCriticalAuditFailure(entry.action, errMsg);
+      }
+    }
+  } else if (clinicId) {
+    enqueueFailedAuditRpc({
+      id: fullEntry.eventId,
+      clinicId,
+      queuedAt: fullEntry.timestamp,
+      attempts: 0,
+      lastError: 'عميل Supabase غير مهيأ حالياً',
+      payload: rpcPayload,
+    });
+    if (CRITICAL_AUDIT_ACTIONS.has(entry.action)) {
+      fullEntry.cloudSyncWarning = notifyCriticalAuditFailure(entry.action, 'عميل السحابة غير متصل');
     }
   }
 
@@ -163,6 +306,9 @@ export async function recordAuditLog(
 
 export async function getAuditLogs(): Promise<AuditLogEntry[]> {
   if (supabase && clinicId) {
+    if (getPendingAuditRetryQueue().length > 0) {
+      await flushPendingAuditLogs();
+    }
     const merged: AuditLogEntry[] = [];
     const seenIds = new Set<string>();
 

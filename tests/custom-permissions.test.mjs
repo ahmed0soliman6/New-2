@@ -273,6 +273,7 @@ test('التحقق من تطابق ملف الصلاحيات src/permissions.ts 
     'backup.export',
     'backup.restore',
     'system.clear_all_data',
+    'data.purge',
     'demo.manage',
     'users.manage',
   ];

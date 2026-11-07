@@ -113,6 +113,7 @@ declare
     'backup.restore.rollback',
     'system.clear_all_data',
     'system.clear_all_data.failed',
+    'data.purge',
     'demo.generate_data'
   ];
   v_known_detail_keys constant text[] := array[
@@ -127,6 +128,8 @@ declare
     'patientId',
     'totalDeleted',
     'deletedCounts',
+    'olderThan',
+    'scope',
     'succeededTables',
     'failedTables',
     'preservedTables',

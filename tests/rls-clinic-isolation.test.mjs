@@ -40,6 +40,8 @@ const SENSITIVE_RPC_FILES = [
   'delete_transaction.sql',
   'admin_delete_clinic_user.sql',
   'append_audit_log.sql',
+  'get_database_usage.sql',
+  'purge_old_data.sql',
 ];
 
 test('1. فحص سياسات العزل (RLS) وإلغاء member_all وإزالة solimedical-new2 من الكود', () => {
@@ -155,11 +157,35 @@ test('2. التحقق من تأمين جميع دوال RPC العشر في supa
       `الدالة ${fileName} يجب أن تتحقق من هوية وعضوية المستخدم`
     );
     assert.match(sql, /set\s+search_path\s*=\s*public/i, `الدالة ${fileName} يجب أن تضبط search_path = public`);
+    const expectedSymbol = fnName === 'purge_old_data' ? 'public.purge_old_data' : `public.${fnName}`;
     assert.ok(
-      fullSetupSql.includes(`public.${fnName}`),
-      `ملف full_setup.sql يجب أن يتضمن تعريف الدالة public.${fnName}`
+      fullSetupSql.includes(expectedSymbol),
+      `ملف full_setup.sql يجب أن يتضمن تعريف الدالة ${expectedSymbol}`
     );
   }
+
+  // التحقق من فحص error والطابور المحلي والتنبيه العربي للأحداث الحرجة في src/services/auditLog.ts
+  const auditServiceContent = fs.readFileSync(path.resolve(process.cwd(), 'src/services/auditLog.ts'), 'utf8');
+  assert.match(
+    auditServiceContent,
+    /const\s*\{\s*data\s*,\s*error\s*\}\s*=\s*await\s+supabase\.rpc\(\s*'append_audit_log'/,
+    'يجب قراءة حقل error من نتيجة supabase.rpc(\'append_audit_log\')'
+  );
+  assert.match(
+    auditServiceContent,
+    /soli_clinic_audit_retry_queue/,
+    'يجب الاحتفاظ بالحدث الفاشل في طابور إعادة المحاولة المحلي'
+  );
+  assert.match(
+    auditServiceContent,
+    /flushPendingAuditLogs/,
+    'يجب توفير دالة إعادة المحاولة التلقائية للطابور المحلي'
+  );
+  assert.match(
+    auditServiceContent,
+    /تنبيه أمني:\s*فشل تسجيل حدث المراجعة السحابي/,
+    'يجب إظهار تنبيه واضح بالعربية عند فشل تسجيل حدث مراجعة حرج سحابياً'
+  );
 });
 
 test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل الترحيل مرتين، الصلاحيات، delete_patient، العزل، واختبارات audit_events السبعة (أ - ز)', async () => {
@@ -598,6 +624,254 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): إعادة تشغيل ا
         '(ز) يجب رفض الإدخال رقم 61 في نفس الدقيقة لنفس المستخدم والعيادة'
       );
     });
+
+    // =========================================================================
+    // 11. اختبارات get_database_usage و preview_purge و purge_old_data على PGlite
+    // =========================================================================
+
+    // 11.1 get_database_usage تُرجع أرقاماً صحيحة للمدير وتُرفض لغير المصرح له
+    await runAsUser(secretaryDefaultUid, async () => {
+      await assert.rejects(
+        () => db.query(`select public.get_database_usage('clinic_a');`),
+        /Unauthorized: caller lacks users\.manage or settings\.view permission/i,
+        'يجب رفض استدعاء get_database_usage للسكرتير الذي لا يملك صلاحية users.manage أو settings.view'
+      );
+    });
+
+    await runAsUser(adminBUid, async () => {
+      await assert.rejects(
+        () => db.query(`select public.get_database_usage('clinic_a');`),
+        /Unauthorized: caller is not an active member of clinic clinic_a/i,
+        'يجب رفض استدعاء get_database_usage من مدير عيادة أخرى'
+      );
+    });
+
+    await runAsUser(adminAUid, async () => {
+      const usageRes = await db.query(`select public.get_database_usage('clinic_a') as usage;`);
+      const usage = usageRes.rows[0].usage;
+      assert.ok(usage, 'يجب أن تُرجع get_database_usage كائناً صالحاً');
+      assert.ok(Number(usage.used_bytes) > 0, 'used_bytes يجب أن يكون أكبر من الصفر');
+      assert.ok(Number(usage.clinic_bytes) > 0, 'clinic_bytes يجب أن يكون أكبر من الصفر لوجود سجلات في العيادة أ');
+      assert.equal(Number(usage.limit_bytes), 524288000, 'limit_bytes الافتراضي يجب أن يكون 500MB (524288000 bytes)');
+      assert.ok(typeof usage.percent_used === 'number', 'percent_used يجب أن يكون رقماً');
+      assert.equal(Number(usage.row_counts.patients), 1, 'عدد المرضى المتبقي في clinic_a يجب أن يكون 1');
+      assert.equal(Number(usage.row_counts.audit_events), 321, 'عدد أحداث المراجعة في clinic_a يجب أن يكون دقيقاً');
+      assert.ok(Array.isArray(usage.tables) && usage.tables.length === 23, 'قائمة الجداول يجب أن تضم 23 جدولاً');
+    });
+
+    // 11.2 تجهيز بيانات قديمة وحديثة في clinic_a و clinic_b لاختبار preview_purge و purge_old_data
+    await db.exec(`
+      insert into public.visits (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'vis_old_completed', '{"visitId":"vis_old_completed","status":"COMPLETED","date":"2020-03-10"}'::jsonb, '2020-03-10T10:00:00Z'::timestamptz),
+        ('clinic_a', 'vis_old_waiting', '{"visitId":"vis_old_waiting","status":"WAITING","date":"2020-03-10"}'::jsonb, '2020-03-10T10:00:00Z'::timestamptz),
+        ('clinic_a', 'vis_recent_completed', '{"visitId":"vis_recent_completed","status":"COMPLETED","date":"2026-10-15"}'::jsonb, now() - interval '10 days'),
+        ('clinic_b', 'vis_b_old_completed', '{"visitId":"vis_b_old_completed","status":"COMPLETED","date":"2020-03-10"}'::jsonb, '2020-03-10T10:00:00Z'::timestamptz);
+
+      insert into public.appointments (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'apt_old_completed', '{"appointmentId":"apt_old_completed","status":"COMPLETED","date":"2020-04-01"}'::jsonb, '2020-04-01T10:00:00Z'::timestamptz),
+        ('clinic_a', 'apt_old_scheduled', '{"appointmentId":"apt_old_scheduled","status":"SCHEDULED","date":"2020-04-01"}'::jsonb, '2020-04-01T10:00:00Z'::timestamptz),
+        ('clinic_b', 'apt_b_old_completed', '{"appointmentId":"apt_b_old_completed","status":"COMPLETED","date":"2020-04-01"}'::jsonb, '2020-04-01T10:00:00Z'::timestamptz);
+
+      insert into public.lab_orders (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'lab_old_done', '{"orderId":"lab_old_done","status":"COMPLETED","createdAt":"2020-05-01T10:00:00Z"}'::jsonb, '2020-05-01T10:00:00Z'::timestamptz),
+        ('clinic_a', 'lab_old_pending', '{"orderId":"lab_old_pending","status":"PENDING","createdAt":"2020-05-01T10:00:00Z"}'::jsonb, '2020-05-01T10:00:00Z'::timestamptz);
+
+      insert into public.radiology_orders (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'rad_old_done', '{"orderId":"rad_old_done","status":"COMPLETED","createdAt":"2020-05-01T10:00:00Z"}'::jsonb, '2020-05-01T10:00:00Z'::timestamptz);
+
+      insert into public.follow_ups (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'fup_old_done', '{"id":"fup_old_done","status":"COMPLETED","createdAt":"2020-05-01T10:00:00Z"}'::jsonb, '2020-05-01T10:00:00Z'::timestamptz);
+
+      insert into public.backups (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'bkp_old_1', '{"id":"bkp_old_1","createdAt":"2020-05-01T10:00:00Z"}'::jsonb, '2020-05-01T10:00:00Z'::timestamptz);
+
+      insert into public.invoices (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'inv_6yo', '{"invoiceId":"inv_6yo","createdAt":"2018-01-15T10:00:00Z","total":200}'::jsonb, '2018-01-15T10:00:00Z'::timestamptz),
+        ('clinic_a', 'inv_3yo', '{"invoiceId":"inv_3yo","createdAt":"2024-01-15T10:00:00Z","total":500}'::jsonb, (now() - interval '3 years'));
+
+      insert into public.payments (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'pay_6yo', '{"paymentId":"pay_6yo","createdAt":"2018-01-15T10:00:00Z","amount":200}'::jsonb, '2018-01-15T10:00:00Z'::timestamptz),
+        ('clinic_a', 'pay_3yo', '{"paymentId":"pay_3yo","createdAt":"2024-01-15T10:00:00Z","amount":500}'::jsonb, (now() - interval '3 years'));
+
+      insert into public.settings (clinic_id, id, data, updated_at) values
+        ('clinic_a', 'general_config', '{"clinicName":"عيادة أ"}'::jsonb, '2018-01-01T00:00:00Z'::timestamptz)
+      on conflict (clinic_id, id) do nothing;
+    `);
+
+    // 11.3 السكرتير بدون data.purge يُرفض في preview_purge و purge_old_data
+    await runAsUser(secretaryDefaultUid, async () => {
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.preview_purge('clinic_a', (now() - interval '2 years'), array['completed_visits']);`
+          ),
+        /Unauthorized: caller lacks data\.purge permission/i,
+        'يجب رفض معاينة الحذف للسكرتير الذي لا يملك صلاحية data.purge'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.purge_old_data('clinic_a', (now() - interval '2 years'), array['completed_visits'], 'احذف البيانات القديمة');`
+          ),
+        /Unauthorized: caller lacks data\.purge permission/i,
+        'يجب رفض تنفيذ الحذف للسكرتير الذي لا يملك صلاحية data.purge'
+      );
+    });
+
+    // 11.4 تاريخ أحدث من 90 يوماً يُرفض
+    await runAsUser(adminAUid, async () => {
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.preview_purge('clinic_a', (now() - interval '30 days'), array['completed_visits']);`
+          ),
+        /Invalid cutoff date: p_older_than must be older than 90 days/i,
+        'يجب رفض أي تاريخ قطع أحدث من 90 يوماً في preview_purge'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.purge_old_data('clinic_a', (now() - interval '30 days'), array['completed_visits'], 'احذف البيانات القديمة');`
+          ),
+        /Invalid cutoff date: p_older_than must be older than 90 days/i,
+        'يجب رفض أي تاريخ قطع أحدث من 90 يوماً في purge_old_data'
+      );
+    });
+
+    // 11.5 الفواتير والمدفوعات الأحدث من 5 سنوات لا تُحذف ويُرفض طلب حذفها بتقطع أقل من 5 سنوات
+    await runAsUser(adminAUid, async () => {
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.preview_purge('clinic_a', (now() - interval '2 years'), array['invoices']);`
+          ),
+        /Financial retention policy: invoices and payments younger than 5 years cannot be purged/i,
+        'يجب رفض معاينة حذف الفواتير إذا كان تاريخ القطع أحدث من 5 سنوات'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.purge_old_data('clinic_a', (now() - interval '2 years'), array['invoices'], 'احذف البيانات القديمة');`
+          ),
+        /Financial retention policy: invoices and payments younger than 5 years cannot be purged/i,
+        'يجب رفض حذف الفواتير إذا كان تاريخ القطع أحدث من 5 سنوات'
+      );
+    });
+
+    // 11.6 عبارة التأكيد الخاطئة تُرفض، والنطاق غير المسموح به (مثل patients أو settings) يُرفض
+    await runAsUser(adminAUid, async () => {
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.purge_old_data('clinic_a', (now() - interval '2 years'), array['completed_visits'], 'عبارة خاطئة');`
+          ),
+        /Invalid confirmation phrase/i,
+        'يجب رفض الحذف إذا كانت عبارة التأكيد غير مطابقة لعبارة احذف البيانات القديمة'
+      );
+
+      await assert.rejects(
+        () =>
+          db.query(
+            `select public.purge_old_data('clinic_a', (now() - interval '2 years'), array['patients'], 'احذف البيانات القديمة');`
+          ),
+        /Forbidden or invalid purge scope "patients"/i,
+        'يجب رفض أي محاولة لتمرير جدول المرضى ضمن نطاق الحذف'
+      );
+    });
+
+    // 11.7 preview_purge لا تحذف أي سجل
+    const visitsBeforePreview = await db.query(
+      `select count(*)::int as cnt from public.visits where clinic_id = 'clinic_a'`
+    );
+    await runAsUser(adminAUid, async () => {
+      const prevRes = await db.query(
+        `select public.preview_purge('clinic_a', (now() - interval '6 years'), array['completed_visits','finished_appointments','lab_radiology_orders','finished_follow_ups','old_backups','invoices_payments']) as preview;`
+      );
+      const preview = prevRes.rows[0].preview;
+      assert.equal(Number(preview.counts.visits), 1, 'يجب أن ترصد المعاينة زيارة مكتملة قديمة واحدة فقط');
+      assert.equal(Number(preview.counts.appointments), 1, 'يجب أن ترصد المعاينة موعداً منتهياً قديماً واحداً فقط');
+      assert.equal(Number(preview.counts.lab_orders), 1, 'يجب أن ترصد المعاينة طلب تحليل منتهياً قديماً واحداً فقط');
+      assert.equal(Number(preview.counts.radiology_orders), 1, 'يجب أن ترصد المعاينة طلب أشعة منتهياً قديماً واحداً فقط');
+      assert.equal(Number(preview.counts.follow_ups), 1, 'يجب أن ترصد المعاينة متابعة منتهية قديمة واحدة فقط');
+      assert.equal(Number(preview.counts.backups), 1, 'يجب أن ترصد المعاينة نسخة احتياطية قديمة واحدة فقط');
+      assert.equal(Number(preview.counts.invoices), 1, 'يجب أن ترصد المعاينة الفاتورة الأقدم من 5 سنوات فقط (inv_6yo) وتستثني (inv_3yo)');
+      assert.equal(Number(preview.counts.payments), 1, 'يجب أن ترصد المعاينة الدفعة الأقدم من 5 سنوات فقط (pay_6yo) وتستثني (pay_3yo)');
+      assert.equal(Number(preview.total_count), 8, 'إجمالي السجلات المرشحة للحذف يجب أن يكون 8');
+    });
+
+    const visitsAfterPreview = await db.query(
+      `select count(*)::int as cnt from public.visits where clinic_id = 'clinic_a'`
+    );
+    assert.equal(
+      visitsAfterPreview.rows[0].cnt,
+      visitsBeforePreview.rows[0].cnt,
+      'preview_purge يجب ألا تحذف أي صف من الجداول'
+    );
+
+    // 11.8 purge_old_data تحذف السجلات القديمة المنتهية في clinic_a فقط وتترك clinic_b والمرضى والإعدادات والفواتير الحديثة وسجل المراجعة
+    await runAsUser(adminAUid, async () => {
+      const purgeRes = await db.query(
+        `select public.purge_old_data('clinic_a', (now() - interval '6 years'), array['completed_visits','finished_appointments','lab_radiology_orders','finished_follow_ups','old_backups','invoices_payments'], 'احذف البيانات القديمة') as result;`
+      );
+      const result = purgeRes.rows[0].result;
+      assert.equal(Number(result.total_deleted), 8, 'يجب أن تحذف purge_old_data السجلات الـ 8 القديمة المنتهية بالضبط');
+      assert.equal(Number(result.deleted_counts.visits), 1, 'يجب أن تُرجع purge_old_data عدد الزيارات المحذوفة');
+      assert.equal(Number(result.deleted_counts.invoices), 1, 'يجب أن تُرجع purge_old_data عدد الفواتير المحذوفة');
+    });
+
+    // التحقق من بقاء السجلات غير المنتهية والحديثة والمحمية في clinic_a، وبقاء سجلات clinic_b كاملة
+    const remainingOldWaitingVisit = await db.query(
+      `select count(*)::int as cnt from public.visits where clinic_id = 'clinic_a' and id = 'vis_old_waiting'`
+    );
+    assert.equal(remainingOldWaitingVisit.rows[0].cnt, 1, 'الزيارات غير المكتملة (WAITING) لا يجوز حذفها حتى لو كانت قديمة');
+
+    const remainingRecentCompletedVisit = await db.query(
+      `select count(*)::int as cnt from public.visits where clinic_id = 'clinic_a' and id = 'vis_recent_completed'`
+    );
+    assert.equal(remainingRecentCompletedVisit.rows[0].cnt, 1, 'الزيارات المكتملة الحديثة لا يجوز حذفها');
+
+    const remainingClinicBVisit = await db.query(
+      `select count(*)::int as cnt from public.visits where clinic_id = 'clinic_b' and id = 'vis_b_old_completed'`
+    );
+    assert.equal(remainingClinicBVisit.rows[0].cnt, 1, 'زيارات العيادة الأخرى (clinic_b) لا يجوز أن تتأثر إطلاقاً');
+
+    const remainingClinicBApt = await db.query(
+      `select count(*)::int as cnt from public.appointments where clinic_id = 'clinic_b' and id = 'apt_b_old_completed'`
+    );
+    assert.equal(remainingClinicBApt.rows[0].cnt, 1, 'مواعيد العيادة الأخرى (clinic_b) لا يجوز أن تتأثر إطلاقاً');
+
+    const remaining3yoInvoice = await db.query(
+      `select count(*)::int as cnt from public.invoices where clinic_id = 'clinic_a' and id = 'inv_3yo'`
+    );
+    assert.equal(remaining3yoInvoice.rows[0].cnt, 1, 'الفاتورة التي عمرها 3 سنوات (أقل من 5 سنوات) يجب أن تبقى محفوظة');
+
+    const deleted6yoInvoice = await db.query(
+      `select count(*)::int as cnt from public.invoices where clinic_id = 'clinic_a' and id = 'inv_6yo'`
+    );
+    assert.equal(deleted6yoInvoice.rows[0].cnt, 0, 'الفاتورة التي عمرها 6 سنوات يجب أن تُحذف عند طلب نطاق الفواتير الأقدم من 5 سنوات');
+
+    const remainingPatientsA = await db.query(
+      `select count(*)::int as cnt from public.patients where clinic_id = 'clinic_a'`
+    );
+    assert.equal(remainingPatientsA.rows[0].cnt, 1, 'ملفات المرضى يجب ألا تُمس أبداً أثناء حذف البيانات القديمة');
+
+    const remainingSettingsA = await db.query(
+      `select count(*)::int as cnt from public.settings where clinic_id = 'clinic_a' and id = 'general_config'`
+    );
+    assert.equal(remainingSettingsA.rows[0].cnt, 1, 'إعدادات العيادة يجب ألا تُمس أبداً أثناء حذف البيانات القديمة');
+
+    // 11.9 التحقق من تسجيل حدث data.purge في جدول audit_events مع أعداد الجداول المحذوفة
+    const purgeAuditCheck = await db.query(
+      `select actor_uid, action, entity_type, entity_id, details from public.audit_events where clinic_id = 'clinic_a' and action = 'data.purge'`
+    );
+    assert.equal(purgeAuditCheck.rows.length, 1, 'يجب تسجيل حدث data.purge في جدول audit_events');
+    assert.equal(purgeAuditCheck.rows[0].actor_uid, adminAUid, 'يجب أن يحمل حدث data.purge معرف المدير المنفذ');
+    assert.equal(Number(purgeAuditCheck.rows[0].details.totalDeleted), 8, 'يجب تسجيل إجمالي السجلات المحذوفة (8) في details.totalDeleted');
+    assert.equal(Number(purgeAuditCheck.rows[0].details.deletedCounts.visits), 1, 'يجب تسجيل عدد الزيارات المحذوفة في details.deletedCounts');
+    assert.equal(Number(purgeAuditCheck.rows[0].details.deletedCounts.invoices), 1, 'يجب تسجيل عدد الفواتير المحذوفة في details.deletedCounts');
   } finally {
     await db.close();
   }
