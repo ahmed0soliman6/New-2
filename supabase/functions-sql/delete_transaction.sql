@@ -2,6 +2,8 @@
 -- Tables affected atomically: payments, invoices, transactions
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.delete_transaction(text, text, text, text) cascade;
+
 create or replace function public.delete_transaction(
   p_clinic_id text,
   p_payment_id text,
@@ -10,7 +12,7 @@ create or replace function public.delete_transaction(
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 begin

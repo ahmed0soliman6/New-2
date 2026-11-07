@@ -635,10 +635,454 @@ create policy "members_delete" on public.clinic_members for delete to authentica
 
 -- =============================================================================
 -- 5. Hardened RPC Functions (Enforcing Membership + Custom Permissions + Input Validation)
---    (Full standalone definitions also available in supabase/functions-sql/*.sql)
+--    IMPORTANT: Drop any existing versions first to prevent PostgreSQL Error 42P13
+--    ("cannot change return type of existing function") when upgrading from older schemas.
 -- =============================================================================
 
--- 5.1 complete_visit
+drop function if exists public.delete_patient(text, text, text) cascade;
+drop function if exists public.delete_patient(text, text) cascade;
+drop function if exists public.remove_queue_visit(text, text) cascade;
+drop function if exists public.add_transaction(text, text, text, jsonb, text, jsonb, text, jsonb) cascade;
+drop function if exists public.delete_transaction(text, text, text, text) cascade;
+drop function if exists public.admin_delete_clinic_user(text, uuid) cascade;
+drop function if exists public.complete_visit(text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb) cascade;
+drop function if exists public.check_in_appointment(text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb) cascade;
+drop function if exists public.register_walk_in(text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb) cascade;
+drop function if exists public.create_appointment(text, text, text, jsonb, text, jsonb) cascade;
+
+-- Dynamic cleanup of any other overloaded signatures for these 9 RPC names
+do $$
+declare
+  r record;
+begin
+  for r in
+    select p.proname, pg_get_function_identity_arguments(p.oid) as args
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.proname in (
+         'check_in_appointment',
+         'register_walk_in',
+         'complete_visit',
+         'create_appointment',
+         'remove_queue_visit',
+         'delete_patient',
+         'add_transaction',
+         'delete_transaction',
+         'admin_delete_clinic_user'
+       )
+  loop
+    execute format('drop function if exists public.%I(%s) cascade', r.proname, r.args);
+  end loop;
+end $$;
+
+-- 5.1 check_in_appointment
+create or replace function public.check_in_appointment(
+  p_clinic_id text,
+  p_appointment_id text,
+  p_today text,
+  p_timestamp text,
+  p_requested_queue_number integer,
+  p_visit_id text,
+  p_invoice_id text,
+  p_payment_id text,
+  p_receipt_number text,
+  p_payment_amount numeric,
+  p_payment_method text,
+  p_received_by text,
+  p_receptionist_data jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_appointment jsonb;
+  v_counter_data jsonb;
+  v_assigned_queue integer;
+  v_patient_id text;
+  v_clinic_location_id text;
+  v_visit_type text;
+  v_updated_appointment jsonb;
+  v_visit jsonb;
+  v_invoice jsonb;
+  v_payment jsonb;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'appointments.checkin', 'update')
+    or public.has_clinic_permission(p_clinic_id, 'waiting-queue', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'queue.create', 'create')
+  ) then
+    raise exception 'Unauthorized: missing permission appointments.checkin / waiting-queue.create';
+  end if;
+
+  if p_appointment_id is null or btrim(p_appointment_id) = '' then
+    raise exception 'Invalid input: p_appointment_id is required';
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+  if p_payment_amount is null or p_payment_amount < 0 then
+    raise exception 'Invalid input: p_payment_amount cannot be negative';
+  end if;
+
+  select data
+    into v_appointment
+    from public.appointments
+   where clinic_id = p_clinic_id
+     and id = p_appointment_id
+   for update;
+
+  if v_appointment is null then
+    raise exception 'Appointment not found';
+  end if;
+
+  if coalesce(v_appointment->>'status', '') <> 'SCHEDULED' then
+    raise exception 'Only scheduled appointments can be checked in';
+  end if;
+
+  insert into public.counters (clinic_id, id, data)
+  values (
+    p_clinic_id,
+    'queue_' || p_today,
+    jsonb_build_object('lastNumber', 0, 'date', p_today)
+  )
+  on conflict (clinic_id, id) do nothing;
+
+  select data
+    into v_counter_data
+    from public.counters
+   where clinic_id = p_clinic_id
+     and id = ('queue_' || p_today)
+   for update;
+
+  if p_requested_queue_number is not null and p_requested_queue_number > 0 then
+    v_assigned_queue := p_requested_queue_number;
+  else
+    v_assigned_queue := coalesce((v_counter_data->>'lastNumber')::integer, 0) + 1;
+  end if;
+
+  v_patient_id := coalesce(v_appointment->>'patientId', '');
+  v_clinic_location_id := nullif(v_appointment->>'clinicLocationId', '');
+  v_visit_type := case when p_payment_amount = 0 then 'FOLLOW_UP' else 'NEW' end;
+
+  update public.counters
+     set data = coalesce(v_counter_data, '{}'::jsonb) || jsonb_build_object(
+       'lastNumber', v_assigned_queue,
+       'date', p_today
+     ),
+     updated_at = now()
+   where clinic_id = p_clinic_id
+     and id = ('queue_' || p_today);
+
+  v_updated_appointment := v_appointment || jsonb_build_object(
+    'status', 'ARRIVED',
+    'updatedAt', p_timestamp
+  );
+
+  update public.appointments
+     set data = v_updated_appointment,
+         updated_at = now()
+   where clinic_id = p_clinic_id
+     and id = p_appointment_id;
+
+  v_invoice := jsonb_build_object(
+    'invoiceId', p_invoice_id,
+    'patientId', v_patient_id,
+    'visitId', p_visit_id,
+    'clinicLocationId', v_clinic_location_id,
+    'items', '[]'::jsonb,
+    'subtotal', p_payment_amount,
+    'discount', 0,
+    'total', p_payment_amount,
+    'paidAmount', p_payment_amount,
+    'remainingAmount', 0,
+    'status', 'PAID',
+    'createdAt', p_timestamp,
+    'updatedAt', p_timestamp,
+    'dayKey', p_today
+  );
+
+  insert into public.invoices (clinic_id, id, data)
+  values (p_clinic_id, p_invoice_id, v_invoice)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  v_payment := jsonb_build_object(
+    'paymentId', p_payment_id,
+    'patientId', v_patient_id,
+    'visitId', p_visit_id,
+    'invoiceId', p_invoice_id,
+    'clinicLocationId', v_clinic_location_id,
+    'amount', p_payment_amount,
+    'method', p_payment_method,
+    'status', 'PAID',
+    'receiptNumber', p_receipt_number,
+    'paidAt', p_timestamp,
+    'receivedBy', p_received_by,
+    'dayKey', p_today
+  );
+
+  insert into public.payments (clinic_id, id, data)
+  values (p_clinic_id, p_payment_id, v_payment)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  v_visit := jsonb_build_object(
+    'visitId', p_visit_id,
+    'patientId', v_patient_id,
+    'appointmentId', coalesce(v_appointment->>'appointmentId', p_appointment_id),
+    'clinicLocationId', v_clinic_location_id,
+    'visitType', v_visit_type,
+    'source', 'APPOINTMENT',
+    'status', 'WAITING',
+    'queueNumber', v_assigned_queue,
+    'receptionistData', coalesce(p_receptionist_data, jsonb_build_object('symptoms', '', 'chronicDiseases', '[]'::jsonb, 'notes', '')),
+    'clinicalData', jsonb_build_object(
+      'chiefComplaint', '',
+      'history', '',
+      'examination', '',
+      'diagnosis', '[]'::jsonb,
+      'treatment', ''
+    ),
+    'vitalSigns', jsonb_build_object(
+      'bloodPressure', '',
+      'pulse', null,
+      'temperature', null,
+      'weight', null,
+      'height', null,
+      'oxygenSaturation', null,
+      'randomBloodSugar', null
+    ),
+    'startedAt', null,
+    'completedAt', null,
+    'createdAt', p_timestamp,
+    'updatedAt', p_timestamp,
+    'createdBy', p_received_by,
+    'doctorId', '',
+    'dayKey', p_today
+  );
+
+  insert into public.visits (clinic_id, id, data)
+  values (p_clinic_id, p_visit_id, v_visit)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  return jsonb_build_object(
+    'appointment', v_updated_appointment,
+    'visit', v_visit
+  );
+end;
+$$;
+
+revoke execute on function public.check_in_appointment(
+  text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb
+) from public, anon;
+grant execute on function public.check_in_appointment(
+  text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb
+) to authenticated;
+
+-- 5.2 register_walk_in
+create or replace function public.register_walk_in(
+  p_clinic_id text,
+  p_today text,
+  p_timestamp text,
+  p_requested_queue_number integer,
+  p_patient_id text,
+  p_patient_data jsonb,
+  p_visit_id text,
+  p_invoice_id text,
+  p_payment_id text,
+  p_receipt_number text,
+  p_payment_amount numeric,
+  p_payment_method text,
+  p_received_by text,
+  p_clinic_location_id text,
+  p_appointment_id text,
+  p_receptionist_data jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_counter_data jsonb;
+  v_assigned_queue integer;
+  v_visit_type text;
+  v_visit jsonb;
+  v_invoice jsonb;
+  v_payment jsonb;
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'patients.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'queue.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'patient-intake', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'waiting-queue', 'create')
+  ) then
+    raise exception 'Unauthorized: missing permission patients.create / queue.create';
+  end if;
+
+  if p_patient_id is null or btrim(p_patient_id) = '' then
+    raise exception 'Invalid input: p_patient_id is required';
+  end if;
+  if p_visit_id is null or btrim(p_visit_id) = '' then
+    raise exception 'Invalid input: p_visit_id is required';
+  end if;
+  if p_payment_amount is null or p_payment_amount < 0 then
+    raise exception 'Invalid input: p_payment_amount cannot be negative';
+  end if;
+  if coalesce(btrim(p_patient_data->>'fullName'), '') = '' then
+    raise exception 'Invalid input: patient fullName is required';
+  end if;
+
+  insert into public.counters (clinic_id, id, data)
+  values (
+    p_clinic_id,
+    'queue_' || p_today,
+    jsonb_build_object('lastNumber', 0, 'date', p_today)
+  )
+  on conflict (clinic_id, id) do nothing;
+
+  select data
+    into v_counter_data
+    from public.counters
+   where clinic_id = p_clinic_id
+     and id = ('queue_' || p_today)
+   for update;
+
+  if p_requested_queue_number is not null and p_requested_queue_number > 0 then
+    v_assigned_queue := p_requested_queue_number;
+  else
+    v_assigned_queue := coalesce((v_counter_data->>'lastNumber')::integer, 0) + 1;
+  end if;
+
+  v_visit_type := case when p_payment_amount = 0 then 'FOLLOW_UP' else 'NEW' end;
+
+  update public.counters
+     set data = coalesce(v_counter_data, '{}'::jsonb) || jsonb_build_object(
+       'lastNumber', v_assigned_queue,
+       'date', p_today
+     ),
+     updated_at = now()
+   where clinic_id = p_clinic_id
+     and id = ('queue_' || p_today);
+
+  insert into public.patients (clinic_id, id, data)
+  values (p_clinic_id, p_patient_id, p_patient_data - 'clinic_id')
+  on conflict (clinic_id, id) do update
+    set data = (public.patients.data || (excluded.data - 'clinic_id' - 'createdAt' - 'createdBy')),
+        updated_at = now();
+
+  v_invoice := jsonb_build_object(
+    'invoiceId', p_invoice_id,
+    'patientId', p_patient_id,
+    'visitId', p_visit_id,
+    'clinicLocationId', p_clinic_location_id,
+    'items', '[]'::jsonb,
+    'subtotal', p_payment_amount,
+    'discount', 0,
+    'total', p_payment_amount,
+    'paidAmount', p_payment_amount,
+    'remainingAmount', 0,
+    'status', 'PAID',
+    'createdAt', p_timestamp,
+    'updatedAt', p_timestamp,
+    'dayKey', p_today
+  );
+
+  insert into public.invoices (clinic_id, id, data)
+  values (p_clinic_id, p_invoice_id, v_invoice)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  v_payment := jsonb_build_object(
+    'paymentId', p_payment_id,
+    'patientId', p_patient_id,
+    'visitId', p_visit_id,
+    'invoiceId', p_invoice_id,
+    'clinicLocationId', p_clinic_location_id,
+    'amount', p_payment_amount,
+    'method', p_payment_method,
+    'status', 'PAID',
+    'receiptNumber', p_receipt_number,
+    'paidAt', p_timestamp,
+    'receivedBy', p_received_by,
+    'dayKey', p_today
+  );
+
+  insert into public.payments (clinic_id, id, data)
+  values (p_clinic_id, p_payment_id, v_payment)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  v_visit := jsonb_build_object(
+    'visitId', p_visit_id,
+    'patientId', p_patient_id,
+    'appointmentId', p_appointment_id,
+    'clinicLocationId', p_clinic_location_id,
+    'visitType', v_visit_type,
+    'source', case when p_appointment_id is not null and p_appointment_id <> '' then 'APPOINTMENT' else 'WALK_IN' end,
+    'status', 'WAITING',
+    'queueNumber', v_assigned_queue,
+    'receptionistData', coalesce(p_receptionist_data, jsonb_build_object('symptoms', '', 'chronicDiseases', '[]'::jsonb, 'notes', '')),
+    'clinicalData', jsonb_build_object(
+      'chiefComplaint', '',
+      'history', '',
+      'examination', '',
+      'diagnosis', '[]'::jsonb,
+      'treatment', ''
+    ),
+    'vitalSigns', jsonb_build_object(
+      'bloodPressure', '',
+      'pulse', null,
+      'temperature', null,
+      'weight', null,
+      'height', null,
+      'oxygenSaturation', null,
+      'randomBloodSugar', null
+    ),
+    'startedAt', null,
+    'completedAt', null,
+    'createdAt', p_timestamp,
+    'updatedAt', p_timestamp,
+    'createdBy', p_received_by,
+    'doctorId', '',
+    'dayKey', p_today
+  );
+
+  insert into public.visits (clinic_id, id, data)
+  values (p_clinic_id, p_visit_id, v_visit)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  return v_visit;
+end;
+$$;
+
+revoke execute on function public.register_walk_in(
+  text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb
+) from public, anon;
+grant execute on function public.register_walk_in(
+  text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb
+) to authenticated;
+
+-- 5.3 complete_visit
 create or replace function public.complete_visit(
   p_clinic_id text,
   p_visit_id text,
@@ -651,7 +1095,11 @@ create or replace function public.complete_visit(
   p_radiology_orders jsonb default '[]'::jsonb,
   p_follow_up jsonb default null
 )
-returns void language plpgsql security invoker set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   v_visit_data jsonb;
   v_patient_id text;
@@ -755,13 +1203,77 @@ begin
 end;
 $$;
 
--- 5.2 delete_patient
+revoke execute on function public.complete_visit(
+  text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb
+) from public, anon;
+grant execute on function public.complete_visit(
+  text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb
+) to authenticated;
+
+-- 5.4 create_appointment
+create or replace function public.create_appointment(
+  p_clinic_id text,
+  p_timestamp text,
+  p_appointment_id text,
+  p_appointment_data jsonb,
+  p_patient_id text default null,
+  p_patient_data jsonb default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_clinic_member(p_clinic_id) then
+    raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
+  end if;
+
+  if not (
+    public.has_clinic_permission(p_clinic_id, 'appointments.create', 'create')
+    or public.has_clinic_permission(p_clinic_id, 'appointments-scheduling', 'create')
+  ) then
+    raise exception 'Unauthorized: missing permission appointments.create';
+  end if;
+
+  if p_appointment_id is null or btrim(p_appointment_id) = '' or p_appointment_data is null then
+    raise exception 'Invalid input: p_appointment_id and p_appointment_data are required';
+  end if;
+
+  if p_patient_id is not null and p_patient_id <> '' and p_patient_data is not null then
+    insert into public.patients (clinic_id, id, data)
+    values (p_clinic_id, p_patient_id, p_patient_data - 'clinic_id')
+    on conflict (clinic_id, id) do update
+      set data = (public.patients.data || (excluded.data - 'clinic_id' - 'createdAt' - 'createdBy')),
+          updated_at = now();
+  end if;
+
+  insert into public.appointments (clinic_id, id, data)
+  values (p_clinic_id, p_appointment_id, p_appointment_data - 'clinic_id')
+  on conflict (clinic_id, id) do update
+    set data = excluded.data - 'clinic_id',
+        updated_at = now();
+end;
+$$;
+
+revoke execute on function public.create_appointment(
+  text, text, text, jsonb, text, jsonb
+) from public, anon;
+grant execute on function public.create_appointment(
+  text, text, text, jsonb, text, jsonb
+) to authenticated;
+
+-- 5.5 delete_patient
 create or replace function public.delete_patient(
   p_clinic_id text,
   p_patient_id text,
   p_mode text default 'file_only'
 )
-returns void language plpgsql security invoker set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   v_pat jsonb;
   v_patient_name text;
@@ -813,12 +1325,19 @@ begin
 end;
 $$;
 
--- 5.3 remove_queue_visit
+revoke execute on function public.delete_patient(text, text, text) from public, anon;
+grant execute on function public.delete_patient(text, text, text) to authenticated;
+
+-- 5.6 remove_queue_visit
 create or replace function public.remove_queue_visit(
   p_clinic_id text,
   p_visit_id text
 )
-returns void language plpgsql security invoker set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   v_visit jsonb;
   v_appointment_id text;
@@ -839,6 +1358,10 @@ begin
   select data into v_visit from public.visits where clinic_id = p_clinic_id and id = p_visit_id for update;
   if v_visit is null then return; end if;
 
+  if coalesce(v_visit->>'status', '') = 'COMPLETED' then
+    raise exception 'Completed visit cannot be removed from waiting queue';
+  end if;
+
   v_appointment_id := nullif(v_visit->>'appointmentId', '');
 
   delete from public.payments
@@ -856,7 +1379,10 @@ begin
 end;
 $$;
 
--- 5.4 add_transaction
+revoke execute on function public.remove_queue_visit(text, text) from public, anon;
+grant execute on function public.remove_queue_visit(text, text) to authenticated;
+
+-- 5.7 add_transaction
 create or replace function public.add_transaction(
   p_clinic_id text,
   p_timestamp text,
@@ -867,7 +1393,11 @@ create or replace function public.add_transaction(
   p_patient_id text default null,
   p_patient_data jsonb default null
 )
-returns void language plpgsql security invoker set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 begin
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
@@ -885,30 +1415,41 @@ begin
 
   if p_patient_id is not null and btrim(p_patient_id) <> '' and p_patient_data is not null then
     insert into public.patients (clinic_id, id, data)
-    values (p_clinic_id, p_patient_id, p_patient_data)
+    values (p_clinic_id, p_patient_id, p_patient_data - 'clinic_id')
     on conflict (clinic_id, id) do nothing;
   end if;
 
   insert into public.invoices (clinic_id, id, data)
-  values (p_clinic_id, p_invoice_id, p_invoice_data)
-  on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+  values (p_clinic_id, p_invoice_id, p_invoice_data - 'clinic_id')
+  on conflict (clinic_id, id) do update set data = excluded.data - 'clinic_id', updated_at = now();
 
   if p_payment_id is not null and btrim(p_payment_id) <> '' and p_payment_data is not null then
     insert into public.payments (clinic_id, id, data)
-    values (p_clinic_id, p_payment_id, p_payment_data)
-    on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now();
+    values (p_clinic_id, p_payment_id, p_payment_data - 'clinic_id')
+    on conflict (clinic_id, id) do update set data = excluded.data - 'clinic_id', updated_at = now();
   end if;
 end;
 $$;
 
--- 5.5 delete_transaction
+revoke execute on function public.add_transaction(
+  text, text, text, jsonb, text, jsonb, text, jsonb
+) from public, anon;
+grant execute on function public.add_transaction(
+  text, text, text, jsonb, text, jsonb, text, jsonb
+) to authenticated;
+
+-- 5.8 delete_transaction
 create or replace function public.delete_transaction(
   p_clinic_id text,
   p_payment_id text,
   p_invoice_id text,
   p_tx_id text
 )
-returns void language plpgsql security invoker set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 begin
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
@@ -933,12 +1474,19 @@ begin
 end;
 $$;
 
--- 5.6 admin_delete_clinic_user
+revoke execute on function public.delete_transaction(text, text, text, text) from public, anon;
+grant execute on function public.delete_transaction(text, text, text, text) to authenticated;
+
+-- 5.9 admin_delete_clinic_user
 create or replace function public.admin_delete_clinic_user(
   p_clinic_id text,
   p_user_id uuid
 )
-returns void language plpgsql security definer set search_path = public as $$
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
 declare
   v_exists boolean;
 begin
@@ -967,4 +1515,8 @@ begin
 end;
 $$;
 
+revoke execute on function public.admin_delete_clinic_user(text, uuid) from public, anon;
+grant execute on function public.admin_delete_clinic_user(text, uuid) to authenticated;
+
 commit;
+

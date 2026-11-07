@@ -2,6 +2,9 @@
 -- Tables affected atomically: patients, visits, appointments, prescriptions, lab_orders, radiology_orders, follow_ups, and optionally invoices & payments
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.delete_patient(text, text, text) cascade;
+drop function if exists public.delete_patient(text, text) cascade;
+
 create or replace function public.delete_patient(
   p_clinic_id text,
   p_patient_id text,
@@ -9,7 +12,7 @@ create or replace function public.delete_patient(
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare

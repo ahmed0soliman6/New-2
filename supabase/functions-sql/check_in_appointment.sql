@@ -2,6 +2,8 @@
 -- Tables affected atomically: appointments, counters, invoices, payments, visits
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.check_in_appointment(text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb) cascade;
+
 create or replace function public.check_in_appointment(
   p_clinic_id text,
   p_appointment_id text,
@@ -19,7 +21,7 @@ create or replace function public.check_in_appointment(
 )
 returns jsonb
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare

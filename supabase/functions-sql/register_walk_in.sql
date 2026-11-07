@@ -2,6 +2,8 @@
 -- Tables affected atomically: counters, patients, invoices, payments, visits
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.register_walk_in(text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb) cascade;
+
 create or replace function public.register_walk_in(
   p_clinic_id text,
   p_today text,
@@ -22,7 +24,7 @@ create or replace function public.register_walk_in(
 )
 returns jsonb
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare

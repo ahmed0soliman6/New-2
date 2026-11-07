@@ -2,6 +2,8 @@
 -- Tables affected atomically: clinic_members, usernames
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.admin_delete_clinic_user(text, uuid) cascade;
+
 create or replace function public.admin_delete_clinic_user(
   p_clinic_id text,
   p_user_id uuid

@@ -54,14 +54,17 @@ const SENSITIVE_RPC_FILES = [
   'admin_delete_clinic_user.sql',
 ];
 
-test('1. فحص سياسات العزل (RLS) وإلغاء member_all في schema.sql وملف الترحيل', () => {
+test('1. فحص سياسات العزل (RLS) وإلغاء member_all في schema.sql و full_setup.sql وملف الترحيل', () => {
   const schemaPath = path.resolve(process.cwd(), 'supabase/schema.sql');
+  const fullSetupPath = path.resolve(process.cwd(), 'supabase/full_setup.sql');
   const migrationPath = path.resolve(process.cwd(), 'supabase/migrations/20261107_fix_custom_permissions_rls.sql');
 
   assert.ok(fs.existsSync(schemaPath), 'ملف supabase/schema.sql يجب أن يكون موجوداً');
+  assert.ok(fs.existsSync(fullSetupPath), 'ملف التأسيس الشامل supabase/full_setup.sql يجب أن يكون موجوداً');
   assert.ok(fs.existsSync(migrationPath), 'ملف الترحيل اليدوي 20261107_fix_custom_permissions_rls.sql يجب أن يكون موجوداً');
 
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+  const fullSetupSql = fs.readFileSync(fullSetupPath, 'utf8');
   const migrationSql = fs.readFileSync(migrationPath, 'utf8');
 
   // التأكد من عدم وجود أي CREATE POLICY member_all FOR ALL
@@ -71,16 +74,43 @@ test('1. فحص سياسات العزل (RLS) وإلغاء member_all في schem
     'يجب إزالة سياسة member_all (FOR ALL) تماماً من schema.sql'
   );
   assert.doesNotMatch(
+    fullSetupSql,
+    /create\s+policy\s+member_all\s+on/i,
+    'يجب ألا ينشئ ملف full_setup.sql سياسة member_all عامة'
+  );
+  assert.doesNotMatch(
     migrationSql,
     /create\s+policy\s+member_all\s+on/i,
     'يجب ألا ينشئ ملف الترحيل سياسة member_all عامة'
   );
+
+  // التأكد من وجود DROP FUNCTION IF EXISTS لمنع خطأ PostgreSQL 42P13
+  for (const [label, content] of [
+    ['schema.sql', schemaSql],
+    ['full_setup.sql', fullSetupSql],
+    ['20261107_fix_custom_permissions_rls.sql', migrationSql],
+  ]) {
+    assert.match(
+      content,
+      /drop\s+function\s+if\s+exists\s+public\.delete_patient\(text,\s*text,\s*text\)\s+cascade/i,
+      `ملف ${label} يجب أن يتضمن DROP FUNCTION IF EXISTS public.delete_patient(text, text, text) CASCADE لمنع خطأ 42P13`
+    );
+  }
+
+  // التأكد من تهيئة العيادة الافتراضية clinic_main في full_setup.sql و schema.sql
+  assert.match(fullSetupSql, /'clinic_main'/i, 'ملف full_setup.sql يجب أن يهيئ العيادة الافتراضية clinic_main');
+  assert.match(fullSetupSql, /supabase_realtime/i, 'ملف full_setup.sql يجب أن يضبط منشور supabase_realtime');
 
   // التأكد من تعريف دالة فحص الصلاحيات المخصصة على مستوى الصفوف
   assert.match(
     schemaSql,
     /create\s+or\s+replace\s+function\s+public\.has_clinic_permission/i,
     'يجب تعريف الدالة public.has_clinic_permission في schema.sql'
+  );
+  assert.match(
+    fullSetupSql,
+    /create\s+or\s+replace\s+function\s+public\.has_clinic_permission/i,
+    'يجب تعريف الدالة public.has_clinic_permission في full_setup.sql'
   );
   assert.match(
     migrationSql,
@@ -95,18 +125,29 @@ test('1. فحص سياسات العزل (RLS) وإلغاء member_all في schem
       `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS المنفصلة في schema.sql`
     );
     assert.ok(
+      fullSetupSql.includes(`'${table}'`) || fullSetupSql.includes(`public.${table}`),
+      `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS المنفصلة في full_setup.sql`
+    );
+    assert.ok(
       migrationSql.includes(`'${table}'`) || migrationSql.includes(`public.${table}`),
       `الجدول ${table} يجب أن يكون مشمولاً بسياسات RLS المنفصلة في ملف الترحيل`
     );
   }
 });
 
-test('2. التحقق من تأمين جميع دوال RPC التسع الحساسة بالصلاحيات المخصصة و clinic_id', () => {
+test('2. التحقق من تأمين جميع دوال RPC التسع الحساسة بالصلاحيات المخصصة و clinic_id و DROP FUNCTION', () => {
   const rpcDir = path.resolve(process.cwd(), 'supabase/functions-sql');
+  const fullSetupSql = fs.readFileSync(path.resolve(process.cwd(), 'supabase/full_setup.sql'), 'utf8');
   for (const fileName of SENSITIVE_RPC_FILES) {
     const fullPath = path.join(rpcDir, fileName);
+    const fnName = fileName.replace('.sql', '');
     assert.ok(fs.existsSync(fullPath), `ملف الدالة ${fileName} يجب أن يكون موجوداً في supabase/functions-sql`);
     const sql = fs.readFileSync(fullPath, 'utf8');
+    assert.match(
+      sql,
+      /drop\s+function\s+if\s+exists\s+public\./i,
+      `الدالة ${fileName} يجب أن تبدأ بـ DROP FUNCTION IF EXISTS لمنع خطأ 42P13`
+    );
     assert.match(
       sql,
       /(auth\.uid\(\)|public\.is_clinic_member)/i,
@@ -114,6 +155,10 @@ test('2. التحقق من تأمين جميع دوال RPC التسع الحس�
     );
     assert.match(sql, /public\.has_clinic_permission/i, `الدالة ${fileName} يجب أن تتحقق من الصلاحيات عبر has_clinic_permission`);
     assert.match(sql, /set\s+search_path\s*=\s*public/i, `الدالة ${fileName} يجب أن تضبط search_path = public`);
+    assert.ok(
+      fullSetupSql.includes(`public.${fnName}`),
+      `ملف full_setup.sql يجب أن يتضمن تعريف الدالة public.${fnName}`
+    );
   }
 });
 

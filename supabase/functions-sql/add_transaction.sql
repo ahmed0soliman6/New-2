@@ -2,6 +2,8 @@
 -- Tables affected atomically: patients (optional), invoices, payments
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.add_transaction(text, text, text, jsonb, text, jsonb, text, jsonb) cascade;
+
 create or replace function public.add_transaction(
   p_clinic_id text,
   p_timestamp text,
@@ -14,7 +16,7 @@ create or replace function public.add_transaction(
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 begin

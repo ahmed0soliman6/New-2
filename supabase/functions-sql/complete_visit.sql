@@ -2,6 +2,8 @@
 -- Tables affected atomically: visits, patients, prescriptions, lab_orders, radiology_orders, follow_ups
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.complete_visit(text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb) cascade;
+
 create or replace function public.complete_visit(
   p_clinic_id text,
   p_visit_id text,
@@ -16,7 +18,7 @@ create or replace function public.complete_visit(
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare

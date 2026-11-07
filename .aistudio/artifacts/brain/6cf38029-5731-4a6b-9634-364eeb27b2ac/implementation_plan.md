@@ -1,163 +1,84 @@
-# خطة ترقية وتأمين نظام العيادة الطبية (الإصدار v3.0.0)
+# إصلاح تعارض دوال الـ RPC (42P13) وتجهيز ملف التأسيس الشامل لقاعدة البيانات (`v3.0.0`)
 
-تهدف هذه الخطة إلى تحويل نظام الصلاحيات من فحص يعتمد على المسمى الوظيفي العام (Role-Only) أو واجهة المستخدم فقط إلى **نظام صلاحيات مخصص وشامل يعمل خادمياً داخل Supabase (RLS + RPC) وفي واجهة React معاً**، بالتزامن مع تأمين عمليات الحذف السحابي والنسخ الاحتياطي وتحديث محرك المزامنة غير المتصلة (Offline Sync) بمعالجة التعارضات التفاعلية وتوحيد الإصدار إلى `v3.0.0`.
+تهدف هذه الخطة إلى حل خطأ PostgreSQL (`ERROR: 42P13: cannot change return type of existing function`) نهائياً عند تشغيل ملف الترحيل على قاعدة البيانات الحالية، مع توفير ملف SQL شامل ومكتفٍ بذاته لتأسيس وتشغيل النظام بالكامل عند نقله إلى أي مشروع Supabase جديد بخطوة واحدة.
 
 ---
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> تم اعتماد القرارات المعمارية التالية بناءً على إجاباتك المؤكدة في المرحلة الأولى ومتطلباتك التفصيلية:
-
-- **معالجة تعارضات المزامنة (Offline Sync Conflicts)**: الاحتفاظ بنسخة الخادم ونسخة الجهاز المحلي معاً عند رصد تعارض في رقم المراجعة (`_rev`)، وعرض **نافذة مقارنة تفاعلية (Conflict Comparison Modal)** تتيح للمستخدم مراجعة الفروق واختيار النسخة المعتمدة دون الكتابة الصامتة فوق البيانات.
-- **سجل المراجعة الأمني (Security Audit Log)**: حفظ سجلات العمليات الحساسة (الحذف الجماعي، تعديل بيانات المرضى، استعادة النسخة الاحتياطية، وتعديل الصلاحيات) داخل وثيقة نشاط محمية في جدول الإعدادات الحالي (`settings` تحت معرف `_audit_log`) مع حماية RLS تسمح بالإضافة والقراءة للمخولين وتمنع المسح العشوائي.
-- **توحيد إصدار النظام (Unified Release v3.0.0)**: اعتماد الإصدار **`3.0.0` / `v3.0.0`** كمصدر مركزي موحد مع توليد تاريخ البناء تلقائياً وربطه بشاشة الإعدادات وبيان النسخة الاحتياطية (Backup Manifest) وملف `CHANGELOG.md`.
-- **تطبيق الصلاحيات المخصصة بمعزل عن المسمى الوظيفي**: الدور الوظيفي (`admin`, `doctor`, `secretary`) يعمل كقالب افتراضي أولي فقط؛ أما القرار الفعلي للسماح أو المنع في الواجهة وفي قاعدة البيانات فيعتمد على الصلاحية الممنوحة للمستخدم في سجله داخل `clinic_members.permissions`، بحيث يستطيع السكرتير أو الطبيب تنفيذ أي عملية (مثل حذف مريض، فتح كشف، حذف دفعة مالية، أو استعادة نسخة احتياطية) متى منحه المدير تلك الصلاحية صراحة، ويُمنع منها خادمياً وواجهياً إذا سُحبت منه.
-
-> [!WARNING]
-> **عدم التنفيذ التلقائي على قاعدة الإنتاج**: جميع تعديلات قاعدة البيانات والـ RLS والـ RPC ستُكتب في ملف Migration مستقل وجاهز للتشغيل اليدوي الآمن مع تعليمات واضحة دون المساس ببيانات الإنتاج تلقائياً.
+> تم اعتماد اختياراتك التالية لبناء ملفات قاعدة البيانات:
+> - **Confirmed Decision 1 (تنظيم ملفات التأسيس)**: إنشاء ملف شامل واحد مكتفٍ بذاته (Self-Contained Master Setup) يضم الجداول، الفهارس، الدوال الأمنية، سياسات RLS المنفصلة، دوال الـ RPC التسع، وتفعيل البث اللحظي (Realtime)، مع تحديث ملف المخطط الأساسي ليبقى متطابقاً معه.
+> - **Confirmed Decision 2 (تهيئة العيادة الافتراضية)**: تضمين أمر التهيئة الآمن (`ON CONFLICT DO NOTHING`) لإدراج سجل العيادة الافتراضية (`clinic_main`) والإعدادات الأولية حتى يعمل التطبيق مباشرة بعد تشغيل السكربت دون الحاجة لإدخال يدوي.
 
 ---
 
 ## 1. Overview & Core Concept
 
 - **What It Does**:
-  1. **محرك صلاحيات مخصص ثنائي الطبقة (Client + Database RBAC/ABAC)**: توحيد فحص الصلاحيات عبر دالة خادمية موحدة `has_clinic_permission(p_clinic_id, p_screen_or_perm, p_action)` تقرأ `customPermissions` و`allowedScreens` و`specialPermissions` مباشرة من جدول `clinic_members` للعضو النشط، وتُطبق على سياسات `SELECT / INSERT / UPDATE / DELETE` المنفصلة لكل جدول بعد إزالة سياسة `member_all` العامة المتساهلة.
-  2. **صلاحيات مستقلة للعمليات الحساسة**: فصل الصلاحيات الدقيقة بحيث تكون مستقلة وقابلة للمنح أو السحب من لوحة إدارة الصلاحيات:
-     - `patients.view`, `patients.create`, `patients.update`, `patients.delete` (إدارة المرضى وحذف مريض مفرد).
-     - `clinical.view`, `clinical.create`, `clinical.update`, `clinical.complete` (فتح الكشف وإنهاء الزيارة).
-     - `billing.view`, `billing.create`, `billing.update`, `billing.delete` (إدارة وحذف الفواتير والمدفوعات بشكل منفصل عن الملف الطبي).
-     - `system.clear_all_data` (الحذف الجماعي السحابي لبيانات التشغيل دون المساس بالإعدادات والكتالوجات والمستخدمين).
-     - `backup.export` و `backup.restore` (فصل صلاحية تصدير النسخة الاحتياطية عن صلاحية استعادتها).
-     - `demo.manage` (توليد وإدارة البيانات التجريبية المعزولة بعلامة `isDemo: true`).
-     - `users.manage` / `roles.manage` (إدارة المستخدمين والصلاحيات).
-  3. **تأمين جميع دوال الـ RPC الخادمية**: تحديث وتوفير دوال `check_in_appointment`, `register_walk_in`, `complete_visit`, `create_appointment`, `remove_queue_visit`, `delete_patient`, `add_transaction`, `delete_transaction`, `admin_delete_clinic_user` للتحقق من عضوية العيادة والصلاحية الفعلية من قاعدة البيانات وفحص صحة المدخلات (Input Validation).
-  4. **مزامنة Offline متقدمة بمعالجة التعارضات والـ Tombstones**: دعم رقم مراجعة خادمي (`_rev`)، ومعرف عملية حتمي (`mutationId`) يمنع التكرار، وسجل حذف دائم (`Tombstones`) يمنع عودة السجلات المحذوفة عند اتصال جهاز قديم، ومزامنة تزايدية حقيقية تعتمد على `lastSyncedAt`.
-  5. **نسخ احتياطي واستعادة موثقة بـ Manifest و Checksum**: تضمين رقم إصدار المخطط (`schemaVersion`)، ومعرف العيادة (`clinic_id`)، وبصمة التحقق الرقمية (`SHA-256 Checksum`)، ومعاينة تفصيلية (Preview) قبل الاستعادة مع آلية استرجاع آمنة (Rollback Snapshot) عند حدوث أي فشل جزئي.
-- **Target Audience / Persona**: مدير العيادة، الأطباء، وموظفو الاستقبال في بيئة عيادة واحدة حالياً مع جاهزية معمارية كاملة لدعم تعدد العيادات (`clinic_id`) مستقبلاً.
-- **Key Value**: ضمان استحالة تجاوز الصلاحيات عبر المتصفح، ومرونة كاملة للمدير في تفويض أي مهمة لأي موظف، وحماية البيانات الطبية والمالية من الفقدان أو التضارب أو التدمير بالخطأ.
+  1. يعالج خطأ `42P13` في PostgreSQL الناتج عن اختلاف نوع الإرجاع (`RETURN TYPE`) للدوال الموجودة مسبقاً في قاعدة البيانات مثل `delete_patient(text, text, text)` و `remove_queue_visit(text, text)` و `add_transaction` و `delete_transaction` و `admin_delete_clinic_user`، وذلك عبر حذف التوقيعات القديمة بأمان (`DROP FUNCTION IF EXISTS ...`) قبل إعادة إنشائها.
+  2. يجمع كل أوامر SQL اللازمة لتشغيل نظام العيادة من الصفر في ملف تأسيس واحد شامل ومرتب، بحيث يمكن نسخ المشروع إلى أي حساب أو مشروع Supabase جديد وتشغيله فوراً.
+- **Target Audience / Persona**: مدير النظام أو المطور عند تحديث قاعدة البيانات الحالية أو نقل النظام إلى بيئة Supabase جديدة.
+- **Key Value**: تشغيل خالٍ من الأخطاء (`Idempotent Execution`) سواء على قاعدة بيانات قديمة تحتوي على دوال سابقة أو على قاعدة بيانات فارغة تماماً.
 
 ---
 
-## 2. User Experience & Visual Design
+## 2. User Experience & Operational Flow
 
-- **Key User Flows**:
-  1. **تخصيص الصلاحيات المرنة (Screen & Special Permissions Modal)**:
-     - يفتح المدير نافذة صلاحيات المستخدم، فيجد بجانب صلاحيات الشاشات الأربع (`عرض / إضافة / تعديل / حذف`) قسماً واضحاً لـ **الصلاحيات الخاصة والحساسة (Special Operational Permissions)** مثل: حذف المرضى (`patients.delete`)، حذف السجلات المالية (`billing.delete`)، فتح وإتمام الكشف الطبي (`clinical.complete`)، الحذف الجماعي السحابي (`system.clear_all_data`)، استعادة النسخة الاحتياطية (`backup.restore`)، وإدارة البيانات التجريبية (`demo.manage`).
-     - بمجرد الحفظ، تُخزن الصلاحيات في `clinic_members.permissions` في Supabase وتنعكس فوراً في الواجهة وفي سياسات RLS دون الاعتماد على كاش قديم في `localStorage`.
-  2. **تدفق الحذف السحابي المحمي (Protected Cloud Clear Flow)**:
-     - يظهر زر الحذف السحابي فقط لمن يملك صلاحية `system.clear_all_data`.
-     - عند الضغط عليه، تفتح نافذة تأكيد أمنية تعرض: اسم العيادة ومعرفها، قائمة الجداول المشمولة بالحذف، عدد السجلات الفعلي في كل جدول، وتأكيداً بأن الإعدادات والكتالوجات الطبية والمستخدمين لن تُمس.
-     - يتطلب التنفيذ كتابة عبارة التأكيد النصية بدقة: **`احذف بيانات العيادة`**، مع قفل الزر أثناء التنفيذ، ثم عرض تقرير تفصيلي بعدد السجلات المحذوفة من كل جدول وحالة النجاح/الفشل وتسجيل العملية في `_audit_log`.
-  3. **تدفق النسخ الاحتياطي والاستعادة الموثق (Verified Backup & Restore Preview)**:
-     - عند التصدير: يظهر تنبيه أمني بأن الملف يحتوي على بيانات طبية حساسة، ويُولّد ملف JSON مزود بـ `manifest` (يضم `schemaVersion`, `appVersion: v3.0.0`, `clinicId`, `exportedAt`, وعدد السجلات) مع `checksum` محسوب.
-     - عند الاستيراد: يتحقق النظام أولاً من صلاحية `backup.restore`، ثم يطابق `clinicId` والـ `checksum`، ويعرض **بطاقة معاينة (Restore Preview)** توضح تاريخ النسخة وعدد السجلات في كل جدول قبل بدء الاستعادة الذرية، مع حفظ نسخة تراجع محلية (Rollback Snapshot) لاسترجاع الحالة السابقة تلقائياً إذا فشل أي جدول.
-  4. **تدفق حل تعارضات المزامنة (Offline Conflict Resolution Modal)**:
-     - إذا عدّل جهاز قديم سجلاً تم تحديثه على الخادم بإصدار أحدث (`_rev`)، يحتفظ النظام بالنسختين ويعرض إشعاراً ونافذة مقارنة جنبًا إلى جنب (نسخة الخادم مقابل نسخة الجهاز) ليختار المستخدم النسخة المعتمدة بأمان.
-- **Visual Identity & Theme**:
-  - الحفاظ الكامل على الهوية البصرية الطبية الاحترافية الحالية للعيادة (Dual-Theme Light/Dark Slate `#0c1322` / `#111A2E` مع تباينات Teal `#00c2cb` و Emerald/Amber/Crimson الدلالية).
-  - تطبيق قواعد `tabular-nums` (`font-mono`) على جميع الأرقام المالية، العدادات، التواريخ، أرقام الإصدارات، وبصمات التحقق (`Checksum`).
-  - التزام صارم ببنية البطاقات أحادية المستوى (Single-Elevation Depth) مع حدود دقيقة `1px` دون تداخل بطاقات مزدحم أو أشرطة حالة وهمية.
+- **مسار تحديث قاعدة البيانات الحالية (الحل الفوري للخطأ الظاهر في الصورة)**:
+  1. يفتح المسؤول محرر SQL في Supabase.
+  2. ينسخ ملف الترحيل المحدّث ويشغله.
+  3. يقوم السكربت تلقائياً بحذف النسخ القديمة من الدوال التسع عبر `DROP FUNCTION IF EXISTS` بالتوقيعات المطابقة، ثم يعيد إنشاءها بنوع الإرجاع الموحد ويمنح صلاحيات التنفيذ (`GRANT EXECUTE ... TO authenticated`).
+- **مسار نقل المشروع إلى قاعدة بيانات Supabase جديدة بالكامل**:
+  1. ينشئ المسؤول مشروع Supabase جديداً ويفتح **SQL Editor**.
+  2. ينسخ محتوى ملف التأسيس الشامل ويشغله مرة واحدة.
+  3. يتم تلقائياً إنشاء الجداول الأساسية + الـ 22 جدولاً تشغيلياً وطبياً + دوال التحقق من الصلاحيات المخصصة + سياسات RLS المنفصلة + دوال الـ RPC التسع + تفعيل `supabase_realtime` + زرع سجل العيادة الافتراضية (`clinic_main`).
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: التحقق من الصلاحيات عبر الدالة الخادمية `has_clinic_permission` بدلاً من فحص `role` الثابت**
-  - *Chosen Approach*: بناء دالة SQL موحدة `public.has_clinic_permission(p_clinic_id text, p_permission text, p_action text default 'view')` تقرأ سجل المستخدم من `public.clinic_members` وتفحص:
-    1. هل `auth.uid()` موجود وعضو نشط (`is_active = true`) في `p_clinic_id`؟
-    2. هل يملك صلاحية صريحة في `permissions->'specialPermissions'->>p_permission` أو `permissions->'customPermissions'->screen->>p_action`؟
-    3. إذا لم توجد تخصيصات صريحة، يرجع إلى الإعداد الافتراضي للدور (`admin`, `doctor`, `secretary`).
-  - *Why*: يحقق مرونة 100% للمدير؛ فإذا منح السكرتير صلاحية `patients.delete` أو `clinical.complete`، تسمح له قاعدة البيانات فوراً، وإذا لم يمنحه، ترفض قاعدة البيانات العملية حتى لو أرسل طلباً مباشراً خارج المتصفح.
-  - *Alternatives Considered*: الاعتماد على `is_clinic_doctor_or_admin` فقط — مرفوض لأنه يمنع السكرتير حتى عندما يمنحه المدير الصلاحية صراحة، أو يمنح الطبيب صلاحيات قد يرغب المدير في تقييدها.
-
-- **Decision 2: استبدال سياسة `member_all` بسياسات `SELECT / INSERT / UPDATE / DELETE` مفصلة لكل جدول**
-  - *Chosen Approach*: حذف سياسة `member_all` (`FOR ALL`) من جميع الجداول، لأن سياسات PostgreSQL السماحية (`PERMISSIVE`) تعمل بمنطق `OR` مما يجعل وجود `member_all` يبطل أي سياسة تقييد إضافية. بدلاً منها، يتم إنشاء 4 سياسات مستقلة (`_select`, `_insert`, `_update`, `_delete`) لكل جدول تستدعي `public.has_clinic_permission`.
-  - *Why*: يضمن عدم قدرة أي مستخدم على الحذف أو التعديل إلا بوجود الصلاحية المخصصة المقابلة للجدول والعملية.
-
-- **Decision 3: المزامنة غير المتصلة باستخدام `_rev` و Tombstones ومعرفات عمليات حتمية**
-  - *Chosen Approach*:
-    - توليد `mutationId` حتمي بصيغة `${clinicId}:${table}:${id}:${op}:${baseRev}` بدلاً من `Date.now()` لمنع تكرار العمليات عند إعادة المحاولة.
-    - تضمين حقل `_rev` (رقم المراجعة) و`_deleted` (في جدول/مخزن Tombstones) لمنع الكتابة فوق إصدار أحدث على الخادم ومنع عودة السجلات المحذوفة.
-    - تحديث `syncTableIncremental` لاستخدام `.gt('updated_at', lastSyncedAt)` فعلياً ودمج التغييرات التزايدية مع الكاش المحلي بدلاً من جلب الجدول بالكامل في كل دورة.
-  - *Why*: يمنع فقدان البيانات عند عمل أكثر من جهاز (مثل جهاز الطبيب وجهاز الاستقبال) في نفس العيادة.
+- **Decision 1: إضافة `DROP FUNCTION IF EXISTS` صريحة بالتوقيع الكامل للمعاملات قبل كل `CREATE OR REPLACE FUNCTION`**
+  - *Chosen Approach*: وضع أوامر `DROP FUNCTION IF EXISTS` لكل دالة من دوال الـ RPC التسع (بما فيها التوقيعات ذات المعاملات الافتراضية) داخل كتلة المعاملة (`BEGIN ... COMMIT`).
+  - *Why*: يمنع PostgreSQL تعديل نوع الإرجاع (`void` مقابل `jsonb`) عبر `CREATE OR REPLACE FUNCTION` ويرفع الخطأ `42P13`. حذف الدالة أولاً داخل نفس المعاملة يضمن استبدالها بأمان دون انقطاع الخدمة.
+- **Decision 2: توحيد جميع دوال الـ RPC التسع لتعمل بـ `SECURITY DEFINER` مع `SET search_path = public` وفحص `has_clinic_permission`**
+  - *Chosen Approach*: جعل الدوال التسع تتحقق أولاً من `public.is_clinic_member(p_clinic_id)` ومن الصلاحية الدقيقة عبر `public.has_clinic_permission(...)` ثم تنفذ العمليات المركبة ذرياً.
+  - *Why*: يضمن أن المستخدم الذي منحه المدير صلاحية مخصصة (مثل سكرتير مُنح صلاحية حذف مريض أو إنهاء كشف) لا يتعطل بسبب صلاحيات الجداول الفرعية المرتبطة، مع بقاء الحماية الخادمية صارمة.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### Architecture & Component Diagram
+### Architecture & SQL Execution Pipeline
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                        React Application (v3.0.0)                            │
-│                                                                              │
-│  ┌─────────────────────────┐   ┌─────────────────────────┐                   │
-│  │   AuthContext & RBAC    │   │ ScreenPermissionsModal  │                   │
-│  │  - Live DB Permissions  │◄──┤ - Screen CRUD Matrix    │                   │
-│  │  - Special Perms Check  │   │ - Special Perms Toggles │                   │
-│  └───────────┬─────────────┘   └───────────┬─────────────┘                   │
-│              │                             │                                 │
-│  ┌───────────▼─────────────┐   ┌───────────▼─────────────┐                   │
-│  │ Protected Operations UI │   │  OfflineSync Engine v2  │                   │
-│  │ - CloudClearConfirmModal│   │ - Deterministic Outbox  │                   │
-│  │ - BackupPreview & Audit │   │ - _rev OCC & Tombstones │                   │
-│  │ - Patient Update Guard  │   │ - ConflictCompareModal  │                   │
-│  └───────────┬─────────────┘   └───────────┬─────────────┘                   │
-└──────────────┼─────────────────────────────┼─────────────────────────────────┘
-               │ PostgREST / RPC Calls       │ Incremental Sync (.gt updated_at)
-               ▼                             ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                     Supabase PostgreSQL (Multi-Clinic)                       │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ public.has_clinic_permission(p_clinic_id, p_perm_or_screen, p_action)  │  │
-│  │  1. Verify auth.uid() in clinic_members (clinic_id, is_active = true)  │  │
-│  │  2. Check explicit specialPermissions / customPermissions JSONB        │  │
-│  │  3. Fallback to role defaults only when not explicitly overridden      │  │
-│  └──────────────────┬───────────────────────────────────┬─────────────────┘  │
-│                     │                                   │                    │
-│  ┌──────────────────▼─────────────────┐  ┌──────────────▼─────────────────┐  │
-│  │ Granular Table RLS Policies        │  │ Hardened Atomic RPC Functions  │  │
-│  │ (No permissive 'member_all')       │  │ - check_in_appointment         │  │
-│  │ - SELECT / INSERT / UPDATE / DELETE│  │ - register_walk_in             │  │
-│  │ - Separate Medical vs Billing Del  │  │ - complete_visit               │  │
-│  │ - Settings & _audit_log Protection │  │ - create_appointment           │  │
-│  └────────────────────────────────────┘  │ - remove_queue_visit           │  │
-│                                          │ - delete_patient               │  │
-│                                          │ - add/delete_transaction       │  │
-│                                          │ - admin_delete_clinic_user     │  │
-│                                          └────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────────┘
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                 Supabase SQL Setup & Migration Pipeline                  │
+└────────────────────────────────────┬─────────────────────────────────────┘
+                                     │
+         ┌───────────────────────────┴───────────────────────────┐
+         ▼                                                       ▼
+┌─────────────────────────────────────┐       ┌─────────────────────────────────────┐
+│   1. Existing Database Migration    │       │    2. New Database Full Bootstrap   │
+│  (Fix 42P13 & Upgrade Permissions)  │       │     (Complete Master SQL Script)    │
+└────────────────┬────────────────────┘       └──────────────────┬──────────────────┘
+                 │                                               │
+                 ├─► DROP FUNCTION IF EXISTS (All 9 RPCs)        ├─► Core Tables (clinics, clinic_members, usernames)
+                 ├─► Create/Update has_clinic_permission()       ├─► 22 Clinic Document Tables + Indexes
+                 ├─► Drop member_all & Create Granular RLS       ├─► Permission Functions (is_clinic_member, has_clinic_permission)
+                 ├─► Recreate 9 Hardened RPC Functions           ├─► Granular RLS Policies (SELECT / INSERT / UPDATE / DELETE)
+                 └─► GRANT EXECUTE TO authenticated              ├─► Drop & Create All 9 Atomic RPCs + Grants
+                                                                 ├─► Enable Realtime Publication (supabase_realtime)
+                                                                 └─► Seed Default Clinic ('clinic_main')
 ```
 
-### Data Model & Permission Mapping
-
-1. **بنية الصلاحيات في `clinic_members.permissions` (JSONB)**:
-   - `customPermissions`: خريطة الشاشات `{ [screenId]: { view, create, update, delete } }`.
-   - `specialPermissions`: خريطة الصلاحيات الدقيقة المستقلة:
-     - `patients.update`: تعديل بيانات المريض الأساسية والطبية.
-     - `patients.delete`: حذف ملف مريض مفرد.
-     - `clinical.open`: فتح الكشف الطبي وبدء الزيارة.
-     - `clinical.complete`: اعتماد وإنهاء الكشف الطبي والروشتة.
-     - `billing.delete`: حذف الفواتير أو المدفوعات أو الحركات المالية.
-     - `system.clear_all_data`: تنفيذ الحذف الجماعي السحابي لبيانات التشغيل.
-     - `backup.export`: تصدير نسخة احتياطية.
-     - `backup.restore`: استعادة نسخة احتياطية إلى قاعدة البيانات.
-     - `demo.manage`: توليد أو مسح البيانات التجريبية (`isDemo: true`).
-     - `users.manage`: إدارة حسابات المستخدمين وتخصيص الصلاحيات.
-2. **سجل المراجعة الأمني (`settings` -> `id = '_audit_log'`)**:
-   - يخزن مصفوفة أحداث أمنية موثقة، يشمل كل حدث: `eventId`, `timestamp`, `actorUid`, `actorUsername`, `clinicId`, `action`, `permissionUsed`, `affectedTables`, `recordCounts`, و `status` (`SUCCESS` / `PARTIAL_FAILURE` / `REJECTED`).
-3. **بيان النسخة الاحتياطية (`Backup Manifest v3.0.0`)**:
-   - يتضمن: `schemaVersion: 3`, `appVersion: 'v3.0.0'`, `clinicId`, `exportedAt`, `checksum` (SHA-256 لمحتوى الجداول)، و `tableCounts`، مع التحقق الصارم قبل أي عملية استعادة.
-
-### Interactive Component & State Mapping
-
-- **تحديث صلاحيات الجلسة الفوري (`AuthContext`)**:
-  - الاستماع لأي تحديث على صف المستخدم في `clinic_members` وإعادة جلب الصلاحيات مباشرة من Supabase عند تحميل الجلسة وعند تعديل الصلاحيات، مع إلغاء الاعتماد الأمني على الكاش المحلي في `localStorage` إذا ألغيت الصلاحية خادمياً.
-- **حماية تعديل المريض (`handleUpdatePatient`)**:
-  - التحقق من صلاحية `patients.update`، ومنع تغيير الحقول الثابتة (`clinic_id`, `patientId`, `createdAt`, `createdBy`)، والتحقق من صحة طول الاسم ورقم الهاتف والرقم الطبي والتواريخ، وتسجيل التعديلات الطبية في `_audit_log`.
-- **عزل بيانات الـ Demo (`demoDataGenerator.ts` & `database.ts`)**:
-  - استبدال جميع الأسماء بألقاب تجريبية صريحة (`مريض تجريبي 001` ... `مريض تجريبي 008`)، واستخدام أرقام هاتف غير قابلة للاتصال (`00000000000`)، وأرقام قومية غير حقيقية (`00000000000000`)، ودمغ كل سجل بـ `isDemo: true`، وحصر أزرار توليدها بصلاحية `demo.manage`.
-- **حزمة الاختبارات الشاملة (`npm test` / `node --test`)**:
-  - تغطية الـ 10 سيناريوهات للصلاحيات المخصصة (السكرتير والطبيب مع/بدون صلاحيات الحذف وفتح الكشف وحذف المدفوعات، المستخدم غير النشط، العزل بين العيادات، وإلغاء الصلاحيات)، واختبارات الحذف الجماعي، واختبارات تعارضات الـ Offline والـ Tombstones، واختبارات النسخ الاحتياطي والـ Checksum والـ Rollback.
+### التوقيعات التي سيتم حذفها وإعادة إنشائها لحل خطأ `42P13`
+1. `public.delete_patient(text, text, text)` و `public.delete_patient(text, text)`
+2. `public.remove_queue_visit(text, text)`
+3. `public.add_transaction(text, text, text, jsonb, text, jsonb, text, jsonb)`
+4. `public.delete_transaction(text, text, text, text)`
+5. `public.admin_delete_clinic_user(text, uuid)`
+6. `public.check_in_appointment(text, text, text, text, integer, text, text, text, text, numeric, text, text, jsonb)`
+7. `public.register_walk_in(text, text, text, integer, text, jsonb, text, text, text, text, numeric, text, text, text, text, jsonb)`
+8. `public.complete_visit(text, text, text, text, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)`
+9. `public.create_appointment(text, text, text, jsonb, text, jsonb)`

@@ -2,6 +2,8 @@
 -- Tables affected atomically: patients (optional upsert), appointments
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.create_appointment(text, text, text, jsonb, text, jsonb) cascade;
+
 create or replace function public.create_appointment(
   p_clinic_id text,
   p_timestamp text,
@@ -12,7 +14,7 @@ create or replace function public.create_appointment(
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare

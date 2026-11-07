@@ -2,13 +2,15 @@
 -- Tables affected atomically: visits, invoices, payments, appointments
 -- Do NOT execute automatically on production; review and run in Supabase SQL Editor.
 
+drop function if exists public.remove_queue_visit(text, text) cascade;
+
 create or replace function public.remove_queue_visit(
   p_clinic_id text,
   p_visit_id text
 )
 returns void
 language plpgsql
-security invoker
+security definer
 set search_path = public
 as $$
 declare
