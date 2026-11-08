@@ -2382,5 +2382,46 @@ grant execute on function public.preview_purge(text, timestamptz, text[]) to aut
 revoke execute on function public.purge_old_data(text, timestamptz, text[], text) from public, anon;
 grant execute on function public.purge_old_data(text, timestamptz, text[], text) to authenticated;
 
+-- =============================================================================
+-- Realtime REPLICA IDENTITY FULL configuration (to ensure DELETE events contain ID)
+-- =============================================================================
+alter table public.patients replica identity full;
+alter table public.appointments replica identity full;
+alter table public.visits replica identity full;
+alter table public.invoices replica identity full;
+alter table public.payments replica identity full;
+alter table public.prescriptions replica identity full;
+alter table public.follow_ups replica identity full;
+alter table public.lab_orders replica identity full;
+alter table public.radiology_orders replica identity full;
+alter table public.settings replica identity full;
+alter table public.clinic_members replica identity full;
+
+-- Ensure tables are added to supabase_realtime publication
+do $$
+declare
+  rt text;
+  realtime_tables text[] := array[
+    'patients', 'appointments', 'visits', 'invoices', 'payments', 'transactions',
+    'expenses', 'expense_categories', 'prescriptions', 'follow_ups', 'lab_orders',
+    'radiology_orders', 'medications', 'lab_tests', 'radiology_types', 'diagnoses',
+    'symptoms', 'chronic_diseases', 'services', 'settings', 'counters', 'clinic_members'
+  ];
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach rt in array realtime_tables loop
+      if not exists (
+        select 1
+          from pg_publication_tables
+         where pubname = 'supabase_realtime'
+           and schemaname = 'public'
+           and tablename = rt
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', rt);
+      end if;
+    end loop;
+  end if;
+end $$;
+
 commit;
 

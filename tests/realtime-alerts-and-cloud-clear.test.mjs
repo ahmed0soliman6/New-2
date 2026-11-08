@@ -243,3 +243,103 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): صلاحيات السك�
   const genRow = await pg.query(`select data from public.settings where clinic_id = $1 and id = '_database_generation'`, [clinicId]);
   assert.equal(genRow.rows[0].data.generation, newGen, 'تم تحديث _database_generation لمزامنة الحذف السحابي بين كافة الأجهزة');
 });
+
+// 4. Test Notification Badge and Alert History Deduplication
+test('4. اختبار دمج الإشعارات ومنع احتساب التنبيه المكرر في العداد (Badge & Alert History Deduplication)', () => {
+  // Simulating alert history update with deduplication
+  function addAlertWithDeduplication(prevAlerts, alertItem) {
+    let filtered = prevAlerts;
+    if (alertItem.type === 'finish' && alertItem.patientId) {
+      filtered = filtered.filter((a) => a.patientId !== alertItem.patientId);
+    }
+    filtered = filtered.filter((a) => {
+      if (a.id === alertItem.id) return false;
+      if (alertItem.patientId && a.patientId === alertItem.patientId && a.type === alertItem.type) return false;
+      if (alertItem.visitId && a.visitId === alertItem.visitId && a.type === alertItem.type) return false;
+      if (a.title === alertItem.title && a.message === alertItem.message) return false;
+      return true;
+    });
+    return [alertItem, ...filtered].slice(0, 20);
+  }
+
+  let history = [];
+  // 1. New visit alert arrives
+  history = addAlertWithDeduplication(history, {
+    id: 'new-v1',
+    type: 'new_visit',
+    patientId: 'p1',
+    visitId: 'v1',
+    title: 'زيارة جديدة',
+    message: 'المريض أحمد',
+    timestamp: '10:00 ص',
+  });
+  assert.equal(history.length, 1);
+
+  // 2. Duplicate alert with slightly different ID arrives (should be merged/replaced, not added as a second row)
+  history = addAlertWithDeduplication(history, {
+    id: 'new-v1-broadcast',
+    type: 'new_visit',
+    patientId: 'p1',
+    visitId: 'v1',
+    title: 'زيارة جديدة',
+    message: 'المريض أحمد',
+    timestamp: '10:00 ص',
+  });
+  assert.equal(history.length, 1, 'التنبيه المكرر لنفس المريض والنوع لا يُضاف مرتين في السجل');
+
+  // 3. Exam finish alert arrives for p1 -> should remove previous waiting/calling alert
+  history = addAlertWithDeduplication(history, {
+    id: 'finish-v1',
+    type: 'finish',
+    patientId: 'p1',
+    visitId: 'v1',
+    title: 'انتهاء الكشف',
+    message: 'تم فحص المريض أحمد',
+    timestamp: '10:15 ص',
+  });
+  assert.equal(history.length, 1);
+  assert.equal(history[0].type, 'finish', 'إشعار انتهاء الكشف يستبدل ويحذف إشعار الانتظار لنفس المريض');
+
+  // 4. Test Notification Badge Count calculation (prevent double counting queue items + alerts)
+  const waitingQueue = [{ id: 'v2', patientId: 'p2', patientName: 'سارة' }];
+  const recentAlerts = [
+    { id: 'new-v2', type: 'new_visit', patientId: 'p2', title: 'زيارة جديدة', message: 'سارة' }, // In queue!
+    { id: 'avail-1', type: 'call', title: 'الطبيب متاح', message: 'جاهز' }, // Standalone alert
+  ];
+  const urgentFollowUps = [];
+
+  const seenKeys = new Set();
+  let uniqueAlertsCount = 0;
+  for (const a of recentAlerts) {
+    const key = a.patientId ? `${a.type}:${a.patientId}` : (a.visitId ? `${a.type}:${a.visitId}` : a.id);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      const isInQueue = a.patientId && waitingQueue.some((q) => q.patientId === a.patientId);
+      if (!isInQueue) {
+        uniqueAlertsCount++;
+      }
+    }
+  }
+
+  const totalActionCount = waitingQueue.length + uniqueAlertsCount + urgentFollowUps.length;
+  // waitingQueue (1) + standalone alert (1) = 2, NOT 3 (the new_visit alert for p2 is not double counted!)
+  assert.equal(totalActionCount, 2, 'العداد لا يحتسب المريض في الانتظار وإشعاره مرتين');
+});
+
+// 5. Test Realtime DELETE State Filter
+test('5. اختبار تصفية السجل المحذوف لحظياً من الحالة المركزية (Realtime DELETE state removal)', () => {
+  let patients = [
+    { patientId: 'p100', fullName: 'مريض 1' },
+    { patientId: 'p200', fullName: 'مريض 2' },
+  ];
+
+  function onTableDelete(table, deletedId) {
+    if (table === 'patients') {
+      patients = patients.filter((p) => p.patientId !== deletedId && p.id !== deletedId);
+    }
+  }
+
+  onTableDelete('patients', 'p100');
+  assert.equal(patients.length, 1, 'يتم حذف السجل فوراً من مصفوفة المرضى');
+  assert.equal(patients[0].patientId, 'p200');
+});

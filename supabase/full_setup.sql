@@ -2590,8 +2590,20 @@ revoke execute on function public.purge_old_data(text, timestamptz, text[], text
 grant execute on function public.purge_old_data(text, timestamptz, text[], text) to authenticated;
 
 -- =============================================================================
--- 7. تفعيل البث اللحظي (Supabase Realtime Publication)
+-- 7. تفعيل البث اللحظي (Supabase Realtime Publication & REPLICA IDENTITY FULL)
 -- =============================================================================
+
+alter table public.patients replica identity full;
+alter table public.appointments replica identity full;
+alter table public.visits replica identity full;
+alter table public.invoices replica identity full;
+alter table public.payments replica identity full;
+alter table public.prescriptions replica identity full;
+alter table public.follow_ups replica identity full;
+alter table public.lab_orders replica identity full;
+alter table public.radiology_orders replica identity full;
+alter table public.settings replica identity full;
+alter table public.clinic_members replica identity full;
 
 do $$
 declare

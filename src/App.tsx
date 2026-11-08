@@ -1287,7 +1287,20 @@ function ClinicApp() {
     seen.set(alertItem.id, now);
 
     setCallingBanner(alertItem);
-    setAlertHistory((prev) => [alertItem, ...prev.filter((a) => a.id !== alertItem.id)].slice(0, 20));
+    setAlertHistory((prev) => {
+      let filtered = prev;
+      if (alertItem.type === 'finish' && alertItem.patientId) {
+        filtered = filtered.filter((a) => a.patientId !== alertItem.patientId);
+      }
+      filtered = filtered.filter((a) => {
+        if (a.id === alertItem.id) return false;
+        if (alertItem.patientId && a.patientId === alertItem.patientId && a.type === alertItem.type) return false;
+        if (alertItem.visitId && a.visitId === alertItem.visitId && a.type === alertItem.type) return false;
+        if (a.title === alertItem.title && a.message === alertItem.message) return false;
+        return true;
+      });
+      return [alertItem, ...filtered].slice(0, 20);
+    });
 
     if (!options?.skipPublish) {
       // 1. Instant cross-tab sync via BroadcastChannel
@@ -1730,6 +1743,30 @@ function ClinicApp() {
         if (alertConfig.visualEnabled) {
           registerAlert(alertPayload, { skipPublish: true });
           scheduleBannerDismiss(6000, alertPayload.id);
+        }
+      },
+      onTableChange: (table, eventType, _newRow, oldRow) => {
+        if (eventType === 'DELETE' && oldRow?.id) {
+          const targetId = oldRow.id;
+          if (table === 'patients') {
+            setPatientsCanonical((prev) => prev.filter((p) => p.patientId !== targetId && (p as any).id !== targetId));
+          } else if (table === 'appointments') {
+            setAppointmentsCanonical((prev) => prev.filter((a) => a.appointmentId !== targetId && (a as any).id !== targetId));
+          } else if (table === 'visits') {
+            setVisitsCanonical((prev) => prev.filter((v) => v.visitId !== targetId && (v as any).id !== targetId));
+          } else if (table === 'invoices') {
+            setInvoicesCanonical((prev) => prev.filter((i) => i.invoiceId !== targetId && (i as any).id !== targetId));
+          } else if (table === 'payments') {
+            setPaymentsCanonical((prev) => prev.filter((p) => p.paymentId !== targetId && (p as any).id !== targetId));
+          } else if (table === 'prescriptions') {
+            setPrescriptionsCanonical((prev) => prev.filter((p) => p.prescriptionId !== targetId && (p as any).id !== targetId));
+          } else if (table === 'follow_ups') {
+            setFollowUpsCanonical((prev) => prev.filter((f) => f.id !== targetId));
+          } else if (table === 'lab_orders') {
+            setLabOrdersCanonical((prev) => prev.filter((l) => l.id !== targetId));
+          } else if (table === 'radiology_orders') {
+            setRadiologyOrdersCanonical((prev) => prev.filter((r) => r.id !== targetId));
+          }
         }
       },
       onDatabaseGenerationReset: () => {

@@ -1001,6 +1001,25 @@ export async function syncTableIncremental(
   }
 
   const incomingRows = (data || []) as CachedRow[];
+
+  // If using incremental sync, but incomingRows is empty while cached has records:
+  // Reconcile if the remote table has been cleared on the cloud (e.g. cloud clear)
+  if (useIncremental && cached.length > 0 && incomingRows.length === 0) {
+    if (table !== 'settings' && table !== 'clinic_members') {
+      try {
+        const { count: remoteTotal } = await supabase
+          .from(table)
+          .select('id', { count: 'exact', head: true })
+          .eq('clinic_id', clinicId);
+        if (remoteTotal === 0) {
+          await replaceCachedTableRows(table, []);
+          await setLastSyncedAt(table, new Date().toISOString());
+          return { rows: [], error: null, incremental: false };
+        }
+      } catch {}
+    }
+  }
+
   const merged = await mergeFetchedRowsWithLocalState(
     table,
     incomingRows,
@@ -1017,7 +1036,8 @@ export async function syncTableIncremental(
   if (table === 'settings') {
     const dbGenRow = incomingRows.find((r) => r.id === '_database_generation');
     if (dbGenRow?.data && typeof dbGenRow.data === 'object') {
-      const remoteGen = String((dbGenRow.data as { generation?: string }).generation || '');
+      const dataObj = dbGenRow.data as { generation?: string; dbEpoch?: number | string };
+      const remoteGen = String(dataObj.generation || dataObj.dbEpoch || '');
       if (remoteGen) {
         const localGen = typeof localStorage !== 'undefined' ? localStorage.getItem('soli_last_db_generation') : null;
         if (localGen && localGen !== remoteGen) {

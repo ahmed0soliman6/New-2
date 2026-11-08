@@ -6,7 +6,7 @@
  */
 
 import { supabase, clinicId as defaultClinicId } from './supabase';
-import { notifyTableMutated } from './offlineSync';
+import { notifyTableMutated, deleteCachedTableRow, clearCachedTables } from './offlineSync';
 import { SettingsDocs } from './repositories/common';
 import type { ClinicAlertPayload } from '../utils/alertManager';
 
@@ -27,6 +27,23 @@ export function initClinicRealtime(
   if (!supabase || !targetClinicId) {
     return () => {};
   }
+
+  const handleDatabaseReset = async (epoch?: number | string) => {
+    const allTables = [
+      'patients', 'appointments', 'visits', 'invoices', 'payments', 'transactions',
+      'expenses', 'expense_categories', 'prescriptions', 'follow_ups', 'lab_orders',
+      'radiology_orders', 'medications', 'lab_tests', 'radiology_types', 'diagnoses',
+      'symptoms', 'chronic_diseases', 'services', 'backups', 'counters'
+    ];
+    try {
+      await clearCachedTables(allTables);
+      if (typeof localStorage !== 'undefined' && epoch) {
+        localStorage.setItem('soli_last_db_generation', String(epoch));
+      }
+    } catch {}
+    notifyTableMutated(['*'], true);
+    handlers?.onDatabaseGenerationReset?.(epoch);
+  };
 
   const channelName = `soli_realtime:${targetClinicId}`;
   const channel = supabase.channel(channelName);
@@ -59,6 +76,18 @@ export function initClinicRealtime(
         const newRow = payload.new as Record<string, any> | undefined;
         const oldRow = payload.old as Record<string, any> | undefined;
 
+        if (eventType === 'DELETE') {
+          const deletedId = oldRow?.id;
+          if (deletedId) {
+            void deleteCachedTableRow(table, deletedId);
+            notifyTableMutated([table], false);
+          } else {
+            notifyTableMutated([table], true);
+          }
+          handlers?.onTableChange?.(table, eventType, undefined, oldRow);
+          return;
+        }
+
         // Special handling for settings documents (clinicStatus, latestAlert, databaseGeneration)
         if (table === 'settings' && newRow) {
           const docId = newRow.id;
@@ -72,8 +101,8 @@ export function initClinicRealtime(
             );
           } else if (docId === SettingsDocs.LATEST_ALERT && data.id) {
             handlers?.onLatestAlert?.(data as ClinicAlertPayload);
-          } else if (docId === '_database_generation' && data.dbEpoch) {
-            handlers?.onDatabaseGenerationReset?.(Number(data.dbEpoch));
+          } else if (docId === '_database_generation' && (data.dbEpoch || data.generation)) {
+            void handleDatabaseReset(data.dbEpoch || data.generation);
           }
         }
 
@@ -101,9 +130,7 @@ export function initClinicRealtime(
       }
     })
     .on('broadcast', { event: 'CLEAR_ALL_DATA' }, (payload) => {
-      if (payload?.payload?.dbEpoch) {
-        handlers?.onDatabaseGenerationReset?.(Number(payload.payload.dbEpoch));
-      }
+      void handleDatabaseReset(payload?.payload?.dbEpoch);
     });
 
   channel.subscribe((status) => {

@@ -138,8 +138,26 @@ Wishing you great health and wellness ✨`
     setTimeout(() => setWhatsappToast(null), 4000);
   };
 
-  // Total unread/pending count for notification badge: queue items + active alerts + urgent followups (< 2 days)
-  const totalActionCount = waitingQueue.length + recentAlerts.length + urgentFollowUps.length;
+  // Deduplicate alerts by logical event key (prevent counting same event or patient twice)
+  const uniqueAlertsCount = useMemo(() => {
+    const seenKeys = new Set<string>();
+    let count = 0;
+    for (const a of recentAlerts) {
+      const key = a.patientId ? `${a.type}:${a.patientId}` : (a.visitId ? `${a.type}:${a.visitId}` : a.id);
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        // If this alert is a queue event and the patient is already in waitingQueue, don't double count in badge
+        const isInQueue = a.patientId && waitingQueue.some((q) => q.patientId === a.patientId);
+        if (!isInQueue) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }, [recentAlerts, waitingQueue]);
+
+  // Total unread/pending count for notification badge: distinct action items
+  const totalActionCount = waitingQueue.length + uniqueAlertsCount + urgentFollowUps.length;
 
   return (
     <>

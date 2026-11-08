@@ -471,10 +471,15 @@ export async function clearAllDatabaseCollections(
         id: '_database_generation',
         data: {
           dbEpoch: newDbEpoch,
+          generation: String(newDbEpoch),
           clearedAt: timestamp,
           clearedBy: options?.actor?.username || options?.actor?.uid || 'admin',
         },
       }, { onConflict: 'clinic_id,id' });
+
+      try {
+        localStorage.setItem('soli_last_db_generation', String(newDbEpoch));
+      } catch {}
 
       // Import and broadcast realtime clear to other clients
       const { broadcastRealtimeDatabaseClear } = await import('../services/realtimeSync');
