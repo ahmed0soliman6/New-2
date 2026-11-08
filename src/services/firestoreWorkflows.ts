@@ -27,6 +27,15 @@ function toArabicError(error: unknown, fallbackMessage: string): Error {
   if (typeof console !== 'undefined' && console.warn) {
     console.warn('[DB Operation Notice]', raw.replace(/'[A-Za-z0-9_-]{20,}'/g, "'***'"));
   }
+  if (
+    raw.includes('DUPLICATE_BOOKING_SAME_DAY') ||
+    raw.includes('RATE_LIMIT_DAILY_MAX_2') ||
+    raw.includes('INVALID_PHONE') ||
+    raw.includes('INVALID_PATIENT_NAME') ||
+    raw.includes('INVALID_DATE')
+  ) {
+    return new Error(raw);
+  }
   if (raw.includes('Appointment not found')) {
     return new Error('الموعد غير موجود في قاعدة البيانات.');
   }

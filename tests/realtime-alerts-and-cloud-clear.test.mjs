@@ -396,6 +396,84 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): صلاحيات السك�
     /RATE_LIMIT_DAILY_MAX_2/,
     'يرفض الحجز الثالث في نفس اليوم لنفس الهاتف أو المتصفح'
   );
+
+  // 6) Anon visitor on existing deployed frontend calling create_appointment directly with Arabic digits succeeds
+  await pg.query(
+    `select public.create_appointment($1, $2, $3, $4::jsonb, $5, $6::jsonb)`,
+    [
+      clinicId,
+      new Date().toISOString(),
+      'app-pub-legacy-1',
+      JSON.stringify({
+        appointmentId: 'app-pub-legacy-1',
+        patientName: 'سمير عبد الرحمن',
+        phone: '٠١٠٥٥٥٥٤٤٤٤',
+        branch: 'ميت عزون',
+        scheduledDate: '2026-11-12',
+        scheduledTime: '06:30 م',
+        visitType: 'كشف جديد',
+        status: 'SCHEDULED',
+        createdBy: 'online_booking',
+      }),
+      'pat-pub-legacy-1',
+      JSON.stringify({
+        patientId: 'pat-pub-legacy-1',
+        fullName: 'سمير عبد الرحمن',
+        phone: '٠١٠٥٥٥٥٤٤٤٤',
+        createdBy: 'online_booking',
+      }),
+    ]
+  );
+
+  // Verify the appointment was saved via create_appointment -> create_public_booking bridge
+  await pg.exec(`
+    set role authenticated;
+    select set_config('request.jwt.claim.sub', '${secUid}', false);
+  `);
+  const legacyApptCheck = await pg.query(
+    `select data from public.appointments where clinic_id = $1 and id = 'app-pub-legacy-1'`,
+    [clinicId]
+  );
+  assert.equal(legacyApptCheck.rows.length, 1, 'تم حفظ الحجز القادم عبر create_appointment للزائر بنجاح');
+  assert.equal(legacyApptCheck.rows[0].data.bookingStatus, 'حجز إلكتروني');
+
+  // Switch back to anon and verify duplicate detection works across Arabic/ASCII numerals on the same day
+  await pg.exec(`
+    set role anon;
+    select set_config('request.jwt.claim.sub', '', false);
+  `);
+  await assert.rejects(
+    async () => {
+      await pg.query(
+        `select public.create_appointment($1, $2, $3, $4::jsonb, $5, $6::jsonb)`,
+        [
+          clinicId,
+          new Date().toISOString(),
+          'app-pub-legacy-dup',
+          JSON.stringify({
+            appointmentId: 'app-pub-legacy-dup',
+            patientName: 'سمير عبد الرحمن',
+            phone: '01055554444',
+            branch: 'ميت عزون',
+            scheduledDate: '2026-11-12',
+            scheduledTime: '07:00 م',
+            visitType: 'كشف جديد',
+            status: 'SCHEDULED',
+            createdBy: 'online_booking',
+          }),
+          'pat-pub-legacy-dup',
+          JSON.stringify({
+            patientId: 'pat-pub-legacy-dup',
+            fullName: 'سمير عبد الرحمن',
+            phone: '01055554444',
+            createdBy: 'online_booking',
+          }),
+        ]
+      );
+    },
+    /DUPLICATE_BOOKING_SAME_DAY/,
+    'يكتشف تكرار رقم الهاتف في نفس اليوم حتى عند اختلاف الأرقام العربية والإنجليزية'
+  );
 });
 
 // 4. Test Notification Badge and Alert History Deduplication

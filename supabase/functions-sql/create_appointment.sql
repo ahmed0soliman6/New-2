@@ -22,6 +22,22 @@ declare
   v_final_patient jsonb;
   v_final_appointment jsonb;
 begin
+  -- Route public / unauthenticated online bookings directly through create_public_booking
+  if auth.uid() is null
+     or coalesce(p_appointment_data->>'createdBy', '') = 'online_booking'
+     or coalesce(p_appointment_data->>'bookingSource', '') = 'online_booking'
+  then
+    perform public.create_public_booking(
+      p_clinic_id,
+      p_appointment_id,
+      p_patient_id,
+      p_patient_data,
+      p_appointment_data,
+      coalesce(nullif(btrim(p_appointment_data->>'clientFingerprint'), ''), null)
+    );
+    return;
+  end if;
+
   -- 1. Enforce multi-clinic membership and custom permission guard
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
@@ -91,8 +107,9 @@ $$;
 
 revoke execute on function public.create_appointment(
   text, text, text, jsonb, text, jsonb
-) from public, anon;
+) from public;
 
 grant execute on function public.create_appointment(
   text, text, text, jsonb, text, jsonb
-) to authenticated;
+) to anon, authenticated;
+

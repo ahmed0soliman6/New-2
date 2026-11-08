@@ -839,6 +839,10 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
         setSubmitError('رقم الهاتف غير صالح. يرجى التأكد من إدخال رقم هاتف صحيح (من 7 إلى 15 رقماً).');
       } else if (rawMessage.includes('INVALID_PATIENT_NAME')) {
         setSubmitError('يرجى إدخال اسم المريض كاملاً (الاسم ثنائي على الأقل).');
+      } else if (rawMessage.includes('INVALID_DATE')) {
+        setSubmitError('التاريخ المحدد غير صالح. يرجى اختيار تاريخ صحيح.');
+      } else if (rawMessage && !rawMessage.includes('Failed to fetch') && !rawMessage.includes('NetworkError')) {
+        setSubmitError(`تعذّر حفظ الحجز: ${rawMessage}`);
       } else {
         setSubmitError('تعذّر حفظ الحجز. تحقق من اتصال الإنترنت وحاول مرة أخرى، ولم يُحفظ أي شيء.');
       }

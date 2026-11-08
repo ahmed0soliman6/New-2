@@ -1484,6 +1484,22 @@ security definer
 set search_path = public
 as $$
 begin
+  -- Route public / unauthenticated online bookings directly through create_public_booking
+  if auth.uid() is null
+     or coalesce(p_appointment_data->>'createdBy', '') = 'online_booking'
+     or coalesce(p_appointment_data->>'bookingSource', '') = 'online_booking'
+  then
+    perform public.create_public_booking(
+      p_clinic_id,
+      p_appointment_id,
+      p_patient_id,
+      p_patient_data,
+      p_appointment_data,
+      coalesce(nullif(btrim(p_appointment_data->>'clientFingerprint'), ''), null)
+    );
+    return;
+  end if;
+
   if not public.is_clinic_member(p_clinic_id) then
     raise exception 'Unauthorized: caller is not an active member of clinic %', p_clinic_id;
   end if;
@@ -1517,10 +1533,10 @@ $$;
 
 revoke execute on function public.create_appointment(
   text, text, text, jsonb, text, jsonb
-) from public, anon;
+) from public;
 grant execute on function public.create_appointment(
   text, text, text, jsonb, text, jsonb
-) to authenticated;
+) to anon, authenticated;
 
 -- 6.5 delete_patient
 create or replace function public.delete_patient(
@@ -2706,11 +2722,44 @@ begin
     raise exception 'Invalid input: p_appointment_id and p_appointment_data are required';
   end if;
 
-  v_patient_name := btrim(coalesce(p_appointment_data->>'patientName', p_patient_data->>'fullName', ''));
-  v_phone_raw := btrim(coalesce(p_appointment_data->>'phone', p_patient_data->>'phone', ''));
-  v_phone_digits := regexp_replace(v_phone_raw, '\D', '', 'g');
-  v_scheduled_date := btrim(coalesce(p_appointment_data->>'scheduledDate', p_appointment_data->>'date', ''));
-  v_scheduled_time := btrim(coalesce(p_appointment_data->>'scheduledTime', p_appointment_data->>'timeSlot', ''));
+  v_patient_name := btrim(coalesce(
+    p_appointment_data->>'patientName',
+    p_patient_data->>'fullName',
+    p_patient_data->>'name',
+    ''
+  ));
+  v_phone_raw := btrim(coalesce(
+    p_appointment_data->>'phone',
+    p_patient_data->>'phone',
+    ''
+  ));
+  v_phone_digits := regexp_replace(
+    translate(v_phone_raw, '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+    '[^0-9]',
+    '',
+    'g'
+  );
+  v_scheduled_date := replace(
+    translate(
+      btrim(coalesce(
+        p_appointment_data->>'scheduledDate',
+        p_appointment_data->>'date',
+        p_appointment_data->>'appointmentDate',
+        to_char(now(), 'YYYY-MM-DD')
+      )),
+      '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹',
+      '01234567890123456789'
+    ),
+    '/',
+    '-'
+  );
+  v_scheduled_time := btrim(coalesce(
+    p_appointment_data->>'scheduledTime',
+    p_appointment_data->>'timeSlot',
+    p_appointment_data->>'time',
+    p_appointment_data->>'startTime',
+    ''
+  ));
   v_fp := btrim(coalesce(p_client_fingerprint, p_appointment_data->>'clientFingerprint', ''));
 
   if char_length(v_patient_name) < 2 then
@@ -2721,7 +2770,7 @@ begin
     raise exception 'INVALID_PHONE: رقم الهاتف غير صالح';
   end if;
 
-  if v_scheduled_date !~ '^\d{4}-\d{2}-\d{2}$' then
+  if v_scheduled_date !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
     raise exception 'INVALID_DATE: التاريخ المحدد غير صالح';
   end if;
 
@@ -2735,9 +2784,23 @@ begin
     into v_dup_count
     from public.appointments a
    where a.clinic_id = p_clinic_id
-     and coalesce(a.data->>'scheduledDate', a.data->>'date', '') = v_scheduled_date
-     and regexp_replace(coalesce(a.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
-     and upper(coalesce(a.data->>'status', 'SCHEDULED')) not in ('CANCELLED', 'ملغي', 'NO_SHOW');
+     and a.id <> p_appointment_id
+     and replace(
+           translate(
+             coalesce(a.data->>'scheduledDate', a.data->>'date', a.data->>'appointmentDate', ''),
+             '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹',
+             '01234567890123456789'
+           ),
+           '/',
+           '-'
+         ) = v_scheduled_date
+     and regexp_replace(
+           translate(coalesce(a.data->>'phone', ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+           '[^0-9]',
+           '',
+           'g'
+         ) = v_phone_digits
+     and upper(coalesce(a.data->>'status', 'SCHEDULED')) not in ('CANCELLED', 'ملغي', 'ملغى', 'NO_SHOW');
 
   if v_dup_count > 0 then
     raise exception 'DUPLICATE_BOOKING_SAME_DAY: عفواً، يوجد حجز مسجل بالفعل بنفس رقم الهاتف في هذا اليوم (%).', v_scheduled_date;
@@ -2748,13 +2811,28 @@ begin
     into v_daily_count
     from public.appointments a
    where a.clinic_id = p_clinic_id
-     and coalesce(a.data->>'createdBy', '') = 'online_booking'
+     and a.id <> p_appointment_id
+     and coalesce(a.data->>'createdBy', a.data->>'bookingSource', '') = 'online_booking'
+     and upper(coalesce(a.data->>'status', 'SCHEDULED')) not in ('CANCELLED', 'ملغي', 'ملغى', 'NO_SHOW')
      and (
        a.created_at >= date_trunc('day', now())
-       or coalesce(a.data->>'scheduledDate', a.data->>'date', '') = v_scheduled_date
+       or replace(
+            translate(
+              coalesce(a.data->>'scheduledDate', a.data->>'date', a.data->>'appointmentDate', ''),
+              '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹',
+              '01234567890123456789'
+            ),
+            '/',
+            '-'
+          ) = v_scheduled_date
      )
      and (
-       regexp_replace(coalesce(a.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
+       regexp_replace(
+         translate(coalesce(a.data->>'phone', ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+         '[^0-9]',
+         '',
+         'g'
+       ) = v_phone_digits
        or (v_fp <> '' and coalesce(a.data->>'clientFingerprint', '') = v_fp)
      );
 
@@ -2767,7 +2845,12 @@ begin
     into v_resolved_patient_id
     from public.patients p
    where p.clinic_id = p_clinic_id
-     and regexp_replace(coalesce(p.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
+     and regexp_replace(
+           translate(coalesce(p.data->>'phone', ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'),
+           '[^0-9]',
+           '',
+           'g'
+         ) = v_phone_digits
    limit 1;
 
   if v_resolved_patient_id is null then
