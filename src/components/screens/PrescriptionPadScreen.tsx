@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { formatBranchTime, generateAllDayTimeOptions, saveClinicBranches } from '../../utils/clinicBranches';
+import { formatBranchTime, generateAllDayTimeOptions, saveClinicBranches, isDefaultBranchesList } from '../../utils/clinicBranches';
 import { QrCodeImage } from '../QrCodeImage';
 import { exportPrescriptionToPdf } from '../../utils/exportPrescriptionPdf';
 import { printPrescriptionDocument } from '../../utils/printPrescription';
@@ -124,7 +124,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
   onUpdatePatient,
 }) => {
   const { language, isRTL, t } = useLanguage();
-  const { assertPermission } = usePermissions();
+  const { assertPermission, hasPermission } = usePermissions();
 
   // Editing patient state from Prescription Pad
   const [isEditingPatient, setIsEditingPatient] = useState(false);
@@ -177,8 +177,18 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
 
   const [config, setConfig] = useState<PrescriptionLayoutSettings>(() => {
     const cached = safeStorage.getJSON<PrescriptionLayoutSettings | null>(StorageKeys.PRESCRIPTION_SETTINGS, null);
+    const customBranches = safeStorage.getJSON<any[] | null>(StorageKeys.CLINIC_BRANCHES, null);
+    const hasRealCustomBranches = Array.isArray(customBranches) && customBranches.length > 0 && !isDefaultBranchesList(customBranches);
+
     if (cached) {
-      return { ...DEFAULT_LAYOUT, ...cached };
+      const merged = { ...DEFAULT_LAYOUT, ...cached };
+      if (hasRealCustomBranches && isDefaultBranchesList(merged.branches)) {
+        merged.branches = customBranches;
+      }
+      return merged;
+    }
+    if (hasRealCustomBranches) {
+      return { ...DEFAULT_LAYOUT, branches: customBranches };
     }
     return DEFAULT_LAYOUT;
   });
@@ -217,7 +227,67 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
     const unsubscribe = subscribeToPrescriptionSettings<PrescriptionLayoutSettings>(
       supabase,
       (remoteConfig) => {
-        if (!remoteConfig || Object.keys(remoteConfig).length === 0) return;
+        const localSnap = configRef.current;
+        const localHasCustom =
+          !isDefaultBranchesList(localSnap.branches) ||
+          (localSnap.doctorName && localSnap.doctorName !== DEFAULT_LAYOUT.doctorName && localSnap.doctorName !== 'طبيب العيادة');
+
+        if (!remoteConfig || Object.keys(remoteConfig).length === 0) {
+          if (localHasCustom && supabase) {
+            Promise.all([
+              saveSettingsDocument(supabase, 'prescriptionSettings', localSnap as unknown as Record<string, unknown>),
+              saveSettingsDocument(supabase, 'clinicBranches', {
+                branches: localSnap.branches,
+                updatedAt: new Date().toISOString(),
+              }),
+              saveSettingsDocument(supabase, 'doctorProfile', {
+                doctorNameAr: localSnap.doctorName,
+                doctorNameEn: localSnap.doctorNameEn,
+                specialtyAr: localSnap.specialtyAr,
+                specialtyEn: localSnap.specialtyEn,
+                credentialsAr: [localSnap.degreesAr],
+                credentialsEn: [localSnap.degreesEn],
+                phone: localSnap.phone,
+                logoUrl: localSnap.logoUrl,
+                updatedAt: new Date().toISOString(),
+              }),
+            ]).catch((err) => console.warn('Initial local prescription settings upload error:', err));
+          }
+          return;
+        }
+
+        // If remote still has default branches while local browser has real branches, push local real branches to cloud
+        if (
+          isDefaultBranchesList(remoteConfig.branches) &&
+          !isDefaultBranchesList(localSnap.branches) &&
+          supabase
+        ) {
+          const mergedToPush: PrescriptionLayoutSettings = {
+            ...remoteConfig,
+            ...localSnap,
+            branches: localSnap.branches,
+          };
+          Promise.all([
+            saveSettingsDocument(supabase, 'prescriptionSettings', mergedToPush as unknown as Record<string, unknown>),
+            saveSettingsDocument(supabase, 'clinicBranches', {
+              branches: localSnap.branches,
+              updatedAt: new Date().toISOString(),
+            }),
+            saveSettingsDocument(supabase, 'doctorProfile', {
+              doctorNameAr: mergedToPush.doctorName,
+              doctorNameEn: mergedToPush.doctorNameEn,
+              specialtyAr: mergedToPush.specialtyAr,
+              specialtyEn: mergedToPush.specialtyEn,
+              credentialsAr: [mergedToPush.degreesAr],
+              credentialsEn: [mergedToPush.degreesEn],
+              phone: mergedToPush.phone,
+              logoUrl: mergedToPush.logoUrl,
+              updatedAt: new Date().toISOString(),
+            }),
+          ]).catch((err) => console.warn('Auto-upload real branches to cloud error:', err));
+          return;
+        }
+
         if (
           dirtyVersionRef.current > savedVersionRef.current ||
           isAutoSavingRef.current ||
@@ -235,6 +305,20 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
           }
           configRef.current = merged;
           safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, merged);
+          if (Array.isArray(merged.branches) && merged.branches.length > 0) {
+            saveClinicBranches(
+              merged.branches.map((b) => ({
+                id: b.id,
+                name: b.name,
+                address: b.address || '',
+                phone: b.phone || '',
+                mobile: b.phone || '',
+                workingHours: b.workingHours || '',
+                startTime: b.startTime || '16:00',
+                endTime: b.endTime || '22:00',
+              }))
+            );
+          }
           window.dispatchEvent(new Event('soli_prescription_updated'));
           return merged;
         });
@@ -263,6 +347,10 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
         if (supabase) {
           await Promise.all([
             saveSettingsDocument(supabase, 'prescriptionSettings', snapshot as unknown as Record<string, unknown>),
+            saveSettingsDocument(supabase, 'clinicBranches', {
+              branches: snapshot.branches,
+              updatedAt: new Date().toISOString(),
+            }),
             saveSettingsDocument(supabase, 'doctorProfile', {
               doctorNameAr: snapshot.doctorName,
               doctorNameEn: snapshot.doctorNameEn,
@@ -415,7 +503,9 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
 
   const handleSaveSettings = async () => {
     try {
-      assertPermission('settings.edit', 'حفظ إعدادات الروشتة والطباعة');
+      if (!hasPermission('prescription.edit') && !hasPermission('settings.edit')) {
+        assertPermission('prescription.edit', 'حفظ إعدادات الروشتة والطباعة');
+      }
       setIsSaving(true);
       setAutoSaveStatus('saving');
       lastUserEditAtRef.current = Date.now();
@@ -528,10 +618,17 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
       }))
     );
     if (supabase) {
-      saveSettingsDocument(supabase, 'clinicBranches', {
+      const nextSnapshot: PrescriptionLayoutSettings = {
+        ...configRef.current,
         branches: nextBranches,
-        updatedAt: new Date().toISOString(),
-      }).catch((err) => console.warn('Branch sync error:', err));
+      };
+      Promise.all([
+        saveSettingsDocument(supabase, 'clinicBranches', {
+          branches: nextBranches,
+          updatedAt: new Date().toISOString(),
+        }),
+        saveSettingsDocument(supabase, 'prescriptionSettings', nextSnapshot as unknown as Record<string, unknown>),
+      ]).catch((err) => console.warn('Branch sync error:', err));
     }
   };
 
@@ -669,7 +766,7 @@ export const PrescriptionPadScreen: React.FC<PrescriptionPadScreenProps> = ({
               <span>{t('prescriptionSettings.testPrint')}</span>
             </button>
 
-            <PermissionGate permission="settings.edit">
+            <PermissionGate permission="prescription.edit">
               <button
                 type="button"
                 onClick={handleSaveSettings}

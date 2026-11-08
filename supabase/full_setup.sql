@@ -756,6 +756,10 @@ create policy "settings_select" on public.settings for select to authenticated
       or public.has_clinic_permission(clinic_id, 'users.manage', 'update')
     )
   );
+create policy "settings_public_booking_select" on public.settings for select to anon
+  using (
+    id in ('prescriptionSettings', 'doctorProfile', 'clinicBranches', 'visitTypes')
+  );
 create policy "settings_insert" on public.settings for insert to authenticated
   with check (
     public.is_clinic_member(clinic_id)
@@ -763,6 +767,10 @@ create policy "settings_insert" on public.settings for insert to authenticated
     and id not like '_audit_log:%'
     and (
       public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or (
+        id in ('prescriptionSettings', 'doctorProfile', 'clinicBranches', 'printerSettings')
+        and public.has_clinic_permission(clinic_id, 'prescriptions.update', 'update')
+      )
       or id in ('clinic_status', 'latest_alert')
     )
   );
@@ -773,6 +781,10 @@ create policy "settings_update" on public.settings for update to authenticated
     and id not like '_audit_log:%'
     and (
       public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or (
+        id in ('prescriptionSettings', 'doctorProfile', 'clinicBranches', 'printerSettings')
+        and public.has_clinic_permission(clinic_id, 'prescriptions.update', 'update')
+      )
       or id in ('clinic_status', 'latest_alert')
     )
   )
@@ -782,6 +794,10 @@ create policy "settings_update" on public.settings for update to authenticated
     and id not like '_audit_log:%'
     and (
       public.has_clinic_permission(clinic_id, 'settings.update', 'update')
+      or (
+        id in ('prescriptionSettings', 'doctorProfile', 'clinicBranches', 'printerSettings')
+        and public.has_clinic_permission(clinic_id, 'prescriptions.update', 'update')
+      )
       or id in ('clinic_status', 'latest_alert')
     )
   );
@@ -2588,6 +2604,247 @@ grant execute on function public.preview_purge(text, timestamptz, text[]) to aut
 
 revoke execute on function public.purge_old_data(text, timestamptz, text[], text) from public, anon;
 grant execute on function public.purge_old_data(text, timestamptz, text[], text) to authenticated;
+
+-- 6.13 Public Booking Landing Page RPCs (get_public_booking_config & create_public_booking)
+drop function if exists public.get_public_booking_config(text) cascade;
+create or replace function public.get_public_booking_config(
+  p_clinic_id text
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_clinic_name text;
+  v_rx jsonb;
+  v_doc jsonb;
+  v_branches jsonb;
+  v_visit_types jsonb;
+  v_services jsonb;
+begin
+  if p_clinic_id is null or btrim(p_clinic_id) = '' then
+    return '{}'::jsonb;
+  end if;
+
+  select c.name into v_clinic_name
+    from public.clinics c
+   where c.id = p_clinic_id;
+
+  select s.data into v_rx
+    from public.settings s
+   where s.clinic_id = p_clinic_id
+     and s.id = 'prescriptionSettings';
+
+  select s.data into v_doc
+    from public.settings s
+   where s.clinic_id = p_clinic_id
+     and s.id = 'doctorProfile';
+
+  select s.data into v_branches
+    from public.settings s
+   where s.clinic_id = p_clinic_id
+     and s.id = 'clinicBranches';
+
+  select s.data into v_visit_types
+    from public.settings s
+   where s.clinic_id = p_clinic_id
+     and s.id = 'visitTypes';
+
+  select coalesce(jsonb_agg(sv.data), '[]'::jsonb)
+    into v_services
+    from public.services sv
+   where sv.clinic_id = p_clinic_id;
+
+  return jsonb_build_object(
+    'clinicId', p_clinic_id,
+    'clinicName', coalesce(v_clinic_name, ''),
+    'prescriptionSettings', coalesce(v_rx, '{}'::jsonb),
+    'doctorProfile', coalesce(v_doc, '{}'::jsonb),
+    'clinicBranches', coalesce(v_branches, '{}'::jsonb),
+    'visitTypes', coalesce(v_visit_types, '{}'::jsonb),
+    'services', coalesce(v_services, '[]'::jsonb)
+  );
+end;
+$$;
+
+revoke execute on function public.get_public_booking_config(text) from public;
+grant execute on function public.get_public_booking_config(text) to anon, authenticated;
+
+drop function if exists public.create_public_booking(text, text, text, jsonb, jsonb, text) cascade;
+create or replace function public.create_public_booking(
+  p_clinic_id text,
+  p_appointment_id text,
+  p_patient_id text,
+  p_patient_data jsonb,
+  p_appointment_data jsonb,
+  p_client_fingerprint text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_patient_name text;
+  v_phone_raw text;
+  v_phone_digits text;
+  v_scheduled_date text;
+  v_scheduled_time text;
+  v_fp text;
+  v_dup_count int := 0;
+  v_daily_count int := 0;
+  v_resolved_patient_id text;
+  v_final_appointment jsonb;
+begin
+  if p_clinic_id is null or btrim(p_clinic_id) = '' then
+    raise exception 'Invalid input: p_clinic_id is required';
+  end if;
+
+  if p_appointment_id is null or btrim(p_appointment_id) = '' or p_appointment_data is null then
+    raise exception 'Invalid input: p_appointment_id and p_appointment_data are required';
+  end if;
+
+  v_patient_name := btrim(coalesce(p_appointment_data->>'patientName', p_patient_data->>'fullName', ''));
+  v_phone_raw := btrim(coalesce(p_appointment_data->>'phone', p_patient_data->>'phone', ''));
+  v_phone_digits := regexp_replace(v_phone_raw, '\D', '', 'g');
+  v_scheduled_date := btrim(coalesce(p_appointment_data->>'scheduledDate', p_appointment_data->>'date', ''));
+  v_scheduled_time := btrim(coalesce(p_appointment_data->>'scheduledTime', p_appointment_data->>'timeSlot', ''));
+  v_fp := btrim(coalesce(p_client_fingerprint, p_appointment_data->>'clientFingerprint', ''));
+
+  if char_length(v_patient_name) < 2 then
+    raise exception 'INVALID_PATIENT_NAME: يرجى إدخال اسم المريض كاملاً';
+  end if;
+
+  if char_length(v_phone_digits) < 7 or char_length(v_phone_digits) > 15 then
+    raise exception 'INVALID_PHONE: رقم الهاتف غير صالح';
+  end if;
+
+  if v_scheduled_date !~ '^\d{4}-\d{2}-\d{2}$' then
+    raise exception 'INVALID_DATE: التاريخ المحدد غير صالح';
+  end if;
+
+  -- Ensure clinic row exists
+  insert into public.clinics (id, name)
+  values (p_clinic_id, 'عيادة سولي الطبية - Soli Medical Clinic')
+  on conflict (id) do nothing;
+
+  -- 1. Prevent duplicate active booking on the same day for the same phone number
+  select count(*)::int
+    into v_dup_count
+    from public.appointments a
+   where a.clinic_id = p_clinic_id
+     and coalesce(a.data->>'scheduledDate', a.data->>'date', '') = v_scheduled_date
+     and regexp_replace(coalesce(a.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
+     and upper(coalesce(a.data->>'status', 'SCHEDULED')) not in ('CANCELLED', 'ملغي', 'NO_SHOW');
+
+  if v_dup_count > 0 then
+    raise exception 'DUPLICATE_BOOKING_SAME_DAY: عفواً، يوجد حجز مسجل بالفعل بنفس رقم الهاتف في هذا اليوم (%).', v_scheduled_date;
+  end if;
+
+  -- 2. Enforce max 2 online bookings per day for the same phone OR same browser fingerprint
+  select count(*)::int
+    into v_daily_count
+    from public.appointments a
+   where a.clinic_id = p_clinic_id
+     and coalesce(a.data->>'createdBy', '') = 'online_booking'
+     and (
+       a.created_at >= date_trunc('day', now())
+       or coalesce(a.data->>'scheduledDate', a.data->>'date', '') = v_scheduled_date
+     )
+     and (
+       regexp_replace(coalesce(a.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
+       or (v_fp <> '' and coalesce(a.data->>'clientFingerprint', '') = v_fp)
+     );
+
+  if v_daily_count >= 2 then
+    raise exception 'RATE_LIMIT_DAILY_MAX_2: عفواً، تم الوصول للحد الأقصى المسموح به للحجوزات اليومية (حجزين كحد أقصى في اليوم لنفس الرقم أو المتصفح).';
+  end if;
+
+  -- 3. Reuse existing patient if matching phone exists, otherwise create new patient
+  select p.id
+    into v_resolved_patient_id
+    from public.patients p
+   where p.clinic_id = p_clinic_id
+     and regexp_replace(coalesce(p.data->>'phone', ''), '\D', '', 'g') = v_phone_digits
+   limit 1;
+
+  if v_resolved_patient_id is null then
+    v_resolved_patient_id := coalesce(nullif(btrim(p_patient_id), ''), 'pat-online-' || extract(epoch from now())::bigint::text);
+    if p_patient_data is not null then
+      insert into public.patients (clinic_id, id, data)
+      values (
+        p_clinic_id,
+        v_resolved_patient_id,
+        (p_patient_data - 'clinic_id') || jsonb_build_object(
+          'patientId', v_resolved_patient_id,
+          'fullName', v_patient_name,
+          'phone', v_phone_raw
+        )
+      )
+      on conflict (clinic_id, id) do update
+        set data = public.patients.data || (excluded.data - 'clinic_id' - 'createdAt' - 'createdBy'),
+            updated_at = now();
+    end if;
+  end if;
+
+  v_final_appointment := (p_appointment_data - 'clinic_id') || jsonb_build_object(
+    'appointmentId', p_appointment_id,
+    'patientId', v_resolved_patient_id,
+    'patientName', v_patient_name,
+    'phone', v_phone_raw,
+    'scheduledDate', v_scheduled_date,
+    'scheduledTime', v_scheduled_time,
+    'status', 'SCHEDULED',
+    'bookingStatus', 'حجز إلكتروني',
+    'bookingSource', 'online_booking',
+    'createdBy', 'online_booking',
+    'clientFingerprint', v_fp
+  );
+
+  insert into public.appointments (clinic_id, id, data)
+  values (p_clinic_id, p_appointment_id, v_final_appointment)
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  -- 4. Publish instant Realtime alert to clinic staff (Secretary & Doctor)
+  insert into public.settings (clinic_id, id, data, updated_at)
+  values (
+    p_clinic_id,
+    'latest_alert',
+    jsonb_build_object(
+      'id', 'online-booking-' || p_appointment_id,
+      'type', 'new_visit',
+      'title', 'حجز إلكتروني جديد عبر صفحة الهبوط 🌐',
+      'message', format('قام المريض (%s) بحجز موعد ليوم %s الساعة %s (%s).',
+        v_patient_name,
+        v_scheduled_date,
+        v_scheduled_time,
+        coalesce(nullif(btrim(p_appointment_data->>'branchName'), ''), nullif(btrim(p_appointment_data->>'branch'), ''), 'العيادة')
+      ),
+      'patientId', v_resolved_patient_id,
+      'senderId', 'online_booking',
+      'timestamp', to_char(now(), 'HH12:MI AM'),
+      'updatedAt', to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+    ),
+    now()
+  )
+  on conflict (clinic_id, id) do update
+    set data = excluded.data,
+        updated_at = now();
+
+  return jsonb_build_object(
+    'appointmentId', p_appointment_id,
+    'patientId', v_resolved_patient_id,
+    'status', 'SCHEDULED'
+  );
+end;
+$$;
+
+revoke execute on function public.create_public_booking(text, text, text, jsonb, jsonb, text) from public;
+grant execute on function public.create_public_booking(text, text, text, jsonb, jsonb, text) to anon, authenticated;
 
 -- =============================================================================
 -- 7. تفعيل البث اللحظي (Supabase Realtime Publication & REPLICA IDENTITY FULL)

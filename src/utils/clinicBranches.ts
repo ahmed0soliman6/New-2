@@ -163,43 +163,68 @@ export function generateBranchTimeSlots(
 }
 
 /**
+ * Checks whether a branch list consists only of the initial hardcoded default branches ("المهندسين" / "الدقي").
+ */
+export function isDefaultBranchesList(branches?: any[] | null): boolean {
+  if (!Array.isArray(branches) || branches.length === 0) return true;
+  return branches.every((b) => {
+    const id = String(b?.id || '').trim();
+    const name = String(b?.name || '').trim();
+    return (
+      id === 'b-1' ||
+      id === 'b-2' ||
+      id === 'mohandessin' ||
+      id === 'dokki' ||
+      id === 'default-1' ||
+      name.includes('المهندسين') ||
+      name.includes('الدقي') ||
+      name === 'الفرع الرئيسي'
+    );
+  });
+}
+
+function mapRawBranchesToItems(rawList: any[]): ClinicBranchItem[] {
+  return rawList.map((b: any, index: number) => {
+    const parsed = extractTimesFromWorkingHours(b.workingHours);
+    return {
+      id: b.id || `branch-${index}`,
+      name: b.name || `فرع ${index + 1}`,
+      address: b.address || '',
+      phone: b.phone || b.mobile || '',
+      mobile: b.mobile || b.phone || '',
+      workingHours: b.workingHours || '',
+      startTime: b.startTime || parsed?.startTime || '16:00',
+      endTime: b.endTime || parsed?.endTime || '22:00',
+    };
+  });
+}
+
+/**
  * Returns all active branches configured in the clinic.
- * Prioritizes user settings saved in localStorage (`soli_clinic_branches` or `soli_prescription_settings`),
- * falling back to `CLINIC_INFO.branches`.
+ * Prioritizes real (non-default) branches saved in Prescription Settings (`soli_prescription_settings`)
+ * or `soli_clinic_branches`, falling back to `CLINIC_INFO.branches`.
  */
 export function getClinicBranches(): ClinicBranchItem[] {
+  const cachedRx = safeStorage.getJSON<any | null>(StorageKeys.PRESCRIPTION_SETTINGS, null);
+  const rxBranches = cachedRx && Array.isArray(cachedRx.branches) && cachedRx.branches.length > 0 ? cachedRx.branches : null;
   const customBranches = safeStorage.getJSON<any[] | null>(StorageKeys.CLINIC_BRANCHES, null);
-  if (Array.isArray(customBranches) && customBranches.length > 0) {
-    return customBranches.map((b: any, index: number) => {
-      const parsed = extractTimesFromWorkingHours(b.workingHours);
-      return {
-        id: b.id || `branch-${index}`,
-        name: b.name || `فرع ${index + 1}`,
-        address: b.address || '',
-        phone: b.phone || b.mobile || '',
-        mobile: b.mobile || b.phone || '',
-        workingHours: b.workingHours || '',
-        startTime: b.startTime || parsed?.startTime || '16:00',
-        endTime: b.endTime || parsed?.endTime || '22:00',
-      };
-    });
+  const validCustomBranches = Array.isArray(customBranches) && customBranches.length > 0 ? customBranches : null;
+
+  // Prefer real (non-default) branches from Prescription Settings first
+  if (rxBranches && !isDefaultBranchesList(rxBranches)) {
+    return mapRawBranchesToItems(rxBranches);
   }
 
-  const cached = safeStorage.getJSON<any | null>(StorageKeys.PRESCRIPTION_SETTINGS, null);
-  if (cached && Array.isArray(cached.branches) && cached.branches.length > 0) {
-    return cached.branches.map((b: any, index: number) => {
-      const parsed = extractTimesFromWorkingHours(b.workingHours);
-      return {
-        id: b.id || `branch-${index}`,
-        name: b.name || `فرع ${index + 1}`,
-        address: b.address || '',
-        phone: b.phone || b.mobile || '',
-        mobile: b.mobile || b.phone || '',
-        workingHours: b.workingHours || '',
-        startTime: b.startTime || parsed?.startTime || '16:00',
-        endTime: b.endTime || parsed?.endTime || '22:00',
-      };
-    });
+  if (validCustomBranches && !isDefaultBranchesList(validCustomBranches)) {
+    return mapRawBranchesToItems(validCustomBranches);
+  }
+
+  if (rxBranches) {
+    return mapRawBranchesToItems(rxBranches);
+  }
+
+  if (validCustomBranches) {
+    return mapRawBranchesToItems(validCustomBranches);
   }
 
   // Fallback to CLINIC_INFO.branches

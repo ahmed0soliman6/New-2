@@ -7,16 +7,19 @@ import {
   isDateMatchingBranchDays,
   getNextValidWorkingDate,
   getUpcomingDateSuggestions,
-  extractTimesFromWorkingHours
+  extractTimesFromWorkingHours,
+  isDefaultBranchesList,
+  saveClinicBranches,
 } from '../../utils/clinicBranches';
 import { getPrescriptionDoctorInfo, PrescriptionDoctorInfo } from '../../utils/prescriptionDoctor';
 import { getActiveVisitTypes } from '../../utils/financeManager';
 import { AppointmentListItem } from '../../types';
 import { QrCodeImage } from '../QrCodeImage';
-import { safeStorage } from '../../services/storage';
-import { supabase } from '../../services/supabase';
+import { safeStorage, StorageKeys } from '../../services/storage';
+import { supabase, clinicId } from '../../services/supabase';
 import { subscribeToPrescriptionSettings, subscribeToVisitTypes, subscribeToServices } from '../../services/repositories';
 import { createAppointmentTransaction } from '../../services/firestoreWorkflows';
+import { broadcastRealtimeAlert } from '../../services/realtimeSync';
 import { toDayKey } from '../../utils/dayKey';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { meterRead, meterWrite } from '../../services/readMeter';
@@ -105,6 +108,30 @@ export interface ConfirmedBookingDetails {
   clinicPhone: string;
 }
 
+function getOrCreateClientFingerprint(): string {
+  const key = 'soli_booking_client_fp';
+  try {
+    const existing = localStorage.getItem(key);
+    if (existing && existing.trim().length >= 8) {
+      return existing.trim();
+    }
+    const generated = `fp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(key, generated);
+    return generated;
+  } catch {
+    return 'fp-anonymous-browser';
+  }
+}
+
+function isUsableLogoUrl(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  // Ignore expired internal Google AIDA placeholder URLs that 403 on external browsers
+  if (trimmed.includes('lh3.googleusercontent.com/aida/')) return false;
+  return true;
+}
+
 export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
   onAddAppointment,
   onNavigateToAppointments,
@@ -115,6 +142,11 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
   const [doctorProfile, setDoctorProfile] = useState<PrescriptionDoctorInfo>(() => getPrescriptionDoctorInfo());
   const [branches, setBranches] = useState<ClinicBranchItem[]>(() => getClinicBranches());
   const [visitTypes, setVisitTypes] = useState<{ id: string; name: string; fee: number }[]>(() => getMergedVisitTypesAndServices());
+  const [clinicDisplayName, setClinicDisplayName] = useState<string>(() => {
+    const cachedName = safeStorage.getItem('soli_clinic_display_name', '');
+    return cachedName || '';
+  });
+  const [logoLoadError, setLogoLoadError] = useState(false);
 
   // Sync state with local changes and custom events
   useEffect(() => {
@@ -144,54 +176,201 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
   }, []);
 
   const doctorInfo = useMemo(() => {
+    const validLogo = !logoLoadError && isUsableLogoUrl(doctorProfile.logoUrl) ? doctorProfile.logoUrl : null;
     return {
       name: language === 'en' ? (doctorProfile.doctorNameEn || doctorProfile.doctorName) : doctorProfile.doctorName,
       specialty: language === 'en' ? (doctorProfile.specialtyEn || doctorProfile.specialtyAr) : doctorProfile.specialtyAr,
       credentials: language === 'en' ? (doctorProfile.degreesEn || doctorProfile.degreesAr) : doctorProfile.degreesAr,
       phone: doctorProfile.phone,
-      logoUrl: doctorProfile.logoUrl
+      logoUrl: validLogo,
     };
-  }, [doctorProfile, language]);
+  }, [doctorProfile, language, logoLoadError]);
 
   useEffect(() => {
     if (!supabase) return;
+    let isMounted = true;
+
+    const applyPublicConfigData = (params: {
+      clinicName?: string;
+      prescriptionSettings?: any;
+      doctorProfile?: any;
+      clinicBranches?: any;
+      visitTypes?: any;
+      services?: any[];
+    }) => {
+      if (!isMounted) return;
+      const rx = params.prescriptionSettings && typeof params.prescriptionSettings === 'object' ? params.prescriptionSettings : {};
+      const doc = params.doctorProfile && typeof params.doctorProfile === 'object' ? params.doctorProfile : {};
+      const brDoc = params.clinicBranches && typeof params.clinicBranches === 'object' ? params.clinicBranches : {};
+
+      if (params.clinicName && typeof params.clinicName === 'string' && params.clinicName.trim()) {
+        setClinicDisplayName(params.clinicName.trim());
+        safeStorage.setItem('soli_clinic_display_name', params.clinicName.trim());
+      }
+
+      // Resolve real branches from prescriptionSettings.branches or clinicBranches.branches
+      const rxBranches = Array.isArray(rx.branches) && rx.branches.length > 0 ? rx.branches : null;
+      const cbBranches = Array.isArray(brDoc.branches) && brDoc.branches.length > 0 ? brDoc.branches : null;
+      let rawBranches: any[] | null = null;
+
+      if (rxBranches && !isDefaultBranchesList(rxBranches)) {
+        rawBranches = rxBranches;
+      } else if (cbBranches && !isDefaultBranchesList(cbBranches)) {
+        rawBranches = cbBranches;
+      } else if (rxBranches) {
+        rawBranches = rxBranches;
+      } else if (cbBranches) {
+        rawBranches = cbBranches;
+      }
+
+      let mappedBranches: ClinicBranchItem[] = [];
+      if (rawBranches && rawBranches.length > 0) {
+        mappedBranches = rawBranches.map((b: any, index: number) => {
+          const parsed = extractTimesFromWorkingHours(b.workingHours);
+          return {
+            id: b.id || `branch-${index}`,
+            name: b.name || `فرع ${index + 1}`,
+            address: b.address || '',
+            phone: b.phone || b.mobile || '',
+            mobile: b.mobile || b.phone || '',
+            workingHours: b.workingHours || '',
+            startTime: b.startTime || parsed?.startTime || '16:00',
+            endTime: b.endTime || parsed?.endTime || '22:00',
+          };
+        });
+        saveClinicBranches(mappedBranches);
+        setBranches(mappedBranches);
+      }
+
+      const hasDoctorData =
+        Object.keys(rx).length > 0 ||
+        Object.keys(doc).length > 0;
+
+      if (hasDoctorData) {
+        const mergedRx = {
+          ...rx,
+          ...(mappedBranches.length > 0 ? { branches: mappedBranches } : {}),
+        };
+        if (Object.keys(mergedRx).length > 0) {
+          safeStorage.setJSON(StorageKeys.PRESCRIPTION_SETTINGS, mergedRx);
+        }
+        if (Object.keys(doc).length > 0) {
+          safeStorage.setJSON('soli_doctor_profile', doc);
+        }
+
+        const resolvedDoctorName =
+          rx.doctorName?.trim() ||
+          doc.doctorNameAr?.trim() ||
+          doc.doctorName?.trim() ||
+          doc.name?.trim() ||
+          'طبيب العيادة';
+        const resolvedDoctorNameEn =
+          rx.doctorNameEn?.trim() ||
+          doc.doctorNameEn?.trim() ||
+          'Clinic Doctor';
+        const resolvedSpecialtyAr =
+          rx.specialtyAr?.trim() ||
+          doc.specialtyAr?.trim() ||
+          doc.specialty?.trim() ||
+          doc.title?.trim() ||
+          'التخصص الطبي العام للعيادة';
+        const resolvedSpecialtyEn =
+          rx.specialtyEn?.trim() ||
+          doc.specialtyEn?.trim() ||
+          'Clinic Medical Specialty';
+        const resolvedDegreesAr =
+          rx.degreesAr?.trim() ||
+          (Array.isArray(doc.credentialsAr) ? doc.credentialsAr.join(' • ') : doc.credentialsAr?.trim()) ||
+          doc.degreesAr?.trim() ||
+          'الدرجات العلمية والشهادات المهنية المسجلة للعيادة';
+        const resolvedDegreesEn =
+          rx.degreesEn?.trim() ||
+          (Array.isArray(doc.credentialsEn) ? doc.credentialsEn.join(' • ') : doc.credentialsEn?.trim()) ||
+          doc.degreesEn?.trim() ||
+          'Registered Medical Degrees & Professional Credentials';
+        const resolvedPhone =
+          rx.phone?.trim() ||
+          doc.phone?.trim() ||
+          mappedBranches[0]?.phone ||
+          '';
+        const resolvedLogo = rx.logoUrl || doc.logoUrl || null;
+
+        setLogoLoadError(false);
+        setDoctorProfile({
+          doctorName: resolvedDoctorName,
+          doctorNameEn: resolvedDoctorNameEn,
+          specialtyAr: resolvedSpecialtyAr,
+          specialtyEn: resolvedSpecialtyEn,
+          degreesAr: resolvedDegreesAr,
+          degreesEn: resolvedDegreesEn,
+          phone: resolvedPhone,
+          logoUrl: resolvedLogo,
+        });
+      }
+
+      if (params.visitTypes) {
+        const vtItems = Array.isArray(params.visitTypes)
+          ? params.visitTypes
+          : Array.isArray(params.visitTypes?.items)
+          ? params.visitTypes.items
+          : [];
+        if (vtItems.length > 0) {
+          localStorage.setItem('soli_visit_types', JSON.stringify(vtItems));
+          window.dispatchEvent(new Event('soli_visit_types_updated'));
+        }
+      }
+
+      if (Array.isArray(params.services) && params.services.length > 0) {
+        localStorage.setItem('soli_services', JSON.stringify(params.services));
+        window.dispatchEvent(new Event('soli_services_updated'));
+      }
+    };
+
+    // 1. Fetch public booking config via SECURITY DEFINER RPC (works for unauthenticated external visitors)
+    const fetchPublicConfig = async () => {
+      try {
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_public_booking_config', {
+          p_clinic_id: clinicId,
+        });
+        if (!rpcError && rpcData && typeof rpcData === 'object') {
+          applyPublicConfigData(rpcData as any);
+          return;
+        }
+      } catch {
+        // Fallback to direct settings query below
+      }
+
+      try {
+        const { data: rows } = await supabase
+          .from('settings')
+          .select('id, data')
+          .eq('clinic_id', clinicId)
+          .in('id', ['prescriptionSettings', 'doctorProfile', 'clinicBranches', 'visitTypes']);
+
+        if (Array.isArray(rows) && rows.length > 0) {
+          const map: Record<string, any> = {};
+          rows.forEach((r: any) => {
+            if (r && r.id) map[r.id] = r.data;
+          });
+          applyPublicConfigData({
+            prescriptionSettings: map.prescriptionSettings,
+            doctorProfile: map.doctorProfile,
+            clinicBranches: map.clinicBranches,
+            visitTypes: map.visitTypes,
+          });
+        }
+      } catch (err) {
+        console.warn('Public Booking Fallback Settings Query Error:', err);
+      }
+    };
+
+    void fetchPublicConfig();
 
     const unsub = subscribeToPrescriptionSettings(
       supabase,
       (settings: any) => {
         if (settings && Object.keys(settings).length > 0) {
-          // Sync with local storage as secondary backup
-          localStorage.setItem('soli_prescription_settings', JSON.stringify(settings));
-
-          // Set branches
-          if (Array.isArray(settings.branches) && settings.branches.length > 0) {
-            const mappedBranches = settings.branches.map((b: any, index: number) => {
-              const parsed = extractTimesFromWorkingHours(b.workingHours);
-              return {
-                id: b.id || `branch-${index}`,
-                name: b.name || `فرع ${index + 1}`,
-                address: b.address || '',
-                phone: b.phone || b.mobile || '',
-                mobile: b.mobile || b.phone || '',
-                workingHours: b.workingHours || '',
-                startTime: b.startTime || parsed?.startTime || '16:00',
-                endTime: b.endTime || parsed?.endTime || '22:00',
-              };
-            });
-            setBranches(mappedBranches);
-          }
-
-          // Set doctor profile
-          setDoctorProfile({
-            doctorName: settings.doctorName?.trim() || 'طبيب العيادة',
-            doctorNameEn: settings.doctorNameEn?.trim() || 'Clinic Doctor',
-            specialtyAr: settings.specialtyAr?.trim() || 'التخصص الطبي العام للعيادة',
-            specialtyEn: settings.specialtyEn?.trim() || 'Clinic Medical Specialty',
-            degreesAr: settings.degreesAr?.trim() || 'الدرجات العلمية والشهادات المهنية المسجلة للعيادة',
-            degreesEn: settings.degreesEn?.trim() || 'Registered Medical Degrees & Professional Credentials',
-            phone: settings.phone?.trim() || '',
-            logoUrl: settings.logoUrl || null,
-          });
+          applyPublicConfigData({ prescriptionSettings: settings });
         }
       },
       (err) => console.warn('Public Booking Live Settings Sync Error:', err)
@@ -222,6 +401,7 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
     );
 
     return () => {
+      isMounted = false;
       unsub();
       unsubVisitTypes();
       unsubServices();
@@ -472,11 +652,46 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
     try {
       if (!supabase) throw new Error('قاعدة البيانات غير متاحة حالياً');
 
+      const clientFingerprint = getOrCreateClientFingerprint();
+      const phoneDigits = cleanedPhone.replace(/\D/g, '');
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      // Local pre-check for duplicate same-day booking or >2 bookings per day from same browser/phone
+      const existingLocalOnline = safeStorage.getJSON<any[]>('soli_appointments_online', []) || [];
+      const sameDayDuplicate = existingLocalOnline.some((app: any) => {
+        const appDate = app?.date || app?.scheduledDate || '';
+        const appPhoneDigits = String(app?.phone || '').replace(/\D/g, '');
+        const appStatus = String(app?.status || '').toUpperCase();
+        return (
+          appDate === scheduledDate &&
+          appPhoneDigits === phoneDigits &&
+          appStatus !== 'CANCELLED' &&
+          app?.status !== 'ملغى'
+        );
+      });
+      if (sameDayDuplicate) {
+        throw new Error(`DUPLICATE_BOOKING_SAME_DAY: عفواً، يوجد حجز مسجل بالفعل بنفس رقم الهاتف في هذا اليوم (${scheduledDate}).`);
+      }
+
+      const dailyCountLocal = existingLocalOnline.filter((app: any) => {
+        const createdDay = String(app?.createdAt || app?.date || '').slice(0, 10);
+        const appDate = app?.date || app?.scheduledDate || '';
+        const appPhoneDigits = String(app?.phone || '').replace(/\D/g, '');
+        const appFp = String(app?.clientFingerprint || '');
+        const isTodayOrSameScheduledDay = createdDay === todayStr || appDate === scheduledDate;
+        const isSameUser = appPhoneDigits === phoneDigits || (clientFingerprint && appFp === clientFingerprint);
+        return isTodayOrSameScheduledDay && isSameUser;
+      }).length;
+      if (dailyCountLocal >= 2) {
+        throw new Error('RATE_LIMIT_DAILY_MAX_2: عفواً، تم الوصول للحد الأقصى المسموح به للحجوزات اليومية (حجزين كحد أقصى في اليوم لنفس الرقم أو المتصفح).');
+      }
+
       const stamp = Date.now();
-      const patientId = `pat-online-${stamp}`;
+      let patientId = `pat-online-${stamp}`;
       const appointmentId = `app-${stamp}`;
       const nowIso = new Date().toISOString();
       const dayKey = scheduledDate; // الحجز يُختم بتاريخ الموعد نفسه
+      const branchDisplayName = activeBranch?.name || 'الفرع الرئيسي';
 
       const patientRecord = {
         patientId,
@@ -498,33 +713,70 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
         patientId,
         patientName: cleanedName,
         phone: cleanedPhone,
-        clinicLocationId: activeBranch?.id || 'loc-mohandessin',
+        clinicLocationId: activeBranch?.id || 'loc-main',
+        branch: branchDisplayName,
+        branchName: branchDisplayName,
         scheduledDate,
         scheduledTime: selectedTimeSlot,
         visitType,
         status: 'SCHEDULED',
+        bookingStatus: 'حجز إلكتروني',
+        bookingSource: 'online_booking',
         expectedFee: feeNumber,
-        notes: notes.trim() ? `حجز عبر الموقع: ${notes.trim()}` : '',
+        notes: notes.trim() ? `حجز إلكتروني (${branchDisplayName}): ${notes.trim()}` : `حجز إلكتروني (${branchDisplayName})`,
         dayKey,
         createdAt: nowIso,
         updatedAt: nowIso,
         createdBy: 'online_booking',
+        clientFingerprint,
         appointmentDate: scheduledDate,
         startTime: selectedTimeSlot,
         endTime: selectedTimeSlot,
         type: visitType,
       };
 
-      await createAppointmentTransaction({
-        db: supabase,
-        patient: patientRecord as any,
-        appointment: appointmentRecord as any,
+      const { data: publicRpcRes, error: publicRpcErr } = await supabase.rpc('create_public_booking', {
+        p_clinic_id: clinicId,
+        p_appointment_id: appointmentId,
+        p_patient_id: patientId,
+        p_patient_data: patientRecord,
+        p_appointment_data: appointmentRecord,
+        p_client_fingerprint: clientFingerprint,
+      });
+
+      if (publicRpcErr) {
+        const errCode = String((publicRpcErr as any).code || '');
+        const errMsg = String(publicRpcErr.message || '');
+        // Fallback for authenticated staff if RPC was not yet deployed on DB
+        if (errCode === 'PGRST202' || errMsg.includes('create_public_booking')) {
+          await createAppointmentTransaction({
+            db: supabase,
+            patient: patientRecord as any,
+            appointment: appointmentRecord as any,
+          });
+        } else {
+          throw new Error(errMsg || 'تعذر حفظ الحجز');
+        }
+      } else if (publicRpcRes && typeof publicRpcRes === 'object' && (publicRpcRes as any).patientId) {
+        patientId = String((publicRpcRes as any).patientId);
+      }
+
+      // Broadcast instant alert over Realtime broadcast channel as well
+      broadcastRealtimeAlert({
+        id: `online-booking-${appointmentId}`,
+        type: 'new_visit',
+        title: 'حجز إلكتروني جديد عبر صفحة الهبوط 🌐',
+        message: `قام المريض (${cleanedName}) بحجز موعد ليوم ${scheduledDate} الساعة ${selectedTimeSlot} (${branchDisplayName}).`,
+        patientId,
+        senderId: 'online_booking',
+        timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+        updatedAt: nowIso,
       });
 
       meterWrite(2);
 
       // لا يُحفظ شيء محليًا ولا تُعرض رسالة النجاح إلا بعد تأكيد الخادم
-      const localApp: AppointmentListItem = {
+      const localApp: AppointmentListItem & { createdAt?: string; clientFingerprint?: string } = {
         id: appointmentId,
         appointmentId,
         patientId,
@@ -534,11 +786,13 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
         date: scheduledDate,
         time: selectedTimeSlot,
         timeSlot: selectedTimeSlot,
-        branch: activeBranch?.name || 'الفرع الرئيسي',
+        branch: branchDisplayName,
         visitType,
         expectedFee: feeNumber,
         status: 'مجدول' as any,
         notes: appointmentRecord.notes,
+        createdAt: nowIso,
+        clientFingerprint,
       };
 
       try {
@@ -549,7 +803,7 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
 
       onAddAppointment?.(localApp);
 
-      const doctorPhone = doctorInfo.phone?.replace(/\D/g, '') || '01092847162';
+      const doctorPhone = (activeBranch?.phone || activeBranch?.mobile || doctorInfo.phone || '01092847162').replace(/\D/g, '') || '01092847162';
       const cleanDoctorPhone = doctorPhone.startsWith('0') ? `2${doctorPhone}` : doctorPhone;
       const text = formatWhatsappMessage();
       const encoded = encodeURIComponent(text);
@@ -562,21 +816,32 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
         medicalCode: patientRecord.medicalCode,
         timeSlot: selectedTimeSlot,
         date: scheduledDate,
-        branch: activeBranch?.name || 'الفرع الرئيسي',
+        branch: branchDisplayName,
         visitType,
         expectedFee: feeNumber,
         notes: notes.trim(),
         whatsappUrl: url,
         whatsappText: text,
-        clinicPhone: doctorInfo.phone,
+        clinicPhone: doctorInfo.phone || activeBranch?.phone || '',
       };
 
       setConfirmedBooking(confirmedData);
       setToastMessage('تم تسجيل الحجز بنجاح ✓');
       setTimeout(() => setToastMessage(null), 3500);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Booking failed:', err);
-      setSubmitError('تعذّر حفظ الحجز. تحقق من اتصال الإنترنت وحاول مرة أخرى، ولم يُحفظ أي شيء.');
+      const rawMessage = String(err?.message || '');
+      if (rawMessage.includes('DUPLICATE_BOOKING_SAME_DAY')) {
+        setSubmitError(`عفواً، يوجد حجز مسجل بالفعل بنفس رقم الهاتف في هذا اليوم (${scheduledDate}). لا يمكن تكرار الموعد في نفس اليوم.`);
+      } else if (rawMessage.includes('RATE_LIMIT_DAILY_MAX_2')) {
+        setSubmitError('عفواً، تم الوصول للحد الأقصى المسموح به للحجوزات اليومية (حجزان كحد أقصى في اليوم لنفس الهاتف أو المتصفح).');
+      } else if (rawMessage.includes('INVALID_PHONE')) {
+        setSubmitError('رقم الهاتف غير صالح. يرجى التأكد من إدخال رقم هاتف صحيح (من 7 إلى 15 رقماً).');
+      } else if (rawMessage.includes('INVALID_PATIENT_NAME')) {
+        setSubmitError('يرجى إدخال اسم المريض كاملاً (الاسم ثنائي على الأقل).');
+      } else {
+        setSubmitError('تعذّر حفظ الحجز. تحقق من اتصال الإنترنت وحاول مرة أخرى، ولم يُحفظ أي شيء.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -628,10 +893,18 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
               <img
                 src={doctorInfo.logoUrl}
                 alt="Clinic Logo"
+                onError={() => setLogoLoadError(true)}
                 className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-contain bg-white/5 p-1 border border-white/10 shadow-md shrink-0"
               />
-            ) : null}
+            ) : (
+              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-[#00c2cb]/15 border border-[#00c2cb]/30 flex items-center justify-center text-[#45dee7] shadow-md shrink-0">
+                <span className="material-symbols-outlined text-2xl">medical_services</span>
+              </div>
+            )}
             <div className="flex flex-col justify-center">
+              {clinicDisplayName && (
+                <span className="text-[10px] font-bold text-[#45dee7] mb-0.5">{clinicDisplayName}</span>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-sm sm:text-base font-black text-white">{doctorInfo.name}</h1>
                 <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-[#00c2cb]/15 text-[#45dee7] border border-[#00c2cb]/20">
@@ -807,11 +1080,19 @@ export const BookingLandingScreen: React.FC<BookingLandingScreenProps> = ({
             <img
               src={doctorInfo.logoUrl}
               alt="Clinic Logo"
+              onError={() => setLogoLoadError(true)}
               className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-contain bg-white/5 p-1 border border-white/10 shadow-md shrink-0"
             />
-          ) : null}
+          ) : (
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-[#00c2cb]/15 border border-[#00c2cb]/30 flex items-center justify-center text-[#45dee7] shadow-md shrink-0">
+              <span className="material-symbols-outlined text-2xl">medical_services</span>
+            </div>
+          )}
 
           <div className="flex flex-col justify-center">
+            {clinicDisplayName && (
+              <span className="text-[10px] font-bold text-[#45dee7] mb-0.5">{clinicDisplayName}</span>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-sm sm:text-base font-black text-white">{doctorInfo.name}</h1>
               <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-[#00c2cb]/15 text-[#45dee7] border border-[#00c2cb]/20">

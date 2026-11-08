@@ -183,7 +183,7 @@ import {
 import { safeStorage, StorageKeys } from './services/storage';
 import { setCachedRecurringTemplates } from './utils/recurringTemplatesManager';
 import { toEnglishDigits, formatAppDate, formatAppTime } from './utils/numberUtils';
-import { findBranch } from './utils/clinicBranches';
+import { findBranch, isDefaultBranchesList, saveClinicBranches } from './utils/clinicBranches';
 import { toDayKey, todayKey, addDaysToKey } from './utils/dayKey';
 import { buildTransactions } from './utils/buildTransactions';
 import { READ_OPT, HOT_DAYS, APPT_PAST_DAYS } from './config/readOpt';
@@ -836,15 +836,62 @@ function ClinicApp() {
         subscribeToChronicDiseases(db, (items) => { onDataSuccess(); if (items && items.length > 0) setChronicDiseasesCanonical(items); }, onError),
         subscribeToDoctorSettings(db, (settings) => { if (settings) setDoctorSettingsCanonical(settings); }, onError),
         subscribeToRecurringTemplates(db, (templates) => { if (templates) setCachedRecurringTemplates(templates); }, onError),
-        subscribeToPrescriptionSettings(db, (settings) => {
-          if (settings && Object.keys(settings).length > 0) {
-            if (hasRecentLocalWrite('settings', 'prescriptionSettings')) return;
-            const nextJson = JSON.stringify(settings);
-            if (localStorage.getItem('soli_prescription_settings') !== nextJson) {
-              localStorage.setItem('soli_prescription_settings', nextJson);
-              window.dispatchEvent(new Event('soli_prescription_updated'));
-              window.dispatchEvent(new Event('storage'));
+        subscribeToPrescriptionSettings(db, (settings: any) => {
+          const localRx = safeStorage.getJSON<any>(StorageKeys.PRESCRIPTION_SETTINGS, null);
+          const localBranches = safeStorage.getJSON<any[]>(StorageKeys.CLINIC_BRANCHES, null);
+          const effectiveLocalBranches =
+            localBranches && !isDefaultBranchesList(localBranches)
+              ? localBranches
+              : localRx?.branches && !isDefaultBranchesList(localRx.branches)
+              ? localRx.branches
+              : null;
+
+          const hasLocalCustomSettings =
+            Boolean(effectiveLocalBranches) ||
+            Boolean(localRx?.doctorName && localRx.doctorName !== 'طبيب العيادة');
+
+          if (!settings || Object.keys(settings).length === 0 || (isDefaultBranchesList(settings.branches) && effectiveLocalBranches)) {
+            if (hasLocalCustomSettings) {
+              const payload = {
+                ...(settings || {}),
+                ...(localRx || {}),
+                branches: effectiveLocalBranches || localRx?.branches || settings?.branches || [],
+              };
+              Promise.all([
+                saveSettingsDocument(db, 'prescriptionSettings', payload),
+                saveSettingsDocument(db, 'clinicBranches', {
+                  branches: payload.branches,
+                  updatedAt: new Date().toISOString(),
+                }),
+                ...(payload.doctorName
+                  ? [
+                      saveSettingsDocument(db, 'doctorProfile', {
+                        doctorNameAr: payload.doctorName,
+                        doctorNameEn: payload.doctorNameEn || '',
+                        specialtyAr: payload.specialtyAr || '',
+                        specialtyEn: payload.specialtyEn || '',
+                        credentialsAr: payload.degreesAr ? [payload.degreesAr] : [],
+                        credentialsEn: payload.degreesEn ? [payload.degreesEn] : [],
+                        phone: payload.phone || '',
+                        logoUrl: payload.logoUrl || null,
+                        updatedAt: new Date().toISOString(),
+                      }),
+                    ]
+                  : []),
+              ]).catch(() => {});
             }
+            if (!settings || Object.keys(settings).length === 0) return;
+          }
+
+          if (hasRecentLocalWrite('settings', 'prescriptionSettings')) return;
+          const nextJson = JSON.stringify(settings);
+          if (localStorage.getItem('soli_prescription_settings') !== nextJson) {
+            localStorage.setItem('soli_prescription_settings', nextJson);
+            if (Array.isArray(settings.branches) && settings.branches.length > 0) {
+              saveClinicBranches(settings.branches);
+            }
+            window.dispatchEvent(new Event('soli_prescription_updated'));
+            window.dispatchEvent(new Event('storage'));
           }
         }, onError),
       );
@@ -1031,7 +1078,11 @@ function ClinicApp() {
         date: a.scheduledDate,
         time: a.scheduledTime,
         timeSlot: a.scheduledTime || '05:00 م',
-        branch: findBranch(a.clinicLocationId || (a as any).branch)?.name || 'العيادة الرئيسية - المهندسين',
+        branch:
+          (a as any).branchName ||
+          (a as any).branch ||
+          findBranch(a.clinicLocationId)?.name ||
+          'الفرع الرئيسي',
         visitType: a.visitType,
         status: a.status === 'ARRIVED' ? 'فى الانتظار حضر المريض' : a.status === 'CANCELLED' ? 'ملغي' : 'مجدول',
         expectedFee: dynamicFee,

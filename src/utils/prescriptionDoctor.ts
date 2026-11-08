@@ -26,16 +26,53 @@ export function getPrescriptionDoctorInfo(): PrescriptionDoctorInfo {
   };
 
   const parsed = safeStorage.getJSON<any | null>(StorageKeys.PRESCRIPTION_SETTINGS, null);
-  if (parsed) {
+  const docProf = safeStorage.getJSON<any | null>('soli_doctor_profile', null);
+
+  if (parsed || docProf) {
+    const rawDocName =
+      parsed?.doctorName?.trim() ||
+      docProf?.doctorNameAr?.trim() ||
+      docProf?.doctorName?.trim() ||
+      docProf?.name?.trim() ||
+      '';
+    const rawDocNameEn =
+      parsed?.doctorNameEn?.trim() ||
+      docProf?.doctorNameEn?.trim() ||
+      '';
+    const rawSpecialtyAr =
+      parsed?.specialtyAr?.trim() ||
+      docProf?.specialtyAr?.trim() ||
+      docProf?.specialty?.trim() ||
+      docProf?.title?.trim() ||
+      '';
+    const rawSpecialtyEn =
+      parsed?.specialtyEn?.trim() ||
+      docProf?.specialtyEn?.trim() ||
+      '';
+    const rawDegreesAr =
+      parsed?.degreesAr?.trim() ||
+      (Array.isArray(docProf?.credentialsAr) ? docProf.credentialsAr.join(' • ') : docProf?.credentialsAr?.trim()) ||
+      docProf?.degreesAr?.trim() ||
+      '';
+    const rawDegreesEn =
+      parsed?.degreesEn?.trim() ||
+      (Array.isArray(docProf?.credentialsEn) ? docProf.credentialsEn.join(' • ') : docProf?.credentialsEn?.trim()) ||
+      docProf?.degreesEn?.trim() ||
+      '';
+    const rawPhone =
+      parsed?.phone?.trim() ||
+      docProf?.phone?.trim() ||
+      '';
+
     return {
-      doctorName: parsed.doctorName?.trim() || fallback.doctorName,
-      doctorNameEn: parsed.doctorNameEn?.trim() || fallback.doctorNameEn,
-      specialtyAr: parsed.specialtyAr?.trim() || fallback.specialtyAr,
-      specialtyEn: parsed.specialtyEn?.trim() || fallback.specialtyEn,
-      degreesAr: parsed.degreesAr?.trim() || fallback.degreesAr,
-      degreesEn: parsed.degreesEn?.trim() || fallback.degreesEn,
-      phone: parsed.phone?.trim() || fallback.phone,
-      logoUrl: parsed.logoUrl || fallback.logoUrl,
+      doctorName: rawDocName || fallback.doctorName,
+      doctorNameEn: rawDocNameEn || fallback.doctorNameEn,
+      specialtyAr: rawSpecialtyAr || fallback.specialtyAr,
+      specialtyEn: rawSpecialtyEn || fallback.specialtyEn,
+      degreesAr: rawDegreesAr || fallback.degreesAr,
+      degreesEn: rawDegreesEn || fallback.degreesEn,
+      phone: rawPhone || fallback.phone,
+      logoUrl: parsed?.logoUrl || docProf?.logoUrl || fallback.logoUrl,
     };
   }
 

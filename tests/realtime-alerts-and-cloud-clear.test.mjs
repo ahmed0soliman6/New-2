@@ -242,6 +242,160 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): صلاحيات السك�
 
   const genRow = await pg.query(`select data from public.settings where clinic_id = $1 and id = '_database_generation'`, [clinicId]);
   assert.equal(genRow.rows[0].data.generation, newGen, 'تم تحديث _database_generation لمزامنة الحذف السحابي بين كافة الأجهزة');
+
+  // Grant select on settings to anon for RLS testing
+  await pg.exec(`
+    reset role;
+    grant select on public.settings to anon;
+  `);
+
+  // Authenticate as Doctor and save prescriptionSettings + clinicBranches ("ميت عزون", "طناح")
+  await pg.exec(`
+    set role authenticated;
+    select set_config('request.jwt.claim.sub', '${docUid}', false);
+  `);
+
+  const realBranches = [
+    { id: 'b-mit-azzoun', name: 'ميت عزون', address: 'المنصورة - ميت عزون', phone: '01092847162', workingHours: 'السبت، الإثنين، الأربعاء 04:00 م - 10:00 م' },
+    { id: 'b-tanah', name: 'طناح', address: 'المنصورة - طناح', phone: '01092847162', workingHours: 'الأحد، الثلاثاء، الخميس 05:00 م - 10:00 م' },
+  ];
+
+  await pg.query(
+    `insert into public.settings (clinic_id, id, data)
+     values ($1, 'prescriptionSettings', $2::jsonb)
+     on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now()`,
+    [
+      clinicId,
+      JSON.stringify({
+        doctorName: 'د. أحمد سليمان',
+        specialtyAr: 'استشاري الباطنة العامة والقلب',
+        degreesAr: 'دكتوراه الباطنة والقلب',
+        phone: '01092847162',
+        branches: realBranches,
+      }),
+    ]
+  );
+
+  await pg.query(
+    `insert into public.settings (clinic_id, id, data)
+     values ($1, 'clinicBranches', $2::jsonb)
+     on conflict (clinic_id, id) do update set data = excluded.data, updated_at = now()`,
+    [clinicId, JSON.stringify({ branches: realBranches })]
+  );
+
+  // Switch to unauthenticated external visitor (anon)
+  await pg.exec(`
+    set role anon;
+    select set_config('request.jwt.claim.sub', '', false);
+  `);
+
+  // 1) Anon visitor reads clinic config via get_public_booking_config RPC
+  const publicCfgRes = await pg.query(`select public.get_public_booking_config($1) as cfg`, [clinicId]);
+  const publicCfg = publicCfgRes.rows[0].cfg;
+  assert.equal(publicCfg.prescriptionSettings.doctorName, 'د. أحمد سليمان', 'يظهر اسم الطبيب الحقيقي للزائر الخارجي');
+  assert.equal(publicCfg.prescriptionSettings.branches.length, 2, 'تظهر الفروع الحقيقية للزائر الخارجي');
+  assert.equal(publicCfg.prescriptionSettings.branches[0].name, 'ميت عزون');
+  assert.equal(publicCfg.prescriptionSettings.branches[1].name, 'طناح');
+
+  // 2) Anon visitor books first appointment via create_public_booking RPC
+  const bookingRes1 = await pg.query(
+    `select public.create_public_booking($1, $2, $3, $4::jsonb, $5::jsonb, $6) as res`,
+    [
+      clinicId,
+      'app-pub-1',
+      'pat-pub-1',
+      JSON.stringify({ fullName: 'محمود السيد علي', phone: '01012345678' }),
+      JSON.stringify({
+        patientName: 'محمود السيد علي',
+        phone: '01012345678',
+        clinicLocationId: 'b-mit-azzoun',
+        branch: 'ميت عزون',
+        branchName: 'ميت عزون',
+        scheduledDate: '2026-11-09',
+        scheduledTime: '04:30 م',
+        visitType: 'كشف جديد',
+        expectedFee: 300,
+      }),
+      'fp-brave-visitor-1',
+    ]
+  );
+  assert.equal(bookingRes1.rows[0].res.status, 'SCHEDULED', 'تم حفظ الحجز الإلكتروني الأول بنجاح');
+
+  // 3) Duplicate booking on the same day (2026-11-09) for the same phone (01012345678) must be rejected
+  await assert.rejects(
+    async () => {
+      await pg.query(
+        `select public.create_public_booking($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+        [
+          clinicId,
+          'app-pub-dup',
+          'pat-pub-dup',
+          JSON.stringify({ fullName: 'محمود السيد علي', phone: '01012345678' }),
+          JSON.stringify({
+            patientName: 'محمود السيد علي',
+            phone: '01012345678',
+            clinicLocationId: 'b-mit-azzoun',
+            branch: 'ميت عزون',
+            scheduledDate: '2026-11-09',
+            scheduledTime: '05:00 م',
+            visitType: 'كشف جديد',
+          }),
+          'fp-brave-visitor-1',
+        ]
+      );
+    },
+    /DUPLICATE_BOOKING_SAME_DAY/,
+    'يمنع تكرار الحجز لنفس رقم الهاتف في نفس اليوم'
+  );
+
+  // 4) Second booking on a different date from the same browser fingerprint succeeds (up to max 2/day)
+  const bookingRes2 = await pg.query(
+    `select public.create_public_booking($1, $2, $3, $4::jsonb, $5::jsonb, $6) as res`,
+    [
+      clinicId,
+      'app-pub-2',
+      'pat-pub-2',
+      JSON.stringify({ fullName: 'محمود السيد علي', phone: '01012345678' }),
+      JSON.stringify({
+        patientName: 'محمود السيد علي',
+        phone: '01012345678',
+        clinicLocationId: 'b-tanah',
+        branch: 'طناح',
+        scheduledDate: '2026-11-10',
+        scheduledTime: '06:00 م',
+        visitType: 'استشارة / متابعة',
+      }),
+      'fp-brave-visitor-1',
+    ]
+  );
+  assert.equal(bookingRes2.rows[0].res.status, 'SCHEDULED', 'يسمح بالحجز الثاني في يوم مختلف حتى حد 2 في اليوم');
+
+  // 5) Third booking on the same day from the same phone or browser fingerprint is rejected (RATE_LIMIT_DAILY_MAX_2)
+  await assert.rejects(
+    async () => {
+      await pg.query(
+        `select public.create_public_booking($1, $2, $3, $4::jsonb, $5::jsonb, $6)`,
+        [
+          clinicId,
+          'app-pub-3',
+          'pat-pub-3',
+          JSON.stringify({ fullName: 'زائر آخر نفس المتصفح', phone: '01099998888' }),
+          JSON.stringify({
+            patientName: 'زائر آخر نفس المتصفح',
+            phone: '01099998888',
+            clinicLocationId: 'b-mit-azzoun',
+            branch: 'ميت عزون',
+            scheduledDate: '2026-11-11',
+            scheduledTime: '07:00 م',
+            visitType: 'كشف جديد',
+          }),
+          'fp-brave-visitor-1',
+        ]
+      );
+    },
+    /RATE_LIMIT_DAILY_MAX_2/,
+    'يرفض الحجز الثالث في نفس اليوم لنفس الهاتف أو المتصفح'
+  );
 });
 
 // 4. Test Notification Badge and Alert History Deduplication
