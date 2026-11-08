@@ -2774,10 +2774,23 @@ begin
     raise exception 'INVALID_DATE: التاريخ المحدد غير صالح';
   end if;
 
-  -- Ensure clinic row exists
-  insert into public.clinics (id, name)
-  values (p_clinic_id, 'عيادة سولي الطبية - Soli Medical Clinic')
-  on conflict (id) do nothing;
+  -- Ensure clinic row exists (safely handling legacy slug column if present)
+  if not exists (select 1 from public.clinics where id = p_clinic_id) then
+    if exists (
+      select 1
+        from information_schema.columns
+       where table_schema = 'public'
+         and table_name = 'clinics'
+         and column_name = 'slug'
+    ) then
+      execute 'insert into public.clinics (id, name, slug) values ($1, $2, $1) on conflict (id) do nothing'
+        using p_clinic_id, 'عيادة سولي الطبية - Soli Medical Clinic';
+    else
+      insert into public.clinics (id, name)
+      values (p_clinic_id, 'عيادة سولي الطبية - Soli Medical Clinic')
+      on conflict (id) do nothing;
+    end if;
+  end if;
 
   -- 1. Prevent duplicate active booking on the same day for the same phone number
   select count(*)::int

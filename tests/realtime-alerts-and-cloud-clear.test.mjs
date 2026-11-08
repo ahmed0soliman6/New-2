@@ -474,6 +474,53 @@ test('3. اختبار PostgreSQL الفعلي (PGlite): صلاحيات السك�
     /DUPLICATE_BOOKING_SAME_DAY/,
     'يكتشف تكرار رقم الهاتف في نفس اليوم حتى عند اختلاف الأرقام العربية والإنجليزية'
   );
+
+  // 7) Verify public booking succeeds even when public.clinics has a legacy "slug text not null" column
+  await pg.exec(`
+    reset role;
+    alter table public.clinics add column if not exists slug text;
+    update public.clinics set slug = id where slug is null;
+    alter table public.clinics alter column slug set not null;
+    set role anon;
+    select set_config('request.jwt.claim.sub', '', false);
+  `);
+
+  await pg.query(
+    `select public.create_appointment($1, $2, $3, $4::jsonb, $5, $6::jsonb)`,
+    [
+      clinicId,
+      new Date().toISOString(),
+      'app-pub-with-slug-col',
+      JSON.stringify({
+        appointmentId: 'app-pub-with-slug-col',
+        patientName: 'خالد إبراهيم حسن',
+        phone: '01077776666',
+        branch: 'طناح',
+        scheduledDate: '2026-11-13',
+        scheduledTime: '08:00 م',
+        visitType: 'كشف جديد',
+        status: 'SCHEDULED',
+        createdBy: 'online_booking',
+      }),
+      'pat-pub-with-slug-col',
+      JSON.stringify({
+        patientId: 'pat-pub-with-slug-col',
+        fullName: 'خالد إبراهيم حسن',
+        phone: '01077776666',
+        createdBy: 'online_booking',
+      }),
+    ]
+  );
+
+  await pg.exec(`
+    set role authenticated;
+    select set_config('request.jwt.claim.sub', '${secUid}', false);
+  `);
+  const slugApptCheck = await pg.query(
+    `select data from public.appointments where clinic_id = $1 and id = 'app-pub-with-slug-col'`,
+    [clinicId]
+  );
+  assert.equal(slugApptCheck.rows.length, 1, 'ينجح الحجز الإلكتروني حتى مع وجود عمود slug not null في جدول clinics');
 });
 
 // 4. Test Notification Badge and Alert History Deduplication
