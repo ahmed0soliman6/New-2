@@ -623,8 +623,8 @@ test('5. اختبار تصفية السجل المحذوف لحظياً من ا�
   assert.equal(patients[0].patientId, 'p200');
 });
 
-// 6. Test Upcoming Follow-Ups Deduplication and Auto-Hiding when Appointment is Scheduled
-test('6. اختبار منع تكرار المريض في المتابعات القادمة وإخفاء المتابعة السابقة تلقائياً عند جدولة موعد', () => {
+// 6. Test Upcoming Follow-Ups Inclusion (Exam + Landing Page) & Per-Patient Latest DueDate Deduplication
+test('6. اختبار ظهور المتابعات من الكشف وصفحة الهبوط ومنع التكرار لنفس المريض مع إخفاء الزيارة الأقدم عند جدولة موعد أحدث', () => {
   const normDigits = (val = '') => String(val).replace(/\D/g, '');
   const normName = (val = '') =>
     String(val)
@@ -636,72 +636,90 @@ test('6. اختبار منع تكرار المريض في المتابعات ا�
       .toLowerCase();
 
   function buildFollowUps(followUpsCanonical, appointmentsCanonical, patientsCanonical) {
-    const scheduledIds = new Set();
-    const scheduledPhones = new Set();
-    const scheduledNames = new Set();
+    const candidates = [];
+
+    followUpsCanonical.forEach((fu) => {
+      if (fu.status === 'CANCELLED' || fu.status === 'ARCHIVED') return;
+      const pat = patientsCanonical.find((p) => p.patientId === fu.patientId);
+      candidates.push({
+        id: fu.followUpId,
+        patientId: fu.patientId,
+        patientName: pat?.fullName || 'مريض متابعة',
+        phone: pat?.phone || '',
+        dueDate: fu.scheduledDate,
+        diagnosis: pat?.lastDiagnosis || 'متابعة استشارة',
+        hasSpecificDiagnosis: Boolean(pat?.lastDiagnosis),
+      });
+    });
 
     appointmentsCanonical.forEach((app) => {
       if (app.status !== 'SCHEDULED' && app.status !== 'مجدول') return;
-      if (app.patientId) scheduledIds.add(app.patientId);
-      const p = normDigits(app.phone);
-      if (p.length >= 7) scheduledPhones.add(p);
-      const n = normName(app.patientName);
-      if (n.length >= 3) scheduledNames.add(n);
+      const vt = String(app.visitType || '');
+      if (!vt.includes('متابعة') && !vt.includes('استشارة')) return;
+      const pat = patientsCanonical.find((p) => p.patientId === app.patientId);
+      candidates.push({
+        id: app.appointmentId,
+        patientId: pat?.patientId || app.patientId || '',
+        patientName: app.patientName || pat?.fullName || 'مريض متابعة',
+        phone: app.phone || pat?.phone || '',
+        dueDate: app.scheduledDate,
+        diagnosis: pat?.lastDiagnosis || app.visitType || 'استشارة / متابعة',
+        hasSpecificDiagnosis: Boolean(pat?.lastDiagnosis),
+      });
     });
 
-    const sorted = [...followUpsCanonical].sort((a, b) =>
-      String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
-    );
+    candidates.sort((a, b) => String(b.dueDate || '').localeCompare(String(a.dueDate || '')));
 
-    const seen = new Set();
+    const seen = new Map();
     const result = [];
 
-    for (const fu of sorted) {
-      if (fu.status === 'COMPLETED' || fu.status === 'CANCELLED') continue;
-      const pat = patientsCanonical.find((p) => p.patientId === fu.patientId);
-      if (!pat) continue;
-      const pPhone = normDigits(pat.phone);
-      const pName = normName(pat.fullName);
-
-      if (
-        scheduledIds.has(fu.patientId) ||
-        (pPhone.length >= 7 && scheduledPhones.has(pPhone)) ||
-        (pName.length >= 3 && scheduledNames.has(pName))
-      ) {
-        continue;
-      }
-
+    for (const cand of candidates) {
+      const pPhone = normDigits(cand.phone);
+      const pName = normName(cand.patientName);
       const keys = [
-        `id:${fu.patientId}`,
+        cand.patientId ? `id:${cand.patientId}` : '',
         pPhone.length >= 7 ? `phone:${pPhone}` : '',
         pName.length >= 3 ? `name:${pName}` : '',
       ].filter(Boolean);
 
-      if (keys.some((k) => seen.has(k))) continue;
-      keys.forEach((k) => seen.add(k));
-      result.push(fu);
+      const existingIdx = keys.map((k) => seen.get(k)).find((idx) => idx !== undefined);
+      if (existingIdx !== undefined) {
+        if (cand.hasSpecificDiagnosis && result[existingIdx].diagnosis === 'استشارة / متابعة') {
+          result[existingIdx].diagnosis = cand.diagnosis;
+        }
+        keys.forEach((k) => seen.set(k, existingIdx));
+        continue;
+      }
+
+      const idx = result.length;
+      keys.forEach((k) => seen.set(k, idx));
+      result.push(cand);
     }
 
     return result;
   }
 
   const patients = [
-    { patientId: 'pat-1', fullName: 'احمد محمد علي محمد', phone: '01021434947' },
+    {
+      patientId: 'pat-1',
+      fullName: 'احمد محمد علي محمد',
+      phone: '01021434947',
+      lastDiagnosis: 'متلازمة القولون العصبي التشنجي',
+    },
     { patientId: 'pat-2', fullName: 'طارق مصطفي', phone: '01099998888' },
   ];
 
   const followUps = [
-    { followUpId: 'fu-old', patientId: 'pat-1', scheduledDate: '2026-11-08', createdAt: '2026-11-08T10:00:00Z', status: 'UPCOMING' },
-    { followUpId: 'fu-new', patientId: 'pat-1', scheduledDate: '2026-11-09', createdAt: '2026-11-08T18:00:00Z', status: 'UPCOMING' },
-    { followUpId: 'fu-2', patientId: 'pat-2', scheduledDate: '2026-11-10', createdAt: '2026-11-08T12:00:00Z', status: 'UPCOMING' },
+    { followUpId: 'fu-old', patientId: 'pat-1', scheduledDate: '2026-11-08', status: 'UPCOMING' },
+    { followUpId: 'fu-2', patientId: 'pat-2', scheduledDate: '2026-11-10', status: 'UPCOMING' },
   ];
 
-  // Without scheduled appointments: pat-1 appears ONLY ONCE (latest fu-new), not twice
-  const beforeScheduling = buildFollowUps(followUps, [], patients);
-  assert.equal(beforeScheduling.length, 2, 'يظهر لكل مريض متابعة واحدة فقط (الأحدث) دون تكرار');
-  assert.equal(beforeScheduling.find((f) => f.patientId === 'pat-1').followUpId, 'fu-new');
+  // 1. Follow-up from Examination Screen appears
+  const initialList = buildFollowUps(followUps, [], patients);
+  assert.equal(initialList.length, 2, 'تظهر المتابعات المضافة من صفحة الكشف في قائمة المتابعات القادمة');
 
-  // Once pat-1 schedules an appointment: pat-1's follow-up automatically disappears
+  // 2. When pat-1 schedules a newer follow-up appointment (e.g. 2026-11-09) OR books from landing page:
+  // The older past visit card (2026-11-08) disappears and ONLY the newer card (2026-11-09) remains for pat-1, plus any new landing-page follow-up booking (pat-3)
   const afterScheduling = buildFollowUps(
     followUps,
     [
@@ -710,12 +728,28 @@ test('6. اختبار منع تكرار المريض في المتابعات ا�
         patientId: 'pat-1',
         patientName: 'احمد محمد علي محمد',
         phone: '01021434947',
+        scheduledDate: '2026-11-09',
+        visitType: 'استشارة / متابعة',
+        status: 'SCHEDULED',
+      },
+      {
+        appointmentId: 'app-landing',
+        patientId: 'pat-3',
+        patientName: 'مريض حجز الكتروني',
+        phone: '01055556666',
+        scheduledDate: '2026-11-11',
+        visitType: 'استشارة / متابعة',
         status: 'SCHEDULED',
       },
     ],
     patients
   );
-  assert.equal(afterScheduling.length, 1, 'تختفي المتابعة السابقة تلقائياً فور جدولة موعد للمريض');
-  assert.equal(afterScheduling[0].patientId, 'pat-2');
+
+  assert.equal(afterScheduling.length, 3, 'يظهر حجز المتابعة من صفحة الهبوط وتظهر متابعة الكشف دون تكرار');
+  const pat1Cards = afterScheduling.filter((c) => c.patientId === 'pat-1');
+  assert.equal(pat1Cards.length, 1, 'يظهر للمريض بطاقة واحدة فقط وتختفي الزيارة الفائتة الأقدم');
+  assert.equal(pat1Cards[0].dueDate, '2026-11-09', 'البطاقة المعروضة للمريض هي الموعد الأحدث (2026-11-09) وليس الزيارة الفائتة (2026-11-08)');
+  assert.equal(pat1Cards[0].diagnosis, 'متلازمة القولون العصبي التشنجي', 'يتم الاحتفاظ بالتشخيص الطبي للمريض');
 });
+
 

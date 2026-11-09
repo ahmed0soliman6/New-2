@@ -153,9 +153,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   const [visitType, setVisitType] = useState(() => activeVisitTypes[0]?.name || 'كشف جديد');
   const [appointmentNotes, setAppointmentNotes] = useState('');
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
-  const [linkedFollowUpId, setLinkedFollowUpId] = useState<string | null>(null);
   const [linkedPatientId, setLinkedPatientId] = useState<string | null>(null);
-  const [hiddenFollowUpIds, setHiddenFollowUpIds] = useState<Set<string>>(() => new Set());
 
   // Active branch object based on selectedBranch
   const activeBranch = useMemo(() => {
@@ -292,7 +290,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
     return followUps || [];
   }, [followUps]);
 
-  // Filtered follow-ups: hide if patient already has an active scheduled appointment & deduplicate per patient
+  // Filtered follow-ups: deduplicate per patient (keeping the card with the latest dueDate) and apply search filter
   const displayedFollowUps = useMemo(() => {
     const normDigits = (val?: string) => toEnglishDigits(val || '').replace(/\D/g, '');
     const normName = (val?: string) =>
@@ -304,56 +302,20 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
         .replace(/\s+/g, ' ')
         .toLowerCase();
 
-    const scheduledPatientIds = new Set<string>();
-    const scheduledPhones = new Set<string>();
-    const scheduledNames = new Set<string>();
-
-    allAppointments.forEach((app) => {
-      const st = String(app.status || '').toUpperCase();
-      const rawStatus = String(app.status || '');
-      const isActiveScheduled =
-        st === 'SCHEDULED' ||
-        st === 'ARRIVED' ||
-        rawStatus === 'مجدول' ||
-        rawStatus === 'فى الانتظار حضر المريض' ||
-        rawStatus === 'في الانتظار';
-      if (!isActiveScheduled) return;
-
-      if (app.patientId) scheduledPatientIds.add(app.patientId);
-      const pPhone = normDigits(app.phone);
-      if (pPhone.length >= 7) scheduledPhones.add(pPhone);
-      const pName = normName(app.patientName);
-      if (pName.length >= 3) scheduledNames.add(pName);
-    });
-
-    // Sort newest first by lastVisitDate / dueDate so we keep only the latest follow-up per patient
-    const sorted = [...activeFollowUps].sort((a, b) => {
-      const lastA = new Date(a.lastVisitDate || a.dueDate || '2020-01-01').getTime();
-      const lastB = new Date(b.lastVisitDate || b.dueDate || '2020-01-01').getTime();
-      if (!isNaN(lastB) && !isNaN(lastA) && lastB !== lastA) return lastB - lastA;
-      const dueA = new Date(a.dueDate || '2020-01-01').getTime();
-      const dueB = new Date(b.dueDate || '2020-01-01').getTime();
-      if (!isNaN(dueB) && !isNaN(dueA) && dueB !== dueA) return dueB - dueA;
+    // Sort newest dueDate first so we keep only the latest follow-up per patient, hiding any older past card for the same patient
+    const sortedByLatestDue = [...activeFollowUps].sort((a, b) => {
+      const dueCmp = String(b.dueDate || '').localeCompare(String(a.dueDate || ''));
+      if (dueCmp !== 0) return dueCmp;
+      const lastCmp = String(b.lastVisitDate || '').localeCompare(String(a.lastVisitDate || ''));
+      if (lastCmp !== 0) return lastCmp;
       return (b.id || '').localeCompare(a.id || '');
     });
 
     const seenPatients = new Set<string>();
-    const deduplicated = sorted.filter((f) => {
-      if (hiddenFollowUpIds.has(f.id)) return false;
-
+    const deduplicated = sortedByLatestDue.filter((f) => {
       const fPhone = normDigits(f.phone);
       const fName = normName(f.patientName);
 
-      // Hide automatically if this patient already has a scheduled appointment
-      if (
-        (f.patientId && scheduledPatientIds.has(f.patientId)) ||
-        (fPhone.length >= 7 && scheduledPhones.has(fPhone)) ||
-        (fName.length >= 3 && scheduledNames.has(fName))
-      ) {
-        return false;
-      }
-
-      // Deduplicate: keep only the latest follow-up per patient
       const keys = [
         f.patientId ? `id:${f.patientId}` : '',
         fPhone.length >= 7 ? `phone:${fPhone}` : '',
@@ -375,8 +337,8 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       );
     });
 
-    return deduplicated;
-  }, [activeFollowUps, allAppointments, followupSearch, hiddenFollowUpIds]);
+    return deduplicated.sort((a, b) => a.daysRemaining - b.daysRemaining);
+  }, [activeFollowUps, followupSearch]);
 
   // Update Status handler:
   // 1) "مجدول" (Default)
@@ -526,20 +488,10 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       }
     }
 
-    // Immediately hide the linked follow-up (and any follow-up for this patient)
-    if (linkedFollowUpId) {
-      setHiddenFollowUpIds((prev) => {
-        const next = new Set(prev);
-        next.add(linkedFollowUpId);
-        return next;
-      });
-    }
-
     // Reset Form only after confirmed success
     setPatientName('');
     setPhone('');
     setAppointmentNotes('');
-    setLinkedFollowUpId(null);
     setLinkedPatientId(null);
     setFormFeedback('تم حفظ الموعد بنجاح ✓');
     setToastMessage(`تم حفظ موعد المريض (${newApp.patientName}) بنجاح`);
@@ -1435,7 +1387,6 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                       setScheduledDate(targetDueDate);
                       setVisitType(followUpVisitType);
                       setAppointmentNotes(`متابعة دورية: ${fu.diagnosis}`);
-                      setLinkedFollowUpId(fu.id);
                       setLinkedPatientId(fu.patientId || null);
                       setIsAddAppointmentOpen(true);
                       window.scrollTo({ top: 0, behavior: 'smooth' });

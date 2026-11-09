@@ -781,7 +781,7 @@ function ClinicApp() {
 
           win<Payment>('payments', [[where('dayKey', '>=', hotStart)]], setPaymentsCanonical),
           win<Prescription>('prescriptions', [[where('dayKey', '>=', hotStart)]], setPrescriptionsCanonical),
-          win<FollowUp>('followUps', [[where('status', 'in', ['UPCOMING', 'TODAY', 'OVERDUE'])]], setFollowUpsCanonical),
+          subscribeToFollowUps(db, (items) => { onDataSuccess(); setFollowUpsCanonical(items); }, onError),
           win<LabOrder>('labOrders', [[where('dayKey', '>=', hotStart)]], setLabOrdersCanonical),
           win<RadiologyOrder>('radiologyOrders', [[where('dayKey', '>=', hotStart)]], setRadiologyOrdersCanonical),
         ]
@@ -1841,51 +1841,175 @@ function ClinicApp() {
     };
   }, [clinicId, userProfile?.username]);
 
-  // Doctor-determined Follow-ups only (deduplicated per patient & automatically hidden once patient has a scheduled appointment)
+  // Upcoming Follow-ups (combines Examination follow-ups + Follow-up/Consultation appointments, deduplicated per patient keeping the latest dueDate)
   const doctorFollowUpsList = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Build lookup sets of patients who already have an active scheduled/arrived appointment
-    const scheduledPatientIds = new Set<string>();
-    const scheduledPhones = new Set<string>();
-    const scheduledNames = new Set<string>();
+    type CandidateFollowUp = {
+      id: string;
+      patientId: string;
+      patientName: string;
+      phone: string;
+      fileNumber?: number;
+      medicalCode: string;
+      lastVisitDate: string;
+      dueDate: string;
+      daysRemaining: number;
+      isFreeEligible: boolean;
+      diagnosis: string;
+      notes: string;
+      hasSpecificDiagnosis: boolean;
+      sortTimestamp: number;
+    };
 
+    const candidates: CandidateFollowUp[] = [];
+
+    // 1. Follow-ups created from Examination Screen (followUpsCanonical)
+    followUpsCanonical.forEach((fu) => {
+      const st = String(fu.status || '').toUpperCase();
+      if (st === 'CANCELLED' || st === 'ARCHIVED') return;
+
+      const patient =
+        patientsCanonical.find((p) => p.patientId === fu.patientId) ||
+        findMatchingPatient({ patientId: fu.patientId });
+
+      const pVisits = visitsCanonical.filter((v) => v.patientId === fu.patientId);
+      const lastVisit = [...pVisits].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+
+      const fallbackApp = !patient
+        ? appointmentsCanonical.find((a) => a.patientId === fu.patientId)
+        : undefined;
+
+      const resolvedName =
+        patient?.fullName || fallbackApp?.patientName || 'مريض متابعة';
+      const resolvedPhone = patient?.phone || fallbackApp?.phone || '';
+      if (!patient && !fallbackApp && !fu.patientId) return;
+
+      const dueDateStr = fu.scheduledDate || new Date().toISOString().split('T')[0];
+      const dueDateObj = new Date(dueDateStr);
+      dueDateObj.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((dueDateObj.getTime() - today.getTime()) / 86400000);
+
+      const visitDiag = lastVisit?.clinicalData?.diagnosis?.[0];
+      const patDiag = patient?.lastDiagnosis;
+      const rawDiag = READ_OPT
+        ? patDiag || visitDiag || 'متابعة استشارة'
+        : visitDiag || patDiag || 'متابعة استشارة';
+      const isGenericDiag =
+        !rawDiag ||
+        rawDiag === 'متابعة استشارة' ||
+        rawDiag === 'استشارة / متابعة' ||
+        rawDiag === 'متابعة';
+
+      candidates.push({
+        id: fu.followUpId,
+        patientId: fu.patientId || patient?.patientId || '',
+        patientName: resolvedName,
+        phone: resolvedPhone,
+        fileNumber: patient?.fileNumber,
+        medicalCode: patient?.medicalCode || `EG-${patient?.fileNumber || 101}`,
+        lastVisitDate: READ_OPT
+          ? patient?.lastVisitAt?.split('T')[0] ||
+            lastVisit?.createdAt?.split('T')[0] ||
+            fu.createdAt?.split('T')[0] ||
+            ''
+          : lastVisit?.createdAt?.split('T')[0] ||
+            patient?.lastVisitAt?.split('T')[0] ||
+            fu.createdAt?.split('T')[0] ||
+            '',
+        dueDate: dueDateStr,
+        daysRemaining: diffDays,
+        isFreeEligible: fu.isFree || false,
+        diagnosis: rawDiag,
+        notes: fu.notes || 'متابعة حددها الطبيب',
+        hasSpecificDiagnosis: !isGenericDiag,
+        sortTimestamp: new Date(
+          fu.updatedAt || fu.createdAt || dueDateStr || '1970-01-01'
+        ).getTime(),
+      });
+    });
+
+    // 2. Follow-up / Consultation appointments from Landing Page (#booking) or Appointments form
     appointmentsCanonical.forEach((app) => {
       const st = String(app.status || '').toUpperCase();
       const rawStatus = String(app.status || '');
-      const isActiveScheduled =
-        st === 'SCHEDULED' ||
-        st === 'ARRIVED' ||
-        rawStatus === 'مجدول' ||
-        rawStatus === 'فى الانتظار حضر المريض' ||
-        rawStatus === 'في الانتظار';
-      if (!isActiveScheduled) return;
+      if (st !== 'SCHEDULED' && rawStatus !== 'مجدول') return;
 
-      if (app.patientId) {
-        scheduledPatientIds.add(app.patientId);
-      }
-      const p = patientsCanonical.find((pat) => pat.patientId === app.patientId);
-      const normPhone = normalizePhoneDigits(app.phone || p?.phone || '');
-      if (normPhone.length >= 7) {
-        scheduledPhones.add(normPhone);
-      }
-      const normName = normalizeArabicName(app.patientName || p?.fullName || '');
-      if (normName.length >= 3) {
-        scheduledNames.add(normName);
-      }
+      const vType = String(app.visitType || '');
+      if (!vType.includes('متابعة') && !vType.includes('استشارة')) return;
+
+      const patient =
+        patientsCanonical.find((p) => p.patientId === app.patientId) ||
+        findMatchingPatient({
+          patientId: app.patientId,
+          phone: app.phone,
+          fullName: app.patientName,
+        });
+
+      const resolvedName = (app.patientName || patient?.fullName || '').trim();
+      const resolvedPhone = (app.phone || patient?.phone || '').trim();
+      if (!resolvedName && !resolvedPhone) return;
+
+      const pVisits = patient
+        ? visitsCanonical.filter((v) => v.patientId === patient.patientId)
+        : [];
+      const lastVisit = [...pVisits].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+
+      const dueDateStr = app.scheduledDate || new Date().toISOString().split('T')[0];
+      const dueDateObj = new Date(dueDateStr);
+      dueDateObj.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((dueDateObj.getTime() - today.getTime()) / 86400000);
+
+      const visitDiag = lastVisit?.clinicalData?.diagnosis?.[0];
+      const patDiag = patient?.lastDiagnosis;
+      const rawDiag = visitDiag || patDiag || app.visitType || 'استشارة / متابعة';
+      const isGenericDiag =
+        !rawDiag ||
+        rawDiag === 'متابعة استشارة' ||
+        rawDiag === 'استشارة / متابعة' ||
+        rawDiag === 'متابعة';
+
+      candidates.push({
+        id: app.appointmentId,
+        patientId: patient?.patientId || app.patientId || '',
+        patientName: resolvedName || 'مريض متابعة',
+        phone: resolvedPhone,
+        fileNumber: patient?.fileNumber,
+        medicalCode: patient?.medicalCode || `EG-${patient?.fileNumber || 101}`,
+        lastVisitDate:
+          lastVisit?.createdAt?.split('T')[0] ||
+          patient?.lastVisitAt?.split('T')[0] ||
+          app.createdAt?.split('T')[0] ||
+          dueDateStr,
+        dueDate: dueDateStr,
+        daysRemaining: diffDays,
+        isFreeEligible: false,
+        diagnosis: rawDiag,
+        notes: app.notes || 'موعد متابعة مجدول',
+        hasSpecificDiagnosis: !isGenericDiag,
+        sortTimestamp: new Date(
+          app.updatedAt || app.createdAt || dueDateStr || '1970-01-01'
+        ).getTime(),
+      });
     });
 
-    // Sort followUpsCanonical newest first so we keep only the latest follow-up per patient
-    const sortedFollowUps = [...followUpsCanonical].sort((a, b) => {
-      const timeA = new Date(a.updatedAt || a.createdAt || a.scheduledDate || '1970-01-01').getTime();
-      const timeB = new Date(b.updatedAt || b.createdAt || b.scheduledDate || '1970-01-01').getTime();
-      if (timeB !== timeA) return timeB - timeA;
-      return String(b.scheduledDate || '').localeCompare(String(a.scheduledDate || ''));
+    // Sort candidates so the latest dueDate comes first per patient (hiding any older past visit card for that patient)
+    candidates.sort((a, b) => {
+      const dueCmp = String(b.dueDate || '').localeCompare(String(a.dueDate || ''));
+      if (dueCmp !== 0) return dueCmp;
+      if (a.hasSpecificDiagnosis !== b.hasSpecificDiagnosis) {
+        return a.hasSpecificDiagnosis ? -1 : 1;
+      }
+      return (b.sortTimestamp || 0) - (a.sortTimestamp || 0);
     });
 
-    const seenPatientKeys = new Set<string>();
-    const list: Array<{
+    const keyToEntryIndex = new Map<string, number>();
+    const deduplicated: Array<{
       id: string;
       patientId: string;
       patientName: string;
@@ -1900,64 +2024,57 @@ function ClinicApp() {
       notes: string;
     }> = [];
 
-    sortedFollowUps.forEach((fu) => {
-      const st = String(fu.status || '').toUpperCase();
-      if (st === 'CANCELLED' || st === 'COMPLETED' || st === 'DONE' || st === 'ARCHIVED') return;
-
-      const patient = patientsCanonical.find((p) => p.patientId === fu.patientId);
-      if (!patient) return;
-
-      const normPhone = normalizePhoneDigits(patient.phone || '');
-      const normName = normalizeArabicName(patient.fullName || '');
-
-      // Automatically hide follow-up if this patient already has a scheduled appointment
-      if (
-        (fu.patientId && scheduledPatientIds.has(fu.patientId)) ||
-        (normPhone.length >= 7 && scheduledPhones.has(normPhone)) ||
-        (normName.length >= 3 && scheduledNames.has(normName))
-      ) {
-        return;
-      }
-
-      // Deduplicate: keep only the latest follow-up card per patient
-      const patientKeys = [
-        fu.patientId ? `id:${fu.patientId}` : '',
+    candidates.forEach((cand) => {
+      const normPhone = normalizePhoneDigits(cand.phone || '');
+      const normName = normalizeArabicName(cand.patientName || '');
+      const keys = [
+        cand.patientId ? `id:${cand.patientId}` : '',
         normPhone.length >= 7 ? `phone:${normPhone}` : '',
         normName.length >= 3 ? `name:${normName}` : '',
       ].filter(Boolean);
 
-      if (patientKeys.some((k) => seenPatientKeys.has(k))) {
+      const existingIdx = keys
+        .map((k) => keyToEntryIndex.get(k))
+        .find((idx): idx is number => idx !== undefined);
+
+      if (existingIdx !== undefined) {
+        // Older/duplicate card for the same patient is hidden; enrich the kept newer card's clinical diagnosis if needed
+        const kept = deduplicated[existingIdx];
+        if (
+          cand.hasSpecificDiagnosis &&
+          (kept.diagnosis === 'استشارة / متابعة' ||
+            kept.diagnosis === 'متابعة استشارة' ||
+            kept.diagnosis === 'متابعة')
+        ) {
+          kept.diagnosis = cand.diagnosis;
+        }
+        if (!kept.fileNumber && cand.fileNumber) {
+          kept.fileNumber = cand.fileNumber;
+          kept.medicalCode = cand.medicalCode;
+        }
+        keys.forEach((k) => keyToEntryIndex.set(k, existingIdx));
         return;
       }
-      patientKeys.forEach((k) => seenPatientKeys.add(k));
 
-      const pVisits = visitsCanonical.filter((v) => v.patientId === fu.patientId);
-      const lastVisit = [...pVisits].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-      const dueDateObj = new Date(fu.scheduledDate);
-      dueDateObj.setHours(0, 0, 0, 0);
-      const diffDays = Math.ceil((dueDateObj.getTime() - today.getTime()) / 86400000);
-
-      list.push({
-        id: fu.followUpId,
-        patientId: fu.patientId,
-        patientName: patient.fullName,
-        phone: patient.phone,
-        fileNumber: patient.fileNumber,
-        medicalCode: patient.medicalCode || `EG-${patient.fileNumber || 101}`,
-        lastVisitDate: READ_OPT
-          ? (patient.lastVisitAt?.split('T')[0] || fu.createdAt?.split('T')[0] || '')
-          : (lastVisit?.createdAt?.split('T')[0] || fu.createdAt?.split('T')[0] || ''),
-        dueDate: fu.scheduledDate,
-        daysRemaining: diffDays,
-        isFreeEligible: fu.isFree || false,
-        diagnosis: READ_OPT
-          ? (patient.lastDiagnosis || 'متابعة استشارة')
-          : (lastVisit?.clinicalData?.diagnosis?.[0] || 'متابعة استشارة'),
-        notes: fu.notes || 'متابعة حددها الطبيب',
+      const newIdx = deduplicated.length;
+      keys.forEach((k) => keyToEntryIndex.set(k, newIdx));
+      deduplicated.push({
+        id: cand.id,
+        patientId: cand.patientId,
+        patientName: cand.patientName,
+        phone: cand.phone,
+        fileNumber: cand.fileNumber,
+        medicalCode: cand.medicalCode,
+        lastVisitDate: cand.lastVisitDate,
+        dueDate: cand.dueDate,
+        daysRemaining: cand.daysRemaining,
+        isFreeEligible: cand.isFreeEligible,
+        diagnosis: cand.diagnosis,
+        notes: cand.notes,
       });
     });
 
-    return list.sort((a, b) => a.daysRemaining - b.daysRemaining);
+    return deduplicated.sort((a, b) => a.daysRemaining - b.daysRemaining);
   }, [followUpsCanonical, appointmentsCanonical, patientsCanonical, visitsCanonical]);
 
   // Sound Chime for Patient Queue & Status Updates
@@ -3114,47 +3231,15 @@ function ClinicApp() {
       try {
         await createAppointmentTransaction({ db, patient: patientToSave, appointment: newApp });
 
-        // Optimistically update local appointments state so the UI reflects the scheduled appointment immediately
+        // Optimistically update local appointments and patients state so the UI reflects the scheduled appointment immediately
+        setPatientsCanonical((prev) => {
+          if (prev.some((p) => p.patientId === patientToSave.patientId)) return prev;
+          return [patientToSave, ...prev];
+        });
         setAppointmentsCanonical((prev) => {
           const filtered = prev.filter((a) => a.appointmentId !== newApp.appointmentId);
           return [newApp, ...filtered];
         });
-
-        // Automatically mark any pending follow-ups for this patient as COMPLETED so past follow-ups disappear
-        const normTargetPhone = normalizePhoneDigits(cleanPhone || existingPatient?.phone || '');
-        const normTargetName = normalizeArabicName(cleanName || existingPatient?.fullName || '');
-        const matchingFollowUps = followUpsCanonical.filter((fu) => {
-          if (fu.status === 'COMPLETED' || fu.status === 'CANCELLED') return false;
-          if (fu.patientId === targetPatientId) return true;
-          const fuPat = patientsCanonical.find((p) => p.patientId === fu.patientId);
-          if (!fuPat) return false;
-          const fuPhone = normalizePhoneDigits(fuPat.phone || '');
-          const fuName = normalizeArabicName(fuPat.fullName || '');
-          return (
-            (normTargetPhone.length >= 7 && fuPhone === normTargetPhone) ||
-            (normTargetName.length >= 3 && fuName === normTargetName)
-          );
-        });
-
-        if (matchingFollowUps.length > 0) {
-          const matchingIds = new Set(matchingFollowUps.map((f) => f.followUpId));
-          setFollowUpsCanonical((prev) =>
-            prev.map((f) =>
-              matchingIds.has(f.followUpId)
-                ? { ...f, status: 'COMPLETED' as const, updatedAt: timestamp }
-                : f
-            )
-          );
-          if (db) {
-            matchingFollowUps.forEach((fu) => {
-              saveCatalogItem(db, 'follow_ups', fu.followUpId, {
-                ...fu,
-                status: 'COMPLETED',
-                updatedAt: timestamp,
-              }).catch((err) => console.warn('Failed to mark follow-up completed:', err));
-            });
-          }
-        }
 
         return true;
       } catch (error) {
@@ -3337,6 +3422,19 @@ function ClinicApp() {
         const withoutVisit = prev.filter((fol) => fol.sourceVisitId !== targetVisitId);
         return savedResult.followUpPayload ? [savedResult.followUpPayload, ...withoutVisit] : withoutVisit;
       });
+
+      setPatientsCanonical((prev) =>
+        prev.map((p) =>
+          p.patientId === (activeWaiting.patientId || activeExamPatient?.id)
+            ? {
+                ...p,
+                lastVisitAt: savedAt,
+                lastDiagnosis: diagnosisStrings[0] || p.lastDiagnosis,
+                updatedAt: savedAt,
+              }
+            : p
+        )
+      );
 
       invalidatePatientHistory(activeWaiting.patientId || activeExamPatient?.id);
 
