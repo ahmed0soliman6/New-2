@@ -16,6 +16,7 @@ import { WhatsappReminderModal } from '../modals/WhatsappReminderModal';
 
 export interface FollowUpItem {
   id: string;
+  patientId?: string;
   patientName: string;
   phone: string;
   fileNumber?: number;
@@ -152,6 +153,9 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
   const [visitType, setVisitType] = useState(() => activeVisitTypes[0]?.name || 'كشف جديد');
   const [appointmentNotes, setAppointmentNotes] = useState('');
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
+  const [linkedFollowUpId, setLinkedFollowUpId] = useState<string | null>(null);
+  const [linkedPatientId, setLinkedPatientId] = useState<string | null>(null);
+  const [hiddenFollowUpIds, setHiddenFollowUpIds] = useState<Set<string>>(() => new Set());
 
   // Active branch object based on selectedBranch
   const activeBranch = useMemo(() => {
@@ -288,26 +292,91 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
     return followUps || [];
   }, [followUps]);
 
-  // Filtered follow-ups sorted by urgency / nearest due date
+  // Filtered follow-ups: hide if patient already has an active scheduled appointment & deduplicate per patient
   const displayedFollowUps = useMemo(() => {
-    const list = activeFollowUps.filter((f) => {
+    const normDigits = (val?: string) => toEnglishDigits(val || '').replace(/\D/g, '');
+    const normName = (val?: string) =>
+      (val || '')
+        .trim()
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
+    const scheduledPatientIds = new Set<string>();
+    const scheduledPhones = new Set<string>();
+    const scheduledNames = new Set<string>();
+
+    allAppointments.forEach((app) => {
+      const st = String(app.status || '').toUpperCase();
+      const rawStatus = String(app.status || '');
+      const isActiveScheduled =
+        st === 'SCHEDULED' ||
+        st === 'ARRIVED' ||
+        rawStatus === 'مجدول' ||
+        rawStatus === 'فى الانتظار حضر المريض' ||
+        rawStatus === 'في الانتظار';
+      if (!isActiveScheduled) return;
+
+      if (app.patientId) scheduledPatientIds.add(app.patientId);
+      const pPhone = normDigits(app.phone);
+      if (pPhone.length >= 7) scheduledPhones.add(pPhone);
+      const pName = normName(app.patientName);
+      if (pName.length >= 3) scheduledNames.add(pName);
+    });
+
+    // Sort newest first by lastVisitDate / dueDate so we keep only the latest follow-up per patient
+    const sorted = [...activeFollowUps].sort((a, b) => {
+      const lastA = new Date(a.lastVisitDate || a.dueDate || '2020-01-01').getTime();
+      const lastB = new Date(b.lastVisitDate || b.dueDate || '2020-01-01').getTime();
+      if (!isNaN(lastB) && !isNaN(lastA) && lastB !== lastA) return lastB - lastA;
+      const dueA = new Date(a.dueDate || '2020-01-01').getTime();
+      const dueB = new Date(b.dueDate || '2020-01-01').getTime();
+      if (!isNaN(dueB) && !isNaN(dueA) && dueB !== dueA) return dueB - dueA;
+      return (b.id || '').localeCompare(a.id || '');
+    });
+
+    const seenPatients = new Set<string>();
+    const deduplicated = sorted.filter((f) => {
+      if (hiddenFollowUpIds.has(f.id)) return false;
+
+      const fPhone = normDigits(f.phone);
+      const fName = normName(f.patientName);
+
+      // Hide automatically if this patient already has a scheduled appointment
+      if (
+        (f.patientId && scheduledPatientIds.has(f.patientId)) ||
+        (fPhone.length >= 7 && scheduledPhones.has(fPhone)) ||
+        (fName.length >= 3 && scheduledNames.has(fName))
+      ) {
+        return false;
+      }
+
+      // Deduplicate: keep only the latest follow-up per patient
+      const keys = [
+        f.patientId ? `id:${f.patientId}` : '',
+        fPhone.length >= 7 ? `phone:${fPhone}` : '',
+        fName.length >= 3 ? `name:${fName}` : '',
+      ].filter(Boolean);
+
+      if (keys.some((k) => seenPatients.has(k))) {
+        return false;
+      }
+      keys.forEach((k) => seenPatients.add(k));
+
       if (!followupSearch.trim()) return true;
       const q = followupSearch.toLowerCase();
       return (
         f.patientName.toLowerCase().includes(q) ||
         f.phone.includes(q) ||
         String(f.fileNumber || '').includes(q) ||
-        (f.medicalCode && f.medicalCode.toLowerCase().includes(q))
+        Boolean(f.medicalCode && f.medicalCode.toLowerCase().includes(q))
       );
     });
-    // Sort newest first by due date or last visit date descending
-    return list.sort((a, b) => {
-      const dateA = new Date(a.dueDate || a.lastVisitDate || '2020-01-01').getTime();
-      const dateB = new Date(b.dueDate || b.lastVisitDate || '2020-01-01').getTime();
-      if (!isNaN(dateB) && !isNaN(dateA) && dateB !== dateA) return dateB - dateA;
-      return (b.id || '').localeCompare(a.id || '');
-    });
-  }, [activeFollowUps, followupSearch]);
+
+    return deduplicated;
+  }, [activeFollowUps, allAppointments, followupSearch, hiddenFollowUpIds]);
 
   // Update Status handler:
   // 1) "مجدول" (Default)
@@ -430,6 +499,7 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
 
     const newApp: AppointmentListItem = {
       id: `app-${Date.now()}`,
+      patientId: linkedPatientId || undefined,
       patientName: patientName.trim(),
       phone: phone.trim() || 'بدون هاتف',
       medicalCode: `EG-${Math.floor(100 + Math.random() * 900)}`,
@@ -456,10 +526,21 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
       }
     }
 
+    // Immediately hide the linked follow-up (and any follow-up for this patient)
+    if (linkedFollowUpId) {
+      setHiddenFollowUpIds((prev) => {
+        const next = new Set(prev);
+        next.add(linkedFollowUpId);
+        return next;
+      });
+    }
+
     // Reset Form only after confirmed success
     setPatientName('');
     setPhone('');
     setAppointmentNotes('');
+    setLinkedFollowUpId(null);
+    setLinkedPatientId(null);
     setFormFeedback('تم حفظ الموعد بنجاح ✓');
     setToastMessage(`تم حفظ موعد المريض (${newApp.patientName}) بنجاح`);
     setTimeout(() => {
@@ -1339,10 +1420,23 @@ export const AppointmentsScreen: React.FC<AppointmentsScreenProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      const followUpVisitType =
+                        activeVisitTypes.find(
+                          (vt) => vt.name.includes('متابعة') || vt.name.includes('استشارة')
+                        )?.name || 'استشارة / متابعة';
+                      const todayIso = new Date().toISOString().split('T')[0];
+                      const targetDueDate =
+                        fu.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(fu.dueDate) && fu.dueDate >= todayIso
+                          ? fu.dueDate
+                          : todayIso;
+
                       setPatientName(fu.patientName);
                       setPhone(fu.phone);
-                      setVisitType('متابعة');
+                      setScheduledDate(targetDueDate);
+                      setVisitType(followUpVisitType);
                       setAppointmentNotes(`متابعة دورية: ${fu.diagnosis}`);
+                      setLinkedFollowUpId(fu.id);
+                      setLinkedPatientId(fu.patientId || null);
                       setIsAddAppointmentOpen(true);
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                       setToastMessage(`تم نسخ بيانات المريض (${fu.patientName}) في نموذج إضافة موعد بالأعلى`);
